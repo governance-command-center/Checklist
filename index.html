@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mega Campaign Checklist</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ═══════════ LOGIN SCREEN ═══════════ -->
+  <div id="login-screen" class="screen">
+    <div class="login-wrap">
+      <div class="login-logo">
+        <span class="logo-mark">MC</span>
+        <span class="logo-text">Mega Campaign<br><em>Checklist</em></span>
+      </div>
+      <div class="login-card">
+        <h2>Sign in</h2>
+        <div class="field">
+          <label>Username</label>
+          <input type="text" id="login-username" placeholder="your-username" autocomplete="username" />
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <div id="login-error" class="error-msg" style="display:none;"></div>
+        <button id="login-btn" class="btn-primary" onclick="handleLogin()">Sign in</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ ADMIN DASHBOARD ═══════════ -->
+  <div id="admin-screen" class="screen" style="display:none;">
+    <header class="app-header">
+      <div class="header-left">
+        <span class="logo-mark sm">MC</span>
+        <div>
+          <div class="header-title">Mega Campaign Checklist</div>
+          <div class="header-sub">Admin Dashboard</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <select id="admin-campaign-filter" onchange="renderAdminView()">
+          <option value="">All campaigns</option>
+        </select>
+        <button class="btn-outline" onclick="openBrandRegModal()">🏷️ Brand Registration</button>
+        <button class="btn-outline" onclick="openEditorModal()">✏️ Edit Checklist</button>
+        <button class="btn-outline" style="background:rgba(251,191,36,0.18);border-color:rgba(251,191,36,0.5);color:#FDE68A;" onclick="openBroadcastModal()">📣 Broadcast</button>
+        <button class="btn-outline" onclick="openMemberModal()">👤 Manage Members</button>
+        <button class="btn-outline" onclick="openNewCampaignModal()">+ New Campaign</button>
+        <button class="btn-ghost" onclick="handleLogout()">Sign out</button>
+      </div>
+    </header>
+    <div class="admin-body">
+      <div class="stat-row" id="admin-stats"></div>
+      <div class="section-label">Team progress</div>
+      <div id="admin-table-wrap">
+        <table class="progress-table" id="admin-table">
+          <thead>
+            <tr>
+              <th>Member</th>
+              <th>Campaign</th>
+              <th>D-5 Check</th>
+              <th>D-1 Check</th>
+              <th>Overall</th>
+              <th>Last active</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="admin-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ USER CHECKLIST SCREEN ═══════════ -->
+  <div id="user-screen" class="screen" style="display:none;">
+    <header class="app-header">
+      <div class="header-left">
+        <span class="logo-mark sm">MC</span>
+        <div>
+          <div class="header-title" id="user-campaign-name">Select a campaign</div>
+          <div class="header-sub" id="user-name-display"></div>
+        </div>
+      </div>
+      <div class="header-right">
+        <select id="user-campaign-select" onchange="loadUserChecklist()">
+          <option value="">Select campaign…</option>
+        </select>
+        <button class="btn-outline" id="user-broadcast-btn" onclick="openBroadcastFeed()" style="position:relative;">
+          📣 <span id="user-broadcast-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:#EF4444;color:white;border-radius:99px;font-size:10px;padding:1px 5px;font-weight:600;"></span>
+        </button>
+        <button class="btn-ghost" onclick="handleLogout()">Sign out</button>
+      </div>
+    </header>
+    <div class="user-body">
+      <div id="user-progress-bar-wrap" style="display:none;">
+        <div class="progress-summary">
+          <span id="user-progress-label">0 / 0 items complete</span>
+          <span id="user-progress-pct">0%</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill" id="user-progress-fill"></div></div>
+      </div>
+      <div id="user-no-campaign" class="empty-state">
+        <div class="empty-icon">📋</div>
+        <p>Select a campaign above to start your checklist.</p>
+      </div>
+      <div id="user-checklist" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ NEW CAMPAIGN MODAL ═══════════ -->
+  <div id="modal-overlay" style="display:none;" onclick="closeModal(event)">
+    <div class="modal">
+      <h3>New Campaign</h3>
+      <div class="field">
+        <label>Campaign name</label>
+        <input type="text" id="new-campaign-name" placeholder="e.g. 11.11 Mega Sale" />
+      </div>
+      <div class="field">
+        <label>Assign members</label>
+        <div id="member-assign-list" class="member-list"></div>
+      </div>
+      <div id="modal-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" onclick="createCampaign()">Create campaign</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ MEMBER MANAGEMENT MODAL ═══════════ -->
+  <div id="member-modal-overlay" style="display:none;" onclick="closeMemberModal(event)">
+    <div class="modal">
+      <h3>Manage Members</h3>
+      <div class="section-label" style="margin-bottom:8px;">Existing members</div>
+      <div class="existing-members-box" id="existing-members-list"></div>
+      <div class="section-label" style="margin-bottom:8px;">Add new member</div>
+      <div class="field">
+        <label>Full name</label>
+        <input type="text" id="new-member-name" placeholder="e.g. Maria Santos" />
+      </div>
+      <div class="field">
+        <label>Username</label>
+        <input type="text" id="new-member-username" placeholder="e.g. maria.santos" />
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="text" id="new-member-password" placeholder="temporary password" />
+      </div>
+      <div id="member-modal-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="document.getElementById('member-modal-overlay').style.display='none'">Close</button>
+        <button class="btn-primary" onclick="addMember()">Add member</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ BROADCAST MODAL ═══════════ -->
+  <div id="broadcast-overlay" style="display:none;" onclick="closeBroadcastModal(event)">
+    <div class="modal" style="max-width:520px;">
+      <h3>📣 Broadcast</h3>
+      <div class="field">
+        <label>Type</label>
+        <div style="display:flex;gap:8px;margin-bottom:4px;">
+          <button class="btn-broadcast-type selected" data-type="shoutout" onclick="selectBroadcastType(this)">🏆 Shout-out</button>
+          <button class="btn-broadcast-type" data-type="nudge" onclick="selectBroadcastType(this)">⏰ Nudge</button>
+          <button class="btn-broadcast-type" data-type="custom" onclick="selectBroadcastType(this)">✏️ Custom</button>
+        </div>
+      </div>
+      <div class="field" id="broadcast-member-field">
+        <label>Member</label>
+        <select id="broadcast-member-sel">
+          <option value="">All members</option>
+        </select>
+      </div>
+      <div class="field" id="broadcast-campaign-field">
+        <label>Campaign (optional)</label>
+        <select id="broadcast-campaign-sel">
+          <option value="">All campaigns</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Message</label>
+        <textarea id="broadcast-message" rows="4" style="resize:vertical;" placeholder="Write your broadcast…"></textarea>
+      </div>
+      <div id="broadcast-quick-msgs" style="margin-bottom:12px;"></div>
+      <div id="broadcast-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeBroadcastModal()">Cancel</button>
+        <button class="btn-primary" style="width:auto;" onclick="sendBroadcast()">📣 Send Broadcast</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ BROADCAST FEED MODAL ═══════════ -->
+  <div id="broadcast-feed-overlay" style="display:none;" onclick="closeBroadcastFeed(event)">
+    <div class="modal" style="max-width:560px;">
+      <div class="modal-header">
+        <h3>📣 Broadcasts</h3>
+        <button class="btn-ghost-light" onclick="closeBroadcastFeed()">✕</button>
+      </div>
+      <div id="broadcast-feed-list" style="max-height:65vh;overflow-y:auto;"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ CHECKLIST EDITOR MODAL ═══════════ -->
+  <div id="editor-overlay" style="display:none;" onclick="closeEditorModal(event)">
+    <div class="modal" style="max-width:820px;width:98vw;">
+      <div class="modal-header">
+        <h3>✏️ Edit Checklist Items</h3>
+        <button class="btn-ghost-light" onclick="closeEditorModal()">✕ Close</button>
+      </div>
+      <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="editor-section-sel" onchange="renderEditorSection()" style="max-width:260px;"></select>
+        <button class="btn-outline" style="background:var(--blue);border-color:var(--blue);" onclick="addEditorRow()">+ Add Item</button>
+        <button class="btn-outline" style="background:#059669;border-color:#059669;" onclick="addEditorSection()">+ Add Section</button>
+      </div>
+      <div id="editor-section-header" style="margin-bottom:8px;"></div>
+      <div id="editor-items-list"></div>
+      <div id="editor-error" class="error-msg" style="display:none;margin-top:12px;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeEditorModal()">Cancel</button>
+        <button class="btn-primary" style="width:auto;" onclick="saveEditorChanges()">💾 Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ BRAND REGISTRATION MODAL ═══════════ -->
+  <div id="brand-reg-overlay" style="display:none;" onclick="closeBrandRegModal(event)">
+    <div class="modal" style="max-width:640px;">
+      <div class="modal-header">
+        <h3>🏷️ Brand Registration</h3>
+        <button class="btn-ghost-light" onclick="closeBrandRegModal()">✕</button>
+      </div>
+      <!-- Campaign type tabs -->
+      <div class="brand-type-tabs" id="brand-type-tabs">
+        <button class="brand-tab active" data-type="mega" onclick="switchBrandTab(this,'mega')">🔥 Mega</button>
+        <button class="brand-tab" data-type="double_digit" onclick="switchBrandTab(this,'double_digit')">🔢 Double Digit</button>
+        <button class="brand-tab" data-type="mid_month" onclick="switchBrandTab(this,'mid_month')">📅 Mid-Month</button>
+        <button class="brand-tab" data-type="payday" onclick="switchBrandTab(this,'payday')">💰 Payday</button>
+      </div>
+      <div id="brand-reg-content"></div>
+      <div id="brand-reg-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeBrandRegModal()">Close</button>
+        <button class="btn-primary" style="width:auto;" onclick="saveBrandRegistration()">💾 Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ ADMIN REVIEW MODAL (full member checklist view) ═══════════ -->
+  <div id="review-overlay" style="display:none;" onclick="closeReviewModal(event)">
+    <div class="modal x-wide">
+      <div class="modal-header">
+        <div>
+          <h3 id="review-member-name"></h3>
+          <div class="detail-sub" id="review-campaign-name"></div>
+        </div>
+        <button class="btn-ghost-light" onclick="closeReviewModal()">✕ Close</button>
+      </div>
+      <div id="review-content"></div>
+    </div>
+  </div>
+
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="checklist-data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
