@@ -173,16 +173,18 @@ async function renderAdminView() {
   checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
 
   let rows = [];
-  const campaignList = filterCampaign
-    ? [campaigns[filterCampaign]].filter(Boolean)
-    : Object.values(campaigns);
+  let allRows = [];
+  // Every campaign, regardless of the current filter — used by the
+  // "Active Checklists" panel so all campaigns stay clickable even
+  // while one is selected.
+  const allCampaignList = Object.values(campaigns);
 
   // Campaigns can use a non-default checklist template (different item
   // count) — resolve each campaign's real total so completion isn't computed
   // against the wrong denominator (see resolveCampaignTotalItems).
-  const totalItemsMap = await resolveCampaignTotalItems(campaignList);
+  const totalItemsMap = await resolveCampaignTotalItems(allCampaignList);
 
-  campaignList.forEach(camp => {
+  allCampaignList.forEach(camp => {
     (camp.assignedUids || []).forEach(uid => {
       const member = members[uid];
       if (!member) return;
@@ -192,7 +194,7 @@ async function renderAdminView() {
       // this campaign's total item count rather than lumped together with
       // other entries (or computed against the wrong template's size).
       getEntryBreakdown(cl, totalItemsMap[camp.id]?.total, totalItemsMap[camp.id]?.validIds, totalItemsMap[camp.id]?.hasD5).forEach(eb => {
-        rows.push({
+        allRows.push({
           member, camp,
           entryLabel: eb.label,
           d5Done: eb.d5Done, d1Done: eb.d1Done, overallDone: eb.overallPct,
@@ -202,6 +204,12 @@ async function renderAdminView() {
       });
     });
   });
+  window._allAdminRows = allRows;
+
+  // The rest of the dashboard (stat cards, "Completion by team lead", and
+  // the team progress table) only looks at rows for the selected campaign
+  // (or every campaign, if none is selected).
+  rows = filterCampaign ? allRows.filter(r => r.camp.id === filterCampaign) : allRows;
 
   // Apply sort
   const sortSel = document.getElementById('table-sort');
@@ -371,6 +379,16 @@ function renderDashboardWidgets(rows) {
 function renderCompletionChart(rows) {
   const el = document.getElementById('dash-completion-chart');
   if (!el) return;
+
+  // Subtitle reflects the currently selected campaign (set via the sidebar
+  // filter, or by clicking a campaign in the "Active Checklists" panel) so
+  // it's clear these rates are scoped to one campaign rather than all of them.
+  const subEl = document.getElementById('dash-completion-subtitle');
+  if (subEl) {
+    const filterCampId = document.getElementById('admin-campaign-filter')?.value || '';
+    subEl.textContent = filterCampId ? `📁 ${campaigns[filterCampId]?.name || ''}` : '';
+  }
+
   // Member-level aggregate: D-5 and D-1 are accumulated separately across
   // ALL of a member's entries/campaigns — never blended into one number.
   const memberMap = {};
@@ -499,17 +517,20 @@ function renderDeadlinePanel() {
 }
 
 // ── Active Checklists Breakdown (replaces Upcoming Deadlines widget) ──
+// Always built from EVERY campaign (window._allAdminRows), regardless of
+// the current dashboard filter, so every campaign stays clickable even
+// while one of them is selected — see selectDashboardCampaign().
 function renderActiveCampaignsPanel() {
   const el    = document.getElementById('dash-deadlines-list');
   const badge = document.getElementById('dash-camps-badge');
   if (!el) return;
 
-  const rows = window._adminRows || [];
+  const rows = window._allAdminRows || window._adminRows || [];
   // Group rows by campaign
   const campMap = {};
   rows.forEach(r => {
     const id = r.camp.id;
-    if (!campMap[id]) campMap[id] = { name: r.camp.name, dday: r.camp.dday || null, total: 0, complete: 0, inProgress: 0, notStarted: 0 };
+    if (!campMap[id]) campMap[id] = { id, name: r.camp.name, dday: r.camp.dday || null, total: 0, complete: 0, inProgress: 0, notStarted: 0 };
     campMap[id].total++;
     if (r.overallDone === 100)      campMap[id].complete++;
     else if (r.overallDone > 0)     campMap[id].inProgress++;
@@ -517,6 +538,7 @@ function renderActiveCampaignsPanel() {
   });
 
   const campList = Object.values(campMap);
+  const activeCampId = document.getElementById('admin-campaign-filter')?.value || '';
   if (badge) badge.textContent = `${campList.length} campaign${campList.length !== 1 ? 's' : ''}`;
 
   if (campList.length === 0) {
@@ -526,9 +548,14 @@ function renderActiveCampaignsPanel() {
 
   const now = new Date(); now.setHours(0,0,0,0);
 
-  el.innerHTML = campList.map(camp => {
+  let html = activeCampId
+    ? `<div class="ac-clear-filter" onclick="selectDashboardCampaign('')">← Show all campaigns</div>`
+    : '';
+
+  html += campList.map(camp => {
     const rate       = camp.total > 0 ? Math.round((camp.complete / camp.total) * 100) : 0;
     const rateColor  = rate === 100 ? '#059669' : rate >= 50 ? '#D97706' : '#2563EB';
+    const isActive   = camp.id === activeCampId;
     let ddayTag = '';
     if (camp.dday) {
       const dd   = new Date(camp.dday);
@@ -539,9 +566,9 @@ function renderActiveCampaignsPanel() {
       else if (diff <= 5)  { cls = 'dp-amber'; txt = `D-Day in ${diff}d`; }
       ddayTag = `<span class="deadline-pill ${cls}" style="margin-left:4px;">${txt}</span>`;
     }
-    return `<div class="ac-camp-row">
+    return `<div class="ac-camp-row${isActive ? ' ac-camp-row-active' : ''}" onclick="selectDashboardCampaign('${camp.id}')" title="Click to view this campaign only">
       <div class="ac-camp-top">
-        <div class="ac-camp-name">${escHtml(camp.name)}${ddayTag}</div>
+        <div class="ac-camp-name">${escHtml(camp.name)}${ddayTag}${isActive ? ' <span style="font-size:10px;color:#2563EB;font-weight:700;">● selected</span>' : ''}</div>
         <div class="ac-camp-rate" style="color:${rateColor};font-family:var(--mono);font-size:13px;font-weight:700;">${rate}%</div>
       </div>
       <div class="ac-rate-bar"><div style="width:${rate}%;background:${rateColor};height:100%;border-radius:4px;transition:width .4s;"></div></div>
@@ -553,6 +580,21 @@ function renderActiveCampaignsPanel() {
       </div>
     </div>`;
   }).join('');
+
+  el.innerHTML = html;
+}
+
+// Clicking a campaign in the "Active Checklists" panel filters the WHOLE
+// admin dashboard (stat cards, "Completion by team lead", and the team
+// progress table) down to that single campaign — same effect as picking it
+// from the sidebar campaign select, just one click away. Clicking the
+// already-selected campaign again, or the "Show all campaigns" link,
+// clears the filter.
+function selectDashboardCampaign(campId) {
+  const sel = document.getElementById('admin-campaign-filter');
+  if (!sel) return;
+  sel.value = (sel.value === campId) ? '' : campId;
+  renderAdminView();
 }
 
 function renderAlertsBanner(rows) {
