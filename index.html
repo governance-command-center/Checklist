@@ -138,24 +138,29 @@
 
         <!-- Member progress summary mini-charts + deadline panel -->
         <div class="dashboard-grid" id="dashboard-grid">
-          <!-- Member completion chart (injected by JS) -->
-          <div class="dash-card" id="dash-completion-card">
-            <div class="dash-card-header">
-              <div class="dash-card-title">Completion by team lead</div>
-              <span class="dash-card-badge" id="dash-completion-badge"></span>
-            </div>
-            <div id="dash-completion-chart"></div>
-          </div>
-
-          <!-- Active Checklists Breakdown panel -->
+          <!-- Active Checklists Breakdown panel — click a campaign to filter the whole dashboard -->
           <div class="dash-card" id="dash-deadlines-card">
             <div class="dash-card-header">
               <div class="dash-card-title">Active Checklists</div>
               <span class="dash-card-badge" id="dash-camps-badge"></span>
             </div>
+            <div style="font-size:11px;color:var(--text-muted);margin:-4px 0 8px;">Click a campaign to view it across the whole dashboard</div>
             <div id="dash-deadlines-list"></div>
           </div>
+
+          <!-- Member completion chart (injected by JS) -->
+          <div class="dash-card" id="dash-completion-card">
+            <div class="dash-card-header">
+              <div>
+                <div class="dash-card-title">Completion by team lead</div>
+                <div id="dash-completion-subtitle" style="font-size:11px;color:var(--blue);font-weight:600;margin-top:2px;"></div>
+              </div>
+              <span class="dash-card-badge" id="dash-completion-badge"></span>
+            </div>
+            <div id="dash-completion-chart"></div>
+          </div>
         </div>
+
 
         <!-- Recent Task Checks panel -->
         <div id="dash-taskcheck-panel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 18px;box-shadow:var(--shadow);margin-bottom:16px;"></div>
