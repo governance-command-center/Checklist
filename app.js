@@ -2524,16 +2524,16 @@ function switchAdminTab(tab) {
 }
 
 async function renderMembersTab() {
-  // ── Members list (Team Leads + their groups, and regular Members) ──
+  // ── Members list: Team Leads (+ their groups) goes in #data-members-list,
+  // regular individual Members go in their own #data-regular-members-list
+  // card — these are two separate containers in the HTML, so each needs to
+  // be filled independently or the second one is left permanently empty. ──
   const membEl = document.getElementById('data-members-list');
+  const regEl  = document.getElementById('data-regular-members-list');
   if (!membEl) return;
   try {
     const nonAdmins = Object.values(members).filter(m => m.role !== 'admin')
       .sort((a, b) => (a.name || a.username || '').localeCompare(b.name || b.username || ''));
-    if (nonAdmins.length === 0) {
-      membEl.innerHTML = '<div class="data-empty">No members yet.</div>';
-      return;
-    }
 
     const teamLeads = nonAdmins.filter(m => m.role === 'team_lead');
     const regularMembers = nonAdmins.filter(m => m.role !== 'team_lead');
@@ -2549,10 +2549,10 @@ async function renderMembersTab() {
     // campaign's real total item count (see resolveCampaignTotalItems).
     const dataTabTotalItemsMap = await resolveCampaignTotalItems(Object.values(campaigns));
 
-    let html = '';
+    let tlHtml = '';
 
-  // ── Filter input ──
-  html += `
+  // ── Filter input (filters rows in BOTH cards at once) ──
+  tlHtml += `
     <div style="padding:8px 0 10px;">
       <input type="text" id="data-member-filter" placeholder="Filter by name or username…"
         oninput="filterDataMemberList(this.value)"
@@ -2560,9 +2560,11 @@ async function renderMembersTab() {
     </div>`;
 
   // ── Team Leads section (each with the list of members in their group) ──
-  if (teamLeads.length > 0) {
-    html += `<div class="data-member-section-label" style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;padding:4px 0 6px;">Team Leads</div>`;
-    html += teamLeads.map(tl => {
+  if (teamLeads.length === 0) {
+    tlHtml += '<div class="data-empty">No team leads yet.</div>';
+  } else {
+    tlHtml += `<div class="data-member-section-label" style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;padding:4px 0 6px;">Team Leads</div>`;
+    tlHtml += teamLeads.map(tl => {
       const managedUids = tl.managedUids || [];
       const managedCount = managedUids.length;
 
@@ -2632,21 +2634,22 @@ async function renderMembersTab() {
         </div>` : ''}
       </div>`;
     }).join('');
-    html += `<div style="height:1px;background:var(--border);margin:10px 0;"></div>`;
-    html += `<div class="data-member-section-label" style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;padding:4px 0 6px;">Members</div>`;
   }
 
-  // ── Regular members ──
+  membEl.innerHTML = tlHtml;
+
+  // ── Regular members — rendered into their own card/container ──
+  let regHtml = '';
   if (regularMembers.length === 0) {
-    html += '<div class="data-empty">No regular members yet.</div>';
+    regHtml = '<div class="data-empty">No individual members yet.</div>';
   } else {
-    html += `
+    regHtml += `
       <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border);margin-bottom:4px;">
         <input type="checkbox" id="data-members-select-all" style="accent-color:var(--blue);width:15px;height:15px;cursor:pointer;"
           onchange="toggleSelectAllDataMembers(this.checked)" title="Select all members" />
         <label for="data-members-select-all" style="font-size:11px;font-weight:600;color:var(--text-muted);cursor:pointer;text-transform:uppercase;letter-spacing:.05em;">Select All</label>
       </div>`;
-    html += regularMembers.map(m => `
+    regHtml += regularMembers.map(m => `
       <div class="data-list-row data-reg-row" id="data-mrow-${m.uid}"
         data-name="${escHtml((m.name || m.username || '').toLowerCase())}" data-username="${escHtml((m.username || '').toLowerCase())}">
         <input type="checkbox" class="data-member-cb" value="${m.uid}" style="accent-color:var(--blue);width:15px;height:15px;cursor:pointer;flex-shrink:0;"
@@ -2661,10 +2664,11 @@ async function renderMembersTab() {
       </div>`).join('');
   }
 
-  membEl.innerHTML = html;
+  if (regEl) regEl.innerHTML = regHtml;
   } catch (e) {
     console.error('renderMembersTab failed:', e);
     membEl.innerHTML = '<div class="data-empty">Failed to load members. Please refresh and try again.</div>';
+    if (regEl) regEl.innerHTML = '';
   }
 }
 
@@ -2779,11 +2783,11 @@ function filterDataMemberList(query) {
     const user = row.dataset.username || '';
     row.style.display = (!q || name.includes(q) || user.includes(q)) ? '' : 'none';
   });
-  // Show/hide section labels based on visible rows
+  // Show/hide the "Team Leads" section label based on whether any team
+  // lead row is still visible.
   const tlVisible = [...document.querySelectorAll('.data-tl-row')].some(r => r.style.display !== 'none');
-  const regVisible = [...document.querySelectorAll('.data-reg-row')].some(r => r.style.display !== 'none');
-  document.querySelectorAll('.data-member-section-label').forEach((el, i) => {
-    el.style.display = (i === 0 ? tlVisible : regVisible) ? '' : 'none';
+  document.querySelectorAll('.data-member-section-label').forEach(el => {
+    el.style.display = tlVisible ? '' : 'none';
   });
 }
 
