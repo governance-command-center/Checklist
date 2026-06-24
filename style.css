@@ -442,18 +442,18 @@ select { cursor: pointer; }
 .btn-outline {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 6px 13px;
-  background: rgba(255,255,255,0.12);
-  color: white;
-  border: 1px solid rgba(255,255,255,0.3);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   font-family: var(--font);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
   white-space: nowrap;
 }
-.btn-outline:hover { background: rgba(255,255,255,0.22); }
+.btn-outline:hover { background: var(--surface2); border-color: var(--text-faint); }
 
 .btn-ghost {
   display: inline-flex; align-items: center;
