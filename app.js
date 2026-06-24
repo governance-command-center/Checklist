@@ -905,8 +905,8 @@ async function openReviewModal(uid, campId) {
     <th class="freeze" rowspan="2" style="min-width:220px">Item</th>
     <th class="freeze2" rowspan="2" style="min-width:220px">Guide question</th>`;
   entries.forEach((e, i) => {
-    const label = [e.brand, e.platform, e.region].filter(Boolean).join(' · ') || `Entry ${i + 1}`;
-    html += `<th colspan="${hasD5 ? 4 : 2}" style="text-align:center">${label}</th>`;
+    const label = buildEntryLabel(e, i);
+    html += `<th colspan="${hasD5 ? 4 : 2}" style="text-align:center">${escHtml(label)}</th>`;
   });
   html += `</tr><tr>`;
   entries.forEach(() => {
@@ -4647,13 +4647,16 @@ async function renderReportTab() {
   if (!host) return;
   host.innerHTML = '<div style="padding:2rem;color:var(--text-muted);text-align:center;">Loading report data…</div>';
 
-  // Populate campaign filter
+  // Populate campaign filter (preserve current selection across re-renders —
+  // rebuilding innerHTML resets .value, so it must be captured beforehand)
   const filterSel = document.getElementById('report-campaign-filter');
+  const prevFilterCamp = filterSel ? filterSel.value : '';
   if (filterSel) {
     filterSel.innerHTML = '<option value="">All campaigns</option>';
     Object.values(campaigns).forEach(c => {
       filterSel.innerHTML += `<option value="${c.id}">${escHtml(c.name)}</option>`;
     });
+    if (prevFilterCamp && campaigns[prevFilterCamp]) filterSel.value = prevFilterCamp;
   }
   const filterCamp = filterSel ? filterSel.value : '';
 
@@ -4861,7 +4864,7 @@ async function renderReportTab() {
                   ? `<tr><td colspan="${deadline ? 10 : 9}" style="text-align:center;color:var(--text-muted);">No members assigned.</td></tr>`
                   : rows.map(r => {
                     const isAtRisk = r.deadlineStatus === 'at-risk' || r.deadlineStatus === 'overdue';
-                    const regLines = r.entries.map(e=>[e.brand,e.platform,e.region].filter(Boolean).join(' · ')).filter(Boolean);
+                    const regLines = r.entries.map(e => e.label || [e.brand,e.platform,e.region].filter(Boolean).join(' · ')).filter(Boolean);
                     const regId    = `reg-${r.member.uid}-${r.camp.id}`;
                     const regHtml  = regLines.length === 0 ? '—'
                       : regLines.length <= 2 ? regLines.join('<br>')
@@ -4973,7 +4976,7 @@ async function exportReportToExcel() {
       const d5Pct      = hasD5 ? Math.round((d5Done / ti) * 100) : 0;
       const d1Pct      = Math.round((d1Done / ti) * 100);
       const status     = overallPct === 100 ? 'Complete' : overallPct > 0 ? 'In Progress' : 'Not Started';
-      const entries    = (cl.entries || []).map(e => [e.brand, e.platform, e.region].filter(Boolean).join(' · ')).filter(Boolean).join(' | ');
+      const entries    = (cl.entries || []).map(e => e.label || [e.brand, e.platform, e.region].filter(Boolean).join(' · ')).filter(Boolean).join(' | ');
 
       // Deadline analysis
       let deadlineStatus = '', vsDead = '';
