@@ -279,6 +279,24 @@
             </div>
             <div id="data-archived-campaigns-list" class="data-inner-list" style="display:none;"></div>
           </div>
+          <!-- Masterlist & Bulk Assign — map brand/platform/region masterlist to CDMs, generate entries -->
+          <div class="data-card data-card-full" style="border-color:rgba(79,70,229,0.3);">
+            <div class="data-card-header" style="background:rgba(79,70,229,0.06);border-bottom-color:rgba(79,70,229,0.2);">
+              <span class="data-card-icon">📋</span>
+              <div>
+                <div class="data-card-title">Masterlist &amp; Bulk Assign</div>
+                <div class="data-card-sub">Upload your brand/platform/region masterlist, map it to CDMs, and generate campaign entries — no poll needed</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;">
+                <button class="btn-outline" style="font-size:12px;padding:6px 14px;" onclick="document.getElementById('masterlist-file').click()">📥 Upload Masterlist</button>
+                <input type="file" id="masterlist-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;" onchange="handleMasterlistFileChange(event)" />
+                <button class="btn-primary" style="width:auto;font-size:12px;padding:6px 14px;background:#4F46E5;" onclick="openMapMasterlistModal()">🔗 Map Brands to CDM</button>
+                <button class="btn-outline" style="font-size:12px;padding:6px 14px;" onclick="openBulkAssignModal()">📊 Bulk Assign via Excel</button>
+              </div>
+            </div>
+            <div id="masterlist-summary" style="padding:12px 16px;font-size:13px;color:var(--text-muted);">Loading masterlist…</div>
+          </div>
+
           <!-- RSP & Kit Checking — above Checklist Progress -->
           <div class="data-card data-card-full" style="border-color:rgba(15,118,110,0.35);">
             <div class="data-card-header" style="background:rgba(15,118,110,0.06);border-bottom-color:rgba(15,118,110,0.2);">
@@ -908,6 +926,52 @@
       <div class="modal-actions">
         <button class="btn-ghost-light" onclick="closeRegPollModal()">Cancel</button>
         <button id="reg-poll-create-btn" class="btn-primary" style="width:auto;background:#059669;" onclick="createRegPoll()">📣 Create & Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Map Masterlist to CDM Modal (Admin) -->
+  <div id="map-masterlist-overlay" style="display:none;" onclick="closeMapMasterlistModal(event)">
+    <div class="modal x-wide">
+      <div class="modal-header">
+        <h3>🔗 Map Masterlist to CDM</h3>
+        <button class="btn-ghost-light" onclick="closeMapMasterlistModal()">✕</button>
+      </div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6;">
+        Pick a CDM, tick the brands/platforms/regions they'll handle from your masterlist, then add. Repeat for each CDM — the table below builds your ready-to-use list.
+      </p>
+
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:start;">
+        <div>
+          <div class="field">
+            <label>CDM</label>
+            <select id="map-cdm-sel"></select>
+          </div>
+          <button class="btn-primary" style="width:100%;margin-top:8px;" onclick="addMapSelectionToWorking()">+ Add Selected</button>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">Tick items on the right, pick the CDM, then click Add. You can keep adding for multiple CDMs before generating the file.</div>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <label style="margin-bottom:0;font-size:13px;font-weight:600;">Masterlist — tick brand/platform/region combos</label>
+            <input type="text" id="map-brand-filter" placeholder="Filter brand…" oninput="filterMapBrandChecklist(this.value)" style="font-size:12px;padding:5px 10px;width:160px;" />
+          </div>
+          <div id="map-brand-checklist" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface2);"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <label style="margin-bottom:0;font-size:13px;font-weight:600;">Mapping list (<span id="map-working-count">0</span>)</label>
+          <button class="btn-ghost-light" style="font-size:11px;padding:4px 10px;" onclick="clearMapWorkingRows()">Clear all</button>
+        </div>
+        <div id="map-working-table" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;"></div>
+      </div>
+
+      <div id="map-masterlist-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeMapMasterlistModal()">Cancel</button>
+        <button class="btn-outline" style="width:auto;" onclick="downloadMapAsExcel()">⬇ Download as Excel</button>
+        <button class="btn-primary" style="width:auto;background:#4F46E5;" onclick="useMapInBulkAssign()">📊 Use in Bulk Assign →</button>
       </div>
     </div>
   </div>

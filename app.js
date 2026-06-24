@@ -125,6 +125,7 @@ async function loadAdminData() {
   renderAdminView();
   await loadChecklistOverrides();
   await loadCalendarEntries();
+  await loadMasterlist();
   // Refresh data tab if it's currently showing
   const dataTab = document.getElementById('admin-tab-data');
   if (dataTab && dataTab.style.display !== 'none') renderDataTab();
@@ -5777,6 +5778,250 @@ function handleNewCampBulkFileChange(e) {
       if (chip) chip.classList.add('selected');
     });
   });
+}
+
+// ═════════════════════════════════════════════════════════════
+//  MASTERLIST  (brand / platform / region reference data)
+//  settings/masterlist → { items: [{brand,platform,region}], updatedAt }
+//  Used to map CDMs to valid brand/platform/region combos without
+//  free-typing them, then feeds straight into Bulk Assign.
+// ═════════════════════════════════════════════════════════════
+let masterlistItems = []; // [{brand, platform, region}]
+
+async function loadMasterlist() {
+  try {
+    const doc = await db.collection('settings').doc('masterlist').get();
+    masterlistItems = doc.exists ? (doc.data().items || []) : [];
+  } catch (e) { masterlistItems = []; console.error('loadMasterlist error:', e); }
+  renderMasterlistSummary();
+}
+
+function renderMasterlistSummary() {
+  const host = document.getElementById('masterlist-summary');
+  if (!host) return;
+  if (masterlistItems.length === 0) {
+    host.innerHTML = `<span>No masterlist uploaded yet. Upload an Excel/CSV with columns <strong>Brand, Platform, Region</strong> to get started.</span>`;
+    return;
+  }
+  const brandCount = new Set(masterlistItems.map(i => i.brand)).size;
+  host.innerHTML = `
+    <strong>${masterlistItems.length}</strong> brand/platform/region combo(s) across <strong>${brandCount}</strong> brand(s).
+    <button class="btn-ghost-light" style="font-size:11px;padding:3px 10px;margin-left:8px;color:#DC2626;" onclick="clearMasterlist()">🗑 Clear masterlist</button>`;
+}
+
+function handleMasterlistFileChange(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  if (masterlistItems.length > 0 && !confirm('This will replace your current masterlist. Continue?')) {
+    e.target.value = '';
+    return;
+  }
+  readSheetRows(file, async (rows, err) => {
+    if (err) { showToast(err, 'error'); return; }
+    if (rows.length < 2) { showToast('File appears empty or has no data rows.', 'error'); return; }
+    const headers = rows[0].map(h => String(h).toLowerCase().trim());
+    const bIdx = headers.indexOf('brand');
+    const pIdx = headers.indexOf('platform');
+    const rIdx = headers.indexOf('region');
+    if (bIdx < 0) { showToast('File must have a "Brand" column (Platform and Region optional).', 'error'); return; }
+
+    const seen = new Set();
+    const items = [];
+    rows.slice(1).forEach(r => {
+      const brand    = String(r[bIdx] || '').trim();
+      const platform = pIdx >= 0 ? String(r[pIdx] || '').trim() : '';
+      const region    = rIdx >= 0 ? String(r[rIdx] || '').trim() : '';
+      if (!brand) return;
+      const key = `${brand}|${platform}|${region}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      items.push({ brand, platform, region });
+    });
+
+    if (items.length === 0) { showToast('No valid rows found.', 'error'); return; }
+
+    try {
+      await db.collection('settings').doc('masterlist').set({ items, updatedAt: new Date().toISOString() });
+      masterlistItems = items;
+      renderMasterlistSummary();
+      showToast(`✅ Masterlist uploaded — ${items.length} combo(s).`, 'success');
+    } catch (err2) {
+      showToast('Failed to save masterlist. Try again.', 'error');
+      console.error(err2);
+    }
+    e.target.value = '';
+  });
+}
+
+async function clearMasterlist() {
+  if (!confirm('Delete the entire masterlist? This cannot be undone.')) return;
+  try {
+    await db.collection('settings').doc('masterlist').delete();
+    masterlistItems = [];
+    renderMasterlistSummary();
+    showToast('✅ Masterlist cleared.', 'success');
+  } catch (e) {
+    showToast('Failed to clear masterlist.', 'error'); console.error(e);
+  }
+}
+
+// ─── Map Masterlist → CDM ─────────────────────────────────────
+let mapWorkingRows = []; // [{uid, username, name, brand, platform, region}]
+
+function openMapMasterlistModal() {
+  if (masterlistItems.length === 0) {
+    showToast('Upload a masterlist first.', 'info');
+    return;
+  }
+  mapWorkingRows = [];
+  document.getElementById('map-masterlist-error').style.display = 'none';
+  document.getElementById('map-brand-filter').value = '';
+
+  const sel = document.getElementById('map-cdm-sel');
+  const nonAdmins = Object.values(members).filter(m => m.role !== 'admin')
+    .sort((a, b) => (a.name || a.username || '').localeCompare(b.name || b.username || ''));
+  sel.innerHTML = nonAdmins.map(m => `<option value="${m.uid}">${escHtml(m.name || m.username)} (@${escHtml(m.username)})</option>`).join('');
+
+  renderMapBrandChecklist();
+  renderMapWorkingTable();
+  document.getElementById('map-masterlist-overlay').style.display = 'flex';
+}
+
+function closeMapMasterlistModal(e) {
+  if (e && e.target !== document.getElementById('map-masterlist-overlay')) return;
+  document.getElementById('map-masterlist-overlay').style.display = 'none';
+}
+
+function renderMapBrandChecklist(filterText) {
+  const host = document.getElementById('map-brand-checklist');
+  const q = (filterText || '').trim().toLowerCase();
+
+  const grouped = {};
+  masterlistItems.forEach((item, idx) => {
+    if (q && !item.brand.toLowerCase().includes(q)) return;
+    if (!grouped[item.brand]) grouped[item.brand] = [];
+    grouped[item.brand].push({ ...item, idx });
+  });
+
+  const brands = Object.keys(grouped).sort();
+  if (brands.length === 0) {
+    host.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No matching brands.</div>';
+    return;
+  }
+
+  host.innerHTML = brands.map(brand => `
+    <div style="margin-bottom:8px;">
+      <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:3px;">${escHtml(brand)}</div>
+      ${grouped[brand].map(item => `
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:2px 0 2px 8px;">
+          <input type="checkbox" class="map-item-cb" data-idx="${item.idx}" style="accent-color:var(--blue);width:14px;height:14px;" />
+          <span>${escHtml([item.platform, item.region].filter(Boolean).join(' · ') || '—')}</span>
+        </label>
+      `).join('')}
+    </div>
+  `).join('');
+}
+
+function filterMapBrandChecklist(query) { renderMapBrandChecklist(query); }
+
+function addMapSelectionToWorking() {
+  const errEl = document.getElementById('map-masterlist-error');
+  errEl.style.display = 'none';
+
+  const uid = document.getElementById('map-cdm-sel').value;
+  const member = members[uid];
+  if (!member) { showError(errEl, 'Please select a CDM.'); return; }
+
+  const checked = [...document.querySelectorAll('.map-item-cb:checked')];
+  if (checked.length === 0) { showError(errEl, 'Tick at least one brand/platform/region combo.'); return; }
+
+  checked.forEach(cb => {
+    const item = masterlistItems[parseInt(cb.dataset.idx, 10)];
+    if (!item) return;
+    const dup = mapWorkingRows.some(r => r.uid === uid && r.brand === item.brand && r.platform === item.platform && r.region === item.region);
+    if (!dup) {
+      mapWorkingRows.push({ uid, username: member.username, name: member.name || member.username, brand: item.brand, platform: item.platform, region: item.region });
+    }
+  });
+
+  // Reset checkboxes for the next CDM, keep the masterlist filter as-is
+  document.querySelectorAll('.map-item-cb:checked').forEach(cb => cb.checked = false);
+  renderMapWorkingTable();
+}
+
+function renderMapWorkingTable() {
+  const host = document.getElementById('map-working-table');
+  document.getElementById('map-working-count').textContent = mapWorkingRows.length;
+
+  if (mapWorkingRows.length === 0) {
+    host.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:12px;text-align:center;">No mappings added yet.</div>';
+    return;
+  }
+
+  host.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:var(--surface2);position:sticky;top:0;">
+        <th style="padding:5px 8px;text-align:left;">CDM</th>
+        <th style="padding:5px 8px;text-align:left;">Brand</th>
+        <th style="padding:5px 8px;text-align:left;">Platform</th>
+        <th style="padding:5px 8px;text-align:left;">Region</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${mapWorkingRows.map((r, i) => `
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:5px 8px;">${escHtml(r.name)}</td>
+          <td style="padding:5px 8px;">${escHtml(r.brand)}</td>
+          <td style="padding:5px 8px;">${escHtml(r.platform || '—')}</td>
+          <td style="padding:5px 8px;">${escHtml(r.region || '—')}</td>
+          <td style="padding:5px 8px;"><button class="btn-ghost-light" style="font-size:11px;padding:2px 8px;color:#DC2626;" onclick="removeMapWorkingRow(${i})">✕</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function removeMapWorkingRow(idx) {
+  mapWorkingRows.splice(idx, 1);
+  renderMapWorkingTable();
+}
+
+function clearMapWorkingRows() {
+  if (mapWorkingRows.length === 0) return;
+  if (!confirm('Clear the entire mapping list?')) return;
+  mapWorkingRows = [];
+  renderMapWorkingTable();
+}
+
+function downloadMapAsExcel() {
+  if (mapWorkingRows.length === 0) { showToast('No mappings to export yet.', 'info'); return; }
+  const rows = mapWorkingRows.map(r => ({ username: r.username, brand: r.brand, platform: r.platform, region: r.region }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{ wch: 18 }, { wch: 22 }, { wch: 16 }, { wch: 10 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'BulkAssign');
+  XLSX.writeFile(wb, `bulk-assign-${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+// Skips the file-upload step entirely — feeds the mapping straight into
+// the existing Bulk Assign flow (same matched/unmatched shape it expects).
+function useMapInBulkAssign() {
+  const errEl = document.getElementById('map-masterlist-error');
+  if (mapWorkingRows.length === 0) { showError(errEl, 'Add at least one mapping first.'); return; }
+
+  const matched = {};
+  mapWorkingRows.forEach(r => {
+    if (!matched[r.uid]) matched[r.uid] = [];
+    const entry = { label: [r.brand, r.platform, r.region].filter(Boolean).join('_'), brand: r.brand, platform: r.platform, region: r.region };
+    if (!matched[r.uid].some(ex => ex.brand === entry.brand && ex.platform === entry.platform && ex.region === entry.region)) {
+      matched[r.uid].push(entry);
+    }
+  });
+
+  document.getElementById('map-masterlist-overlay').style.display = 'none';
+  openBulkAssignModal(); // resets selects/preview, then we override with our mapping below
+  bulkAssignMatched = matched;
+  bulkAssignUnmatched = [];
+  renderBrandAssignmentPreview(document.getElementById('bulk-assign-preview'), bulkAssignMatched, [], false);
+  document.getElementById('bulk-assign-btn').disabled = Object.keys(matched).length === 0;
 }
 
 // ─── Admin: Export all members/leads' usernames to Excel ─────
