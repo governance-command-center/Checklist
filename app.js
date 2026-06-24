@@ -5816,15 +5816,15 @@ function handleMasterlistFileChange(e) {
     e.target.value = '';
     return;
   }
-  showToast(`📄 Reading "${file.name}"…`, 'info');
+  const readingToast = showToast(`📄 Reading "${file.name}"…`, 'info', /* persistent */ true);
   readSheetRows(file, async (rows, err) => {
-    if (err) { showToast(err, 'error'); return; }
-    if (rows.length < 2) { showToast('File appears empty or has no data rows.', 'error'); return; }
+    if (err) { dismissToast(readingToast); showToast(err, 'error'); return; }
+    if (rows.length < 2) { dismissToast(readingToast); showToast('File appears empty or has no data rows.', 'error'); return; }
     const headers = rows[0].map(h => String(h).toLowerCase().trim());
     const bIdx = headers.indexOf('brand');
     const pIdx = headers.indexOf('platform');
     const rIdx = headers.indexOf('region');
-    if (bIdx < 0) { showToast('File must have a "Brand" column (Platform and Region optional).', 'error'); return; }
+    if (bIdx < 0) { dismissToast(readingToast); showToast('File must have a "Brand" column (Platform and Region optional).', 'error'); return; }
 
     const seen = new Set();
     const items = [];
@@ -5839,14 +5839,16 @@ function handleMasterlistFileChange(e) {
       items.push({ brand, platform, region });
     });
 
-    if (items.length === 0) { showToast('No valid rows found.', 'error'); return; }
+    if (items.length === 0) { dismissToast(readingToast); showToast('No valid rows found.', 'error'); return; }
 
     try {
       await db.collection('settings').doc('masterlist').set({ items, updatedAt: new Date().toISOString() });
       masterlistItems = items;
       renderMasterlistSummary();
+      dismissToast(readingToast);
       showToast(`✅ Masterlist uploaded — ${items.length} combo(s).`, 'success');
     } catch (err2) {
+      dismissToast(readingToast);
       showToast('Failed to save masterlist. Try again.', 'error');
       console.error(err2);
     }
@@ -6060,7 +6062,7 @@ function toggleRegList(id) {
 
 // ─── Toast notification ──────────────────────────────────────
 let _activeToasts = [];
-function showToast(msg, type = 'info') {
+function showToast(msg, type = 'info', persistent = false) {
   const toast = document.createElement('div');
   toast.className = `mc-toast mc-toast-${type}`;
   toast.textContent = msg;
@@ -6068,14 +6070,21 @@ function showToast(msg, type = 'info') {
   _activeToasts.push(toast);
   _repositionToasts();
   setTimeout(() => toast.classList.add('mc-toast-in'), 10);
+  if (!persistent) {
+    toast._autoTimer = setTimeout(() => dismissToast(toast), 3000);
+  }
+  return toast;
+}
+function dismissToast(toast) {
+  if (!toast || toast._dismissed) return;
+  toast._dismissed = true;
+  if (toast._autoTimer) clearTimeout(toast._autoTimer);
+  toast.classList.remove('mc-toast-in');
   setTimeout(() => {
-    toast.classList.remove('mc-toast-in');
-    setTimeout(() => {
-      toast.remove();
-      _activeToasts = _activeToasts.filter(t => t !== toast);
-      _repositionToasts();
-    }, 400);
-  }, 3000);
+    toast.remove();
+    _activeToasts = _activeToasts.filter(t => t !== toast);
+    _repositionToasts();
+  }, 400);
 }
 function _repositionToasts() {
   // Stack toasts upward from the bottom so simultaneous messages don't overlap
