@@ -5518,36 +5518,74 @@ function handleBulkAssignFileChange(e) {
   }
 }
 
+// Builds lookup maps so a sheet's identifier column can be matched against
+// a member's username, full name, OR just their first name (best-effort —
+// flags it as ambiguous if more than one member shares that first name).
+function _buildMemberLookup() {
+  const byUsername = {};
+  const byFullName = {};
+  const byFirstName = {};
+  Object.values(members).forEach(m => {
+    if (m.username) byUsername[m.username.toLowerCase()] = m;
+    const name = (m.name || '').trim();
+    if (name) {
+      byFullName[name.toLowerCase()] = m;
+      const first = name.split(/\s+/)[0].toLowerCase();
+      if (first) {
+        if (!byFirstName[first]) byFirstName[first] = [];
+        byFirstName[first].push(m);
+      }
+    }
+  });
+  return { byUsername, byFullName, byFirstName };
+}
+
+// identifier: whatever string was in the sheet's Username/Name column.
+// Returns { member, ambiguous } — member is null if no confident match found.
+function _findMemberByIdentifier(identifier, lookup) {
+  const id = String(identifier || '').trim().toLowerCase();
+  if (!id) return { member: null, ambiguous: false };
+  if (lookup.byUsername[id]) return { member: lookup.byUsername[id], ambiguous: false };
+  if (lookup.byFullName[id]) return { member: lookup.byFullName[id], ambiguous: false };
+  const firstNameId = id.split(/\s+/)[0];
+  const candidates = lookup.byFirstName[firstNameId];
+  if (candidates && candidates.length === 1) return { member: candidates[0], ambiguous: false };
+  if (candidates && candidates.length > 1) return { member: null, ambiguous: true };
+  return { member: null, ambiguous: false };
+}
+
 function _parseBulkAssignRows(rows, errEl) {
   if (rows.length < 2) { showError(errEl, 'File appears empty or has no data rows.'); return; }
   const headers = rows[0].map(h => String(h).toLowerCase().trim());
-  const uIdx = headers.indexOf('username');
+  const uIdx = headers.indexOf('username') >= 0 ? headers.indexOf('username') : headers.indexOf('name');
   const bIdx = headers.indexOf('brand');
   const pIdx = headers.indexOf('platform');
   const rIdx = headers.indexOf('region');
 
   if (uIdx < 0 || bIdx < 0 || pIdx < 0 || rIdx < 0) {
-    showError(errEl, 'File must have columns: Username, Brand, Platform, Region.');
+    showError(errEl, 'File must have columns: Username (or Name), Brand, Platform, Region.');
     return;
   }
 
-  // Build a username → member lookup
-  const byUsername = {};
-  Object.values(members).forEach(m => { if (m.username) byUsername[m.username.toLowerCase()] = m; });
+  const lookup = _buildMemberLookup();
 
   bulkAssignMatched = {};
   const unmatchedSet = new Set();
+  const ambiguousSet = new Set();
 
   rows.slice(1).forEach(r => {
     if (r.length <= Math.max(uIdx, bIdx, pIdx, rIdx)) return;
-    const username = String(r[uIdx] || '').trim().toLowerCase();
+    const identifier = String(r[uIdx] || '').trim();
     const brand    = String(r[bIdx] || '').trim();
     const platform = String(r[pIdx] || '').trim();
     const region   = String(r[rIdx] || '').trim();
-    if (!username || !brand) return;
+    if (!identifier || !brand) return;
 
-    const member = byUsername[username];
-    if (!member) { unmatchedSet.add(username); return; }
+    const { member, ambiguous } = _findMemberByIdentifier(identifier, lookup);
+    if (!member) {
+      if (ambiguous) ambiguousSet.add(identifier); else unmatchedSet.add(identifier);
+      return;
+    }
 
     const entry = { label: [brand, platform, region].filter(Boolean).join('_'), brand, platform, region };
     if (!bulkAssignMatched[member.uid]) bulkAssignMatched[member.uid] = [];
@@ -5557,9 +5595,11 @@ function _parseBulkAssignRows(rows, errEl) {
     }
   });
 
-  bulkAssignUnmatched = [...unmatchedSet];
+  bulkAssignUnmatched = [...unmatchedSet, ...[...ambiguousSet].map(n => `${n} (multiple members share this first name — use full name or username instead)`)];
   _renderBulkAssignPreview();
 }
+
+
 
 function _renderBulkAssignPreview() {
   const prev = document.getElementById('bulk-assign-preview');
@@ -5676,29 +5716,32 @@ function parseBrandAssignmentRows(rows) {
   const result = { matched: {}, unmatched: [], error: null };
   if (rows.length < 2) { result.error = 'File appears empty or has no data rows.'; return result; }
   const headers = rows[0].map(h => String(h).toLowerCase().trim());
-  const uIdx = headers.indexOf('username');
+  const uIdx = headers.indexOf('username') >= 0 ? headers.indexOf('username') : headers.indexOf('name');
   const bIdx = headers.indexOf('brand');
   const pIdx = headers.indexOf('platform');
   const rIdx = headers.indexOf('region');
   if (uIdx < 0 || bIdx < 0 || pIdx < 0 || rIdx < 0) {
-    result.error = 'File must have columns: Username, Brand, Platform, Region.';
+    result.error = 'File must have columns: Username (or Name), Brand, Platform, Region.';
     return result;
   }
 
-  const byUsername = {};
-  Object.values(members).forEach(m => { if (m.username) byUsername[m.username.toLowerCase()] = m; });
+  const lookup = _buildMemberLookup();
 
   const unmatchedSet = new Set();
+  const ambiguousSet = new Set();
   rows.slice(1).forEach(r => {
     if (r.length <= Math.max(uIdx, bIdx, pIdx, rIdx)) return;
-    const username = String(r[uIdx] || '').trim().toLowerCase();
+    const identifier = String(r[uIdx] || '').trim();
     const brand    = String(r[bIdx] || '').trim();
     const platform = String(r[pIdx] || '').trim();
     const region   = String(r[rIdx] || '').trim();
-    if (!username || !brand) return;
+    if (!identifier || !brand) return;
 
-    const member = byUsername[username];
-    if (!member) { unmatchedSet.add(username); return; }
+    const { member, ambiguous } = _findMemberByIdentifier(identifier, lookup);
+    if (!member) {
+      if (ambiguous) ambiguousSet.add(identifier); else unmatchedSet.add(identifier);
+      return;
+    }
 
     const entry = { label: [brand, platform, region].filter(Boolean).join('_'), brand, platform, region };
     if (!result.matched[member.uid]) result.matched[member.uid] = [];
@@ -5707,7 +5750,7 @@ function parseBrandAssignmentRows(rows) {
     }
   });
 
-  result.unmatched = [...unmatchedSet];
+  result.unmatched = [...unmatchedSet, ...[...ambiguousSet].map(n => `${n} (multiple members share this first name — use full name or username instead)`)];
   return result;
 }
 

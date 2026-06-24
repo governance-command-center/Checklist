@@ -684,7 +684,7 @@
       <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
         <label>📊 Bulk Assign Brands <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — upload Excel/CSV instead of doing it per-member)</span></label>
         <input type="file" id="new-camp-bulk-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="font-size:12px;padding:6px;" onchange="handleNewCampBulkFileChange(event)" />
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Columns: Username, Brand, Platform, Region. Matched CDMs are auto-checked above and pre-filled with their entries. <a href="#" onclick="downloadBulkAssignTemplate();return false;" style="color:var(--blue);">Download template</a></div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Columns: Username (or Name — first name works too), Brand, Platform, Region. Matched CDMs are auto-checked above and pre-filled with their entries. <a href="#" onclick="downloadBulkAssignTemplate();return false;" style="color:var(--blue);">Download template</a></div>
         <div id="new-camp-bulk-preview" style="margin-top:8px;"></div>
       </div>
       <div id="modal-error" class="error-msg" style="display:none;"></div>
@@ -987,7 +987,8 @@
         Upload an Excel/CSV file mapping each CDM to the brands, platforms, and regions they'll handle. Entries are auto-generated — no poll needed.
       </p>
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px;color:var(--text-muted);margin-bottom:14px;font-family:var(--mono);">
-        <strong>Columns:</strong> Username | Brand | Platform | Region<br><br>
+        <strong>Columns:</strong> Username (or Name) | Brand | Platform | Region<br>
+        <span style="color:var(--text-faint);">First name alone also works if it's unique among your members — full username is safest.</span><br><br>
         username,brand,platform,region<br>jane,Marc Jacobs,Lazada,SG<br>jane,Marc Jacobs,Shopee,SG<br>mark,Marc Jacobs,Lazada,MY
         <div style="margin-top:8px;"><a href="#" onclick="downloadBulkAssignTemplate();return false;" style="color:var(--blue);font-family:var(--font);">⬇ Download blank template (.csv)</a> &nbsp;·&nbsp; <a href="#" onclick="exportMembersToExcel();return false;" style="color:var(--blue);font-family:var(--font);">📤 Export CDM usernames (.xlsx)</a></div>
       </div>
