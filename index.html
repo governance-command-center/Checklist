@@ -234,6 +234,13 @@
             </button>
           </div>
         </div>
+        <div id="report-status-filter-row" style="margin-bottom:14px;margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:12px;color:var(--text-muted);font-weight:500;">Filter by status:</span>
+          <button class="status-filter-btn active" data-status="all" onclick="filterReportByStatus(this,'all')">All</button>
+          <button class="status-filter-btn completed" data-status="completed" onclick="filterReportByStatus(this,'completed')">✓ Completed</button>
+          <button class="status-filter-btn in-progress" data-status="in-progress" onclick="filterReportByStatus(this,'in-progress')">⟳ In Progress</button>
+          <button class="status-filter-btn pending" data-status="pending" onclick="filterReportByStatus(this,'pending')">— Pending</button>
+        </div>
         <div id="report-tab-content"></div>
       </div>
 
@@ -1129,7 +1136,47 @@
             <option value="">All campaigns</option>
           </select>
         </div>
-        <div id="tl-member-list"></div>
+
+        <div id="tl-stats"></div>
+
+        <!-- Status filter for team progress -->
+        <div id="tl-status-filter-row" style="margin-bottom:8px;margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:12px;color:var(--text-muted);font-weight:500;">Filter by status:</span>
+          <button class="status-filter-btn active" data-status="all" onclick="filterTlByStatus(this,'all')">All</button>
+          <button class="status-filter-btn pending" data-status="pending" onclick="filterTlByStatus(this,'pending')">— Pending</button>
+          <button class="status-filter-btn in-progress" data-status="in-progress" onclick="filterTlByStatus(this,'in-progress')">⟳ In Progress</button>
+          <button class="status-filter-btn completed" data-status="completed" onclick="filterTlByStatus(this,'completed')">✓ Completed</button>
+        </div>
+
+        <!-- Team Progress Table -->
+        <div class="section-label" style="margin-bottom:10px;margin-top:4px;">
+          Team progress
+          <span style="float:right;display:flex;gap:8px;align-items:center;">
+            <input type="text" id="tl-table-search" placeholder="Search member…" oninput="filterTlProgressTable()" style="font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;width:160px;background:var(--surface);color:var(--text);" />
+            <select id="tl-table-sort" onchange="renderTeamLeadView()" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);">
+              <option value="name">Sort: Name</option>
+              <option value="overall_desc">Sort: % (High→Low)</option>
+              <option value="overall_asc">Sort: % (Low→High)</option>
+              <option value="lastactive">Sort: Last active</option>
+            </select>
+          </span>
+        </div>
+        <div id="tl-table-wrap">
+          <table class="progress-table" id="tl-progress-table">
+            <thead>
+              <tr>
+                <th>Member</th>
+                <th>Campaign</th>
+                <th>D-5 Check</th>
+                <th>D-1 Check</th>
+                <th>Overall</th>
+                <th>Last active</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tl-tbody"></tbody>
+          </table>
+        </div>
       </div>
 
       <!-- Calendar view -->

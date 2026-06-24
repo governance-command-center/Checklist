@@ -4696,6 +4696,7 @@ async function renderReportTab() {
       (camp.assignedUids || []).forEach(uid => {
         const member = members[uid];
         if (!member) return;
+        if (member.role !== 'member') return; // Reports only shows members tagged/assigned with a checklist — team leads & admins have their own views
         const cl      = (allChecklists[uid] || {})[camp.id] || {};
         const campInfo = reportTotalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null, hasD5: true };
         const hasD5    = campInfo.hasD5 !== false;
@@ -4753,6 +4754,9 @@ async function renderReportTab() {
       });
 
       const total       = rows.length;
+      // Arrange rows by status sequence: Completed → In Progress → Pending/Not Started
+      const statusOrder = { 'Complete': 0, 'In Progress': 1, 'Not Started': 2 };
+      rows.sort((a, b) => (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3));
       const complete    = rows.filter(r => r.isComplete).length;
       const inProg      = rows.filter(r => r.overallPct > 0 && !r.isComplete).length;
       const notStarted  = rows.filter(r => r.overallPct === 0).length;
@@ -4862,7 +4866,7 @@ async function renderReportTab() {
                     const regHtml  = regLines.length === 0 ? '—'
                       : regLines.length <= 2 ? regLines.join('<br>')
                       : `<div><span>${escHtml(regLines[0])}</span><span id="${regId}-more" style="display:none;">${regLines.slice(1).map(l=>'<br>'+escHtml(l)).join('')}</span><br><button onclick="toggleRegList('${regId}')" id="${regId}-btn" style="font-size:10px;color:var(--blue);background:none;border:none;cursor:pointer;padding:0;margin-top:2px;">+${regLines.length-1} more</button></div>`;
-                    return `<tr style="${isAtRisk ? 'background:rgba(220,38,38,0.03);' : ''}">
+                    return `<tr data-report-status="${r.isComplete ? 'completed' : r.overallPct > 0 ? 'in-progress' : 'pending'}" style="${isAtRisk ? 'background:rgba(220,38,38,0.03);' : ''}">
                       <td>
                         <strong>${escHtml(r.member.name || r.member.username)}</strong><br>
                         <span style="font-size:11px;color:var(--text-muted)">@${escHtml(r.member.username)}</span>
@@ -4886,6 +4890,7 @@ async function renderReportTab() {
     });
 
     host.innerHTML = html;
+    applyReportStatusFilter();
 
     // Auto-track completedAt: for any row that is 100% but missing completedAt, write it now
     campList.forEach(camp => {
@@ -4911,6 +4916,24 @@ async function renderReportTab() {
   }
 }
 
+// ── Status filter for Reports tab ──────────
+let _reportStatusFilter = 'all';
+
+function filterReportByStatus(btn, status) {
+  _reportStatusFilter = status;
+  document.querySelectorAll('#report-status-filter-row .status-filter-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  applyReportStatusFilter();
+}
+
+function applyReportStatusFilter() {
+  const rows = document.querySelectorAll('#report-tab-content tr[data-report-status]');
+  rows.forEach(tr => {
+    const show = _reportStatusFilter === 'all' || tr.dataset.reportStatus === _reportStatusFilter;
+    tr.style.display = show ? '' : 'none';
+  });
+}
+
 // ── Excel/CSV export ──────────────────────────────────────────
 async function exportReportToExcel() {
   const { campList, allChecklists, totalItemsMap } = window._reportData || {};
@@ -4931,6 +4954,7 @@ async function exportReportToExcel() {
     (camp.assignedUids || []).forEach(uid => {
       const member = members[uid];
       if (!member) return;
+      if (member.role !== 'member') return;
       const cl         = (allChecklists[uid] || {})[camp.id] || {};
       const campInfo   = (totalItemsMap && totalItemsMap[camp.id]) || { total: TOTAL_ITEMS, validIds: null, hasD5: true };
       const hasD5      = campInfo.hasD5 !== false;
@@ -5647,8 +5671,8 @@ async function loadTeamLeadData() {
 
   showTlTab('dashboard');
   if (managedUids.length === 0) {
-    const el = document.getElementById('tl-member-list');
-    if (el) el.innerHTML = '<div style="padding:3rem;text-align:center;color:var(--text-muted);">No members assigned to you yet. Contact the admin.</div>';
+    const tbody = document.getElementById('tl-tbody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:3rem;">No members assigned to you yet. Contact the admin.</td></tr>';
   }
 }
 
@@ -5725,15 +5749,17 @@ async function enterTlChecklistTab() {
 }
 
 async function renderTeamLeadView() {
-  const el = document.getElementById('tl-member-list');
-  if (!el) return;
+  const tbody = document.getElementById('tl-tbody');
+  const statsEl = document.getElementById('tl-stats');
+  if (!tbody) return;
   const filterCampId = (document.getElementById('tl-campaign-filter') || {}).value || '';
   const managedUids  = currentUser.managedUids || [];
 
-  el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:12px 0;">Loading…</div>';
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2rem;">Loading…</td></tr>';
 
   if (managedUids.length === 0) {
-    el.innerHTML = '<div style="padding:3rem;text-align:center;color:var(--text-muted);">No members assigned to you yet. Contact the admin.</div>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:3rem;">No members assigned to you yet. Contact the admin.</td></tr>';
+    if (statsEl) statsEl.innerHTML = '';
     return;
   }
 
@@ -5742,7 +5768,8 @@ async function renderTeamLeadView() {
     : Object.values(tlCampaigns);
 
   if (campsToShow.length === 0) {
-    el.innerHTML = '<div style="padding:3rem;text-align:center;color:var(--text-muted);">No campaigns found for your team.</div>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:3rem;">No campaigns found for your team.</td></tr>';
+    if (statsEl) statsEl.innerHTML = '';
     return;
   }
 
@@ -5762,38 +5789,52 @@ async function renderTeamLeadView() {
   // campaign's real total item count (see resolveCampaignTotalItems).
   const tlTotalItemsMap = await resolveCampaignTotalItems(campsToShow);
 
-  // ── Summary stat cards (includes the lead's own checklist) ──
-  let totalMembers = 0, totalComplete = 0, totalInProg = 0;
-  let totalChecklists = 0;     // total individual checklist entries across the team
-  let d1DoneSum = 0, d1TotalSum = 0; // for the D-1-based Checklist Completion Rate
+  // ── Build one row PER ENTRY (mirrors the admin dashboard table) ──
+  let allRows = [];
   campsToShow.forEach(camp => {
-    (camp.assignedUids || []).filter(u => teamUids.includes(u)).forEach(uid => {
-      totalMembers++;
+    (camp.assignedUids || []).filter(uid => teamUids.includes(uid)).forEach(uid => {
+      const member = tlMembers[uid] || (uid === currentUser.uid ? currentUser : null);
+      if (!member) return;
       const cl = (checklistData[uid] || {})[camp.id] || {};
-      const info = tlTotalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null };
-      const breakdown = getEntryBreakdown(cl, info.total, info.validIds, info.hasD5);
-      const d5Sum = breakdown.reduce((s, e) => s + e.d5Done, 0);
-      const d1Sum = breakdown.reduce((s, e) => s + e.d1Done, 0);
-      totalChecklists += breakdown.length;
-      breakdown.forEach(eb => {
-        // getEntryBreakdown's d1Done already counts "na" items as done.
-        d1DoneSum  += eb.d1Done;
-        d1TotalSum += eb.totalItems;
+      const info = tlTotalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null, hasD5: true };
+      getEntryBreakdown(cl, info.total, info.validIds, info.hasD5).forEach(eb => {
+        allRows.push({
+          member, camp,
+          entryLabel: eb.label,
+          d5Done: eb.d5Done, d1Done: eb.d1Done, overallDone: eb.d1Pct,
+          d5Pct: eb.d5Pct, d1Pct: eb.d1Pct, totalItems: eb.totalItems, hasD5: eb.hasD5,
+          lastActive: cl.lastActive || null,
+        });
       });
-      // Completion status (Complete / In Progress / Pending) is based on
-      // D-1 inputs alone — "Done" and "N/A" are treated the same way.
-      const avg = Math.round((d1Sum / (info.total * breakdown.length)) * 100);
-      if (avg === 100) totalComplete++;
-      else if (avg > 0) totalInProg++;
     });
   });
-  const totalPending = totalMembers - totalComplete - totalInProg;
-  const completeRate  = totalMembers > 0 ? Math.round((totalComplete / totalMembers) * 100) : 0;
-  const inProgRate    = totalMembers > 0 ? Math.round((totalInProg / totalMembers) * 100) : 0;
-  const pendingRate   = totalMembers > 0 ? Math.round((totalPending / totalMembers) * 100) : 0;
-  // Checklist Completion Rate — based on the D-1 status of EVERY checklist
-  // within the team (each entry's D-1 items, including the lead's own),
-  // with "N/A" counted as done.
+  window._tlAllRows = allRows;
+
+  // ── Sort ──
+  const sortSel = document.getElementById('tl-table-sort');
+  const sortVal = sortSel ? sortSel.value : 'name';
+  allRows.sort((a, b) => {
+    if (sortVal === 'name') return (a.member.name || a.member.username).localeCompare(b.member.name || b.member.username);
+    if (sortVal === 'overall_desc') return b.overallDone - a.overallDone;
+    if (sortVal === 'overall_asc')  return a.overallDone - b.overallDone;
+    if (sortVal === 'lastactive') {
+      const aT = a.lastActive ? new Date(a.lastActive).getTime() : 0;
+      const bT = b.lastActive ? new Date(b.lastActive).getTime() : 0;
+      return bT - aT;
+    }
+    return 0;
+  });
+
+  // ── Summary stat cards (includes the lead's own checklist) ──
+  const totalMembers   = allRows.length;
+  const totalComplete  = allRows.filter(r => r.overallDone === 100).length;
+  const totalInProg    = allRows.filter(r => r.overallDone > 0 && r.overallDone < 100).length;
+  const totalPending   = allRows.filter(r => r.overallDone === 0).length;
+  const completeRate   = totalMembers > 0 ? Math.round((totalComplete / totalMembers) * 100) : 0;
+  const inProgRate     = totalMembers > 0 ? Math.round((totalInProg / totalMembers) * 100) : 0;
+  const pendingRate    = totalMembers > 0 ? Math.round((totalPending / totalMembers) * 100) : 0;
+  let d1DoneSum = 0, d1TotalSum = 0;
+  allRows.forEach(r => { d1DoneSum += r.d1Done; d1TotalSum += r.totalItems; });
   const checklistCompletionRate = d1TotalSum > 0 ? Math.round((d1DoneSum / d1TotalSum) * 100) : 0;
   const checklistRateColor = checklistCompletionRate === 100 ? '#16a34a' : checklistCompletionRate >= 50 ? '#d97706' : '#2563eb';
 
@@ -5822,15 +5863,11 @@ async function renderTeamLeadView() {
   const tlRspColor = tlRspRate === null ? '#6b7280' : tlRspRate === 100 ? '#16a34a' : tlRspRate >= 50 ? '#d97706' : '#2563eb';
   const tlRspDisplay = tlRspRate === null ? '—' : tlRspRate + '%';
 
-  let html = `
+  if (statsEl) statsEl.innerHTML = `
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:24px;">
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;text-align:center;">
       <div style="font-size:22px;font-weight:700;color:var(--navy);">${totalMembers}</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Total Members <span style="opacity:.7;">(incl. you)</span></div>
-    </div>
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;text-align:center;">
-      <div style="font-size:22px;font-weight:700;color:var(--navy);">${totalChecklists}</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Total no. of Checklist</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Total Checklists <span style="opacity:.7;">(incl. you)</span></div>
     </div>
     <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px 18px;text-align:center;">
       <div style="font-size:22px;font-weight:700;color:#16a34a;">${totalComplete}</div>
@@ -5854,101 +5891,64 @@ async function renderTeamLeadView() {
     </div>
   </div>`;
 
-  // ── Per-campaign sections ──
-  campsToShow.forEach(camp => {
-    const campMembers = (camp.assignedUids || []).filter(uid => managedUids.includes(uid));
-    if (campMembers.length === 0) return;
+  // ── Table rows ──
+  if (allRows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2rem;">No checklist data yet for your team.</td></tr>';
+    return;
+  }
 
-    html += `
-    <div style="margin-bottom:28px;">
-      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);">
-        📁 ${escHtml(camp.name)}
-      </div>
-      <div style="display:flex;flex-direction:column;gap:10px;">`;
+  tbody.innerHTML = allRows.map(r => {
+    const badge  = r.overallDone === 100 ? 'badge-done">Complete'
+                 : r.overallDone === 0   ? 'badge-pending">Not started'
+                 :                         'badge-partial">In progress';
+    const lastStr = r.lastActive
+      ? new Date(r.lastActive).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+      : '—';
+    const isSelf = r.member.uid === currentUser.uid;
+    return `<tr>
+      <td><strong>${escHtml(r.member.name || r.member.username)}</strong>${isSelf ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">You</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${escHtml(r.member.username)}</span></td>
+      <td>${escHtml(r.camp.name)}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}</td>
+      <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
+      <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
+      <td><span class="badge ${badge}</span></td>
+      <td style="font-size:12px;color:var(--text-muted)">${lastStr}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn-link" onclick="openTlReviewModal('${r.member.uid}','${r.camp.id}')">Review</button>
+      </td>
+    </tr>`;
+  }).join('');
 
-    campMembers.forEach(uid => {
-      const member = tlMembers[uid];
-      if (!member) return;
-      const cl = (checklistData[uid] || {})[camp.id] || {};
-      const info = tlTotalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null };
-      const ti = info.total;
-      const breakdown = getEntryBreakdown(cl, ti, info.validIds, info.hasD5);
-      const d5Sum = breakdown.reduce((s, e) => s + e.d5Done, 0);
-      const d1Sum = breakdown.reduce((s, e) => s + e.d1Done, 0);
-      // Member-level rate — D-5 and D-1 aggregated across this member's
-      // entries, but computed SEPARATELY (never blended into one number).
-      const d5MemberPct = Math.round((d5Sum / (ti * breakdown.length)) * 100);
-      const d1MemberPct = Math.round((d1Sum / (ti * breakdown.length)) * 100);
-      // Completion status is based on D-1 inputs alone — Done and N/A
-      // are treated the same.
-      const overallPct  = d1MemberPct;
-      const last = cl.lastActive
-        ? new Date(cl.lastActive).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'2-digit' })
-        : 'No activity';
+  filterTlProgressTable();
+}
 
-      // Overall status badge
-      const badgeCls = overallPct === 100 ? '#16a34a' : overallPct > 0 ? '#d97706' : '#6b7280';
-      const badgeBg  = overallPct === 100 ? '#f0fdf4' : overallPct > 0 ? '#fffbeb' : '#f3f4f6';
-      const badgeLbl = overallPct === 100 ? '✓ Complete' : overallPct > 0 ? '⟳ In Progress' : '— Not started';
+// ── Status filter for team-lead "My Team" progress table ──────
+let _tlStatusFilter = 'all';
 
-      // Member-level summary line (only needed when there's more than one
-      // entry — with a single entry it would just repeat the grid below).
-      const memberHasD5 = breakdown[0] ? breakdown[0].hasD5 : true;
-      const memberSummaryHtml = breakdown.length > 1 ? `
-        <div style="display:flex;gap:16px;font-size:11px;color:var(--text-muted);margin-bottom:10px;padding-bottom:8px;border-bottom:1px dashed var(--border);">
-          ${memberHasD5 ? `<span>Member total — D-5: ${d5Sum}/${ti * breakdown.length} (${d5MemberPct}%)</span>` : ''}
-          <span>D-1: ${d1Sum}/${ti * breakdown.length} (${d1MemberPct}%)</span>
-        </div>` : '';
+function filterTlByStatus(btn, status) {
+  _tlStatusFilter = status;
+  document.querySelectorAll('#tl-status-filter-row .status-filter-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  filterTlProgressTable();
+}
 
-      // One D-5/D-1 grid per entry — each entry's completion is computed
-      // individually against this campaign's actual template size (see
-      // getEntryBreakdown — campaigns can use a non-default template).
-      const entryGridsHtml = breakdown.map(eb => `
-        ${eb.label ? `<div style="font-size:11px;font-weight:600;color:var(--navy);margin:${eb.idx > 0 ? '14px' : '0'} 0 6px;">${escHtml(eb.label)}</div>` : ''}
-        <div style="display:grid;grid-template-columns:${eb.hasD5 ? '1fr 1fr' : '1fr'};gap:14px;">
-          ${eb.hasD5 ? `<div>
-            <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:600;margin-bottom:5px;">
-              <span style="color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">D-5 Checklist</span>
-              <span style="color:var(--navy);">${eb.d5Done}/${eb.totalItems} &nbsp;${eb.d5Pct}%</span>
-            </div>
-            <div style="height:7px;background:var(--border);border-radius:4px;overflow:hidden;">
-              <div style="height:100%;width:${eb.d5Pct}%;background:${eb.d5Pct===100?'#16a34a':eb.d5Pct>0?'#f59e0b':'#e5e7eb'};border-radius:4px;transition:width .3s;"></div>
-            </div>
-          </div>` : ''}
-          <div>
-            <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:600;margin-bottom:5px;">
-              <span style="color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;">D-1 Checklist</span>
-              <span style="color:var(--navy);">${eb.d1Done}/${eb.totalItems} &nbsp;${eb.d1Pct}%</span>
-            </div>
-            <div style="height:7px;background:var(--border);border-radius:4px;overflow:hidden;">
-              <div style="height:100%;width:${eb.d1Pct}%;background:${eb.d1Pct===100?'#16a34a':eb.d1Pct>0?'#f59e0b':'#e5e7eb'};border-radius:4px;transition:width .3s;"></div>
-            </div>
-          </div>
-        </div>`).join('');
-
-      html += `
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;">
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-          <div>
-            <div style="font-weight:600;font-size:14px;color:var(--navy);">${escHtml(member.name || member.username)}</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">@${escHtml(member.username)} · Last active: ${last}</div>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;background:${badgeBg};color:${badgeCls};border:1px solid ${badgeCls}33;">${badgeLbl}</span>
-            <button class="btn-outline" style="font-size:12px;padding:4px 12px;white-space:nowrap;"
-              onclick="openTlReviewModal('${uid}','${camp.id}')">View Detail</button>
-          </div>
-        </div>
-
-        ${memberSummaryHtml}
-        ${entryGridsHtml}
-      </div>`;
-    });
-
-    html += `</div></div>`;
+function filterTlProgressTable() {
+  const q = (document.getElementById('tl-table-search')?.value || '').toLowerCase();
+  const rows = document.querySelectorAll('#tl-tbody tr');
+  rows.forEach(tr => {
+    const matchesSearch = !q || tr.textContent.toLowerCase().includes(q);
+    let matchesStatus = true;
+    if (_tlStatusFilter && _tlStatusFilter !== 'all') {
+      const badgeEl = tr.querySelector('.badge');
+      const txt = badgeEl ? badgeEl.textContent.trim().toLowerCase() : '';
+      const isPending    = txt.includes('not started');
+      const isInProgress = txt.includes('in progress');
+      const isCompleted  = txt.includes('complete');
+      if (_tlStatusFilter === 'pending'     && !isPending)    matchesStatus = false;
+      if (_tlStatusFilter === 'in-progress' && !isInProgress) matchesStatus = false;
+      if (_tlStatusFilter === 'completed'   && !isCompleted)  matchesStatus = false;
+    }
+    tr.classList.toggle('table-hidden', !(matchesSearch && matchesStatus));
   });
-
-  el.innerHTML = html || '<div style="padding:3rem;text-align:center;color:var(--text-muted);">No checklist data yet for your team.</div>';
 }
 
 // Jump from the "My Team" dashboard straight into a specific campaign on the Checklist tab
