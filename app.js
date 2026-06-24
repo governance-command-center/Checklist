@@ -357,7 +357,8 @@ function renderDdayBanner() {
   if (ddays.length === 0) { el.style.display = 'none'; return; }
 
   const next = ddays[0];
-  const diff = Math.ceil((next.dateObj - now) / 86400000);
+  const nextDayOnly = new Date(next.dateObj); nextDayOnly.setHours(0,0,0,0);
+  const diff = Math.round((nextDayOnly - now) / 86400000);
   let cls = 'dday-green', msg = '';
   if (diff === 0)      { cls = 'dday-red';   msg = '🔴 D-DAY IS TODAY'; }
   else if (diff === 1) { cls = 'dday-red';   msg = '🔴 D-DAY TOMORROW'; }
@@ -570,7 +571,8 @@ function renderActiveCampaignsPanel() {
     let ddayTag = '';
     if (camp.dday) {
       const dd   = new Date(camp.dday);
-      const diff = Math.ceil((dd - now) / 86400000);
+      const ddDayOnly = new Date(dd); ddDayOnly.setHours(0,0,0,0);
+      const diff = Math.round((ddDayOnly - now) / 86400000);
       let cls = 'dp-green', txt = dd.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
       if (diff === 0)      { cls = 'dp-red';   txt = 'D-Day Today'; }
       else if (diff === 1) { cls = 'dp-red';   txt = 'D-Day Tomorrow'; }
@@ -4896,7 +4898,9 @@ async function renderReportTab() {
       const deadlineStr  = camp.deadline ? fmtDate(camp.deadline)  : null;
       const ddayStr      = camp.dday     ? fmtDate(camp.dday)      : null;
       const deadlinePast = deadline && deadline < today;
-      const daysToDeadline = deadline ? daysDiff(deadline, today) : null;
+      const deadlineDayOnly = deadline ? new Date(deadline) : null;
+      if (deadlineDayOnly) deadlineDayOnly.setHours(0,0,0,0);
+      const daysToDeadline = deadlineDayOnly ? daysDiff(deadlineDayOnly, today) : null;
 
       const rows = [];
       (camp.assignedUids || []).forEach(uid => {
@@ -4984,7 +4988,8 @@ async function renderReportTab() {
         deadlinePillHtml = `<span class="rs-stat ${cls}" style="font-size:12px;">${label}</span>`;
       }
       if (ddayStr) {
-        const ddayDiff = daysDiff(dday, today);
+        const ddayDayOnly = new Date(dday); ddayDayOnly.setHours(0,0,0,0);
+        const ddayDiff = daysDiff(ddayDayOnly, today);
         const ddayCls  = ddayDiff <= 0 ? 'rs-stat-red' : ddayDiff <= 5 ? 'rs-stat-amber' : 'rs-stat-navy';
         const ddayLabel = ddayDiff === 0 ? '🔴 D-Day TODAY' : ddayDiff < 0 ? `🔴 D-Day was ${Math.abs(ddayDiff)}d ago` : `📌 D-Day in ${ddayDiff}d (${ddayStr})`;
         deadlinePillHtml += ` <span class="rs-stat ${ddayCls}" style="font-size:12px;">${ddayLabel}</span>`;
