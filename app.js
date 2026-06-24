@@ -6059,16 +6059,31 @@ function toggleRegList(id) {
 }
 
 // ─── Toast notification ──────────────────────────────────────
+let _activeToasts = [];
 function showToast(msg, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `mc-toast mc-toast-${type}`;
   toast.textContent = msg;
   document.body.appendChild(toast);
+  _activeToasts.push(toast);
+  _repositionToasts();
   setTimeout(() => toast.classList.add('mc-toast-in'), 10);
   setTimeout(() => {
     toast.classList.remove('mc-toast-in');
-    setTimeout(() => toast.remove(), 400);
+    setTimeout(() => {
+      toast.remove();
+      _activeToasts = _activeToasts.filter(t => t !== toast);
+      _repositionToasts();
+    }, 400);
   }, 3000);
+}
+function _repositionToasts() {
+  // Stack toasts upward from the bottom so simultaneous messages don't overlap
+  let offset = 24;
+  for (let i = _activeToasts.length - 1; i >= 0; i--) {
+    _activeToasts[i].style.bottom = offset + 'px';
+    offset += 54;
+  }
 }
 
 
