@@ -5816,6 +5816,7 @@ function handleMasterlistFileChange(e) {
     e.target.value = '';
     return;
   }
+  showToast(`📄 Reading "${file.name}"…`, 'info');
   readSheetRows(file, async (rows, err) => {
     if (err) { showToast(err, 'error'); return; }
     if (rows.length < 2) { showToast('File appears empty or has no data rows.', 'error'); return; }
