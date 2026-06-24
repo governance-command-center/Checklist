@@ -263,6 +263,19 @@
             </div>
             <div id="data-campaigns-list" class="data-inner-list"></div>
           </div>
+
+          <!-- Archived Campaigns — hidden behind a toggle so it stays out of the way -->
+          <div class="data-card">
+            <div class="data-card-header">
+              <span class="data-card-icon">📦</span>
+              <div>
+                <div class="data-card-title">Archived Campaigns</div>
+                <div class="data-card-sub"><span id="data-archived-count">0</span> archived · summary CSV downloaded on archive</div>
+              </div>
+              <button class="btn-ghost-light btn-sm" id="data-archived-toggle-btn" style="width:auto;font-size:12px;padding:6px 14px;" onclick="toggleArchivedCampaignsView()">View</button>
+            </div>
+            <div id="data-archived-campaigns-list" class="data-inner-list" style="display:none;"></div>
+          </div>
           <!-- RSP & Kit Checking — above Checklist Progress -->
           <div class="data-card data-card-full" style="border-color:rgba(15,118,110,0.35);">
             <div class="data-card-header" style="background:rgba(15,118,110,0.06);border-bottom-color:rgba(15,118,110,0.2);">

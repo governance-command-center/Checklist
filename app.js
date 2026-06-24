@@ -2,7 +2,9 @@
 //  STATE
 // ─────────────────────────────────────────────────────────────
 let currentUser       = null;   // { uid, username, name, role }
-let campaigns         = {};     // { id: { name, assignedUids, createdAt } }
+let campaigns         = {};     // { id: { name, assignedUids, createdAt } }  — ACTIVE campaigns only
+let archivedCampaigns = {};     // { id: { ... } } — archived campaigns, loaded separately so they don't
+                                 // bloat the day-to-day admin queries/renders (dashboard, filters, etc.)
 let members           = {};     // { uid: { username, name, role } }
 let userChecklist     = {};     // { campaignId: { entries, d5, d1, lastActive } }
 let selectedCampaignId = null;
@@ -112,7 +114,12 @@ async function loadAdminData() {
 
   const campsSnap = await db.collection('campaigns').orderBy('createdAt', 'desc').get();
   campaigns = {};
-  campsSnap.forEach(doc => { campaigns[doc.id] = { ...doc.data(), id: doc.id }; });
+  archivedCampaigns = {};
+  campsSnap.forEach(doc => {
+    const camp = { ...doc.data(), id: doc.id };
+    if (camp.archived) archivedCampaigns[doc.id] = camp;
+    else campaigns[doc.id] = camp;
+  });
 
   populateAdminCampaignFilter();
   renderAdminView();
@@ -134,7 +141,11 @@ async function loadMemberData(uid) {
     .orderBy('createdAt', 'desc')
     .get();
   campaigns = {};
-  campsSnap.forEach(doc => { campaigns[doc.id] = { ...doc.data(), id: doc.id }; });
+  campsSnap.forEach(doc => {
+    const camp = doc.data();
+    if (camp.archived) return; // archived campaigns stay out of member-facing views
+    campaigns[doc.id] = { ...camp, id: doc.id };
+  });
 
   const checkSnap = await db.collection('checklists').doc(uid).get();
   userChecklist = checkSnap.exists ? checkSnap.data() : {};
@@ -1380,6 +1391,176 @@ async function deleteCampaign(campId, campName) {
     console.error(e);
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+//  CAMPAIGN ARCHIVE
+//  Archiving never deletes Firestore data — it just sets
+//  campaigns/{id}.archived = true so active queries/renders (dashboard,
+//  filters, member & team-lead views) skip it, keeping those light over
+//  time. A CSV completion summary is downloaded first as an offline
+//  reference, since the raw data is no longer surfaced in the active UI.
+// ─────────────────────────────────────────────────────────────
+
+// Builds and downloads a one-campaign CSV summary (same columns as the
+// full Reports export, scoped to a single campaign). Returns true on
+// success so callers can decide whether to proceed with archiving.
+async function exportCampaignSummaryCSV(camp) {
+  try {
+    const checkSnap     = await db.collection('checklists').get();
+    const allChecklists = {};
+    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const totalItemsMap = await resolveCampaignTotalItems([camp]);
+    const campInfo       = totalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null, hasD5: true };
+    const hasD5           = campInfo.hasD5 !== false;
+
+    const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB') : '';
+
+    const rows = [['Campaign', 'Member', 'Username',
+      'D-5 Done', 'D-5 Total', 'D-5 %',
+      'D-1 Done', 'D-1 Total', 'D-1 %',
+      'Overall %', 'Status', 'Last Active', 'Completed', 'Brand/Platform/Region']];
+
+    (camp.assignedUids || []).forEach(uid => {
+      const member = members[uid];
+      if (!member) return;
+      const cl         = (allChecklists[uid] || {})[camp.id] || {};
+      const d5Done     = hasD5 ? countDone(cl.d5 || {}, campInfo.validIds) : 0;
+      const d1Done     = countDone(cl.d1 || {}, campInfo.validIds);
+      const entryCount = (cl.entries || []).length || 1;
+      const ti         = campInfo.total * entryCount;
+      const overallPct = ti ? Math.round((d1Done / ti) * 100) : 0;
+      const d5Pct      = hasD5 && ti ? Math.round((d5Done / ti) * 100) : 0;
+      const d1Pct      = ti ? Math.round((d1Done / ti) * 100) : 0;
+      const status     = overallPct === 100 ? 'Complete' : overallPct > 0 ? 'In Progress' : 'Not Started';
+      const entries    = (cl.entries || []).map(e => e.label || [e.brand, e.platform, e.region].filter(Boolean).join(' · ')).filter(Boolean).join(' | ');
+
+      rows.push([
+        camp.name, member.name || member.username, member.username,
+        hasD5 ? d5Done : 'N/A', hasD5 ? ti : 'N/A', hasD5 ? d5Pct + '%' : 'N/A',
+        d1Done, ti, d1Pct + '%',
+        overallPct + '%', status, fmtDate(cl.lastActive), fmtDate(cl.completedAt), entries,
+      ]);
+    });
+
+    if (rows.length === 1) rows.push(['(no assigned members / no progress recorded)']);
+
+    const csv  = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `${camp.name.replace(/[^a-z0-9]+/gi, '_')}_Summary_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
+  } catch (e) {
+    console.error('exportCampaignSummaryCSV failed:', e);
+    showToast('Failed to generate the summary file.', 'warn');
+    return false;
+  }
+}
+
+async function archiveCampaign(campId, campName) {
+  const camp = campaigns[campId];
+  if (!camp) return;
+  if (!confirm(`Archive campaign "${campName}"?\n\nA completion summary (.csv) will download as a reference. The campaign will move to Archived Campaigns and stop appearing in the active dashboard, filters, and member/team-lead views. All data is kept — you can restore it anytime.`)) return;
+
+  const ok = await exportCampaignSummaryCSV(camp);
+  if (!ok && !confirm('The summary download failed. Archive the campaign anyway?')) return;
+
+  try {
+    await db.collection('campaigns').doc(campId).update({ archived: true, archivedAt: new Date().toISOString() });
+    delete campaigns[campId];
+    archivedCampaigns[campId] = { ...camp, archived: true, archivedAt: new Date().toISOString() };
+    await loadAdminData();
+    showToast(`📦 Campaign "${campName}" archived.`, 'success');
+  } catch (e) {
+    showToast('Failed to archive campaign. Try again.', 'warn');
+    console.error(e);
+  }
+}
+
+async function restoreCampaign(campId, campName) {
+  if (!confirm(`Restore campaign "${campName}" to active campaigns?`)) return;
+  try {
+    await db.collection('campaigns').doc(campId).update({ archived: false });
+    delete archivedCampaigns[campId];
+    await loadAdminData();
+    showToast(`✅ Campaign "${campName}" restored.`, 'success');
+  } catch (e) {
+    showToast('Failed to restore campaign. Try again.', 'warn');
+    console.error(e);
+  }
+}
+
+async function permanentlyDeleteArchivedCampaign(campId, campName) {
+  if (!confirm(`Permanently delete archived campaign "${campName}"?\n\nThis removes the campaign and all assigned members' checklist progress for it for good. This cannot be undone — make sure you've kept the downloaded summary if you need it.`)) return;
+  try {
+    await db.collection('campaigns').doc(campId).delete();
+    const clSnap = await db.collection('checklists').get();
+    const batch  = db.batch();
+    clSnap.forEach(doc => {
+      const data = doc.data();
+      if (data[campId] !== undefined) {
+        const updated = { ...data };
+        delete updated[campId];
+        batch.set(doc.ref, updated);
+      }
+    });
+    await batch.commit();
+
+    delete archivedCampaigns[campId];
+    renderArchivedCampaignsList();
+    showToast(`🗑 Archived campaign "${campName}" permanently deleted.`, 'success');
+  } catch (e) {
+    showToast('Failed to delete archived campaign. Try again.', 'warn');
+    console.error(e);
+  }
+}
+
+let _archivedCampaignsVisible = false;
+function toggleArchivedCampaignsView() {
+  _archivedCampaignsVisible = !_archivedCampaignsVisible;
+  const list = document.getElementById('data-archived-campaigns-list');
+  const btn  = document.getElementById('data-archived-toggle-btn');
+  if (list) list.style.display = _archivedCampaignsVisible ? 'block' : 'none';
+  if (btn)  btn.textContent = _archivedCampaignsVisible ? 'Hide' : 'View';
+  if (_archivedCampaignsVisible) renderArchivedCampaignsList();
+}
+
+function renderArchivedCampaignsList() {
+  const countEl = document.getElementById('data-archived-count');
+  const count = Object.keys(archivedCampaigns).length;
+  if (countEl) countEl.textContent = count;
+
+  const list = document.getElementById('data-archived-campaigns-list');
+  if (!list) return;
+  const campList = Object.values(archivedCampaigns);
+  if (campList.length === 0) {
+    list.innerHTML = '<div class="data-empty">No archived campaigns.</div>';
+    return;
+  }
+  list.innerHTML = campList.map(c => {
+    const assignedNames = (c.assignedUids || []).map(uid => {
+      const m = members[uid];
+      return m ? (m.name || m.username) : uid;
+    }).join(', ') || '—';
+    const archivedDt = c.archivedAt ? new Date(c.archivedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }) : '—';
+    return `
+      <div class="data-list-row">
+        <div>
+          <div class="data-row-title">${escHtml(c.name)}</div>
+          <div class="data-row-sub">Archived ${archivedDt} · Members: ${escHtml(assignedNames)}</div>
+        </div>
+        <button class="btn-ghost-light btn-sm" onclick="exportCampaignSummaryCSV(archivedCampaigns['${c.id}'])" title="Download summary again">⬇ Summary</button>
+        <button class="btn-ghost-light btn-sm" style="color:#059669;border-color:#bbf7d0;" onclick="restoreCampaign('${c.id}','${escHtml(c.name).replace(/'/g,"\\'")}')" title="Restore to active">↩ Restore</button>
+        <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="permanentlyDeleteArchivedCampaign('${c.id}','${escHtml(c.name).replace(/'/g,"\\'")}')" title="Permanently delete">🗑 Delete</button>
+      </div>`;
+  }).join('');
+}
+
+
 
 // ─────────────────────────────────────────────────────────────
 //  USER TABS  (calendar vs checklist)
@@ -2692,10 +2873,13 @@ async function renderDataTab() {
           </div>
           <button class="btn-ghost-light btn-sm" onclick="openEditCampaignModal('${c.id}')" title="Edit campaign">✏️ Edit</button>
           <button class="btn-ghost-light btn-sm" onclick="duplicateCampaign('${c.id}')" title="Duplicate campaign">⧉ Clone</button>
+          <button class="btn-ghost-light btn-sm" style="color:#D97706;border-color:#fde68a;" onclick="archiveCampaign('${c.id}','${escHtml(c.name).replace(/'/g,"\\'")}')" title="Archive campaign (downloads a summary first)">📦 Archive</button>
           <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="deleteCampaign('${c.id}','${escHtml(c.name).replace(/'/g,"\\'")}')" title="Delete campaign">🗑 Delete</button>
         </div>`;
     }).join('');
   }
+
+  renderArchivedCampaignsList();
 
   // ── Members list now lives in the dedicated Members tab (see renderMembersTab) ──
 
@@ -5661,9 +5845,11 @@ async function loadTeamLeadData() {
   });
 
   // Load all campaigns; keep those with at least one managed member
+  // (archived campaigns are excluded from team-lead views entirely)
   const campsSnap = await db.collection('campaigns').orderBy('createdAt', 'desc').get();
   campsSnap.forEach(doc => {
     const camp = { ...doc.data(), id: doc.id };
+    if (camp.archived) return;
     if ((camp.assignedUids || []).some(uid => managedUids.includes(uid)))
       tlCampaigns[doc.id] = camp;
   });
@@ -5672,6 +5858,7 @@ async function loadTeamLeadData() {
   tlOwnCampaigns = {};
   campsSnap.forEach(doc => {
     const camp = { ...doc.data(), id: doc.id };
+    if (camp.archived) return;
     if ((camp.assignedUids || []).includes(currentUser.uid))
       tlOwnCampaigns[doc.id] = camp;
   });
@@ -5759,7 +5946,11 @@ async function enterTlChecklistTab() {
       .orderBy('createdAt', 'desc')
       .get();
     tlOwnCampaigns = {};
-    campsSnap.forEach(doc => { tlOwnCampaigns[doc.id] = { ...doc.data(), id: doc.id }; });
+    campsSnap.forEach(doc => {
+      const camp = doc.data();
+      if (camp.archived) return;
+      tlOwnCampaigns[doc.id] = { ...camp, id: doc.id };
+    });
   } catch (e) { console.warn('Could not refresh personal campaigns', e); }
 
   populateTlCampaignSelect();
