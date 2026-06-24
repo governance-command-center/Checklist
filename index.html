@@ -899,6 +899,47 @@
     </div>
   </div>
 
+  <!-- Bulk Assign Brands via Excel Modal (Admin) -->
+  <div id="bulk-assign-overlay" style="display:none;" onclick="closeBulkAssignModal(event)">
+    <div class="modal" style="max-width:620px;">
+      <div class="modal-header">
+        <h3>📊 Bulk Assign Brands via Excel</h3>
+        <button class="btn-ghost-light" onclick="closeBulkAssignModal()">✕</button>
+      </div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px;line-height:1.6;">
+        Upload an Excel/CSV file mapping each CDM to the brands, platforms, and regions they'll handle. Entries are auto-generated — no poll needed.
+      </p>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px;color:var(--text-muted);margin-bottom:14px;font-family:var(--mono);">
+        <strong>Columns:</strong> Username | Brand | Platform | Region<br><br>
+        username,brand,platform,region<br>jane,Marc Jacobs,Lazada,SG<br>jane,Marc Jacobs,Shopee,SG<br>mark,Marc Jacobs,Lazada,MY
+        <div style="margin-top:8px;"><a href="#" onclick="downloadBulkAssignTemplate();return false;" style="color:var(--blue);font-family:var(--font);">⬇ Download blank template (.csv)</a></div>
+      </div>
+
+      <div class="field">
+        <label>Select Excel (.xlsx) or CSV file</label>
+        <input type="file" id="bulk-assign-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="font-size:13px;padding:6px;" onchange="handleBulkAssignFileChange(event)" />
+      </div>
+
+      <div class="field">
+        <label>Assign to</label>
+        <select id="bulk-assign-campaign-sel" onchange="onBulkAssignCampaignChange()">
+          <option value="__new__">➕ Create a new campaign</option>
+        </select>
+      </div>
+      <div class="field" id="bulk-assign-new-name-field">
+        <label>New Campaign Name</label>
+        <input type="text" id="bulk-assign-new-name" placeholder="e.g. 11.11 Mega Sale" />
+      </div>
+
+      <div id="bulk-assign-preview" style="max-height:240px;overflow-y:auto;margin-top:6px;"></div>
+      <div id="bulk-assign-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeBulkAssignModal()">Cancel</button>
+        <button id="bulk-assign-btn" class="btn-primary" style="width:auto;background:#4F46E5;" onclick="confirmBulkAssign()" disabled>📊 Generate Entries</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Member Registration Form Modal -->
   <div id="user-reg-overlay" style="display:none;" onclick="closeUserRegModal(event)">
     <div class="modal" style="max-width:540px;">

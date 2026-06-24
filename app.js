@@ -4298,6 +4298,7 @@ async function loadAndRenderRegPollAdmin() {
             Create a poll to collect brand, platform and region registrations from your team.<br>A "Register Now" broadcast is sent automatically.
           </div>
           <button class="btn-primary" style="width:auto;padding:12px 28px;font-size:15px;" onclick="openRegPollModal()">📣 Create Registration Poll</button>
+          <button class="btn-outline" style="width:auto;padding:12px 28px;font-size:15px;margin-left:10px;" onclick="openBulkAssignModal()">📊 Bulk Assign via Excel</button>
         </div>`;
       return;
     }
@@ -4362,6 +4363,7 @@ function renderRegPollAdminWithTabs() {
     <div class="reg-poll-tabs-header">
       <div class="reg-poll-tabs-list">${tabsHtml}</div>
       <button class="btn-primary" style="font-size:12px;width:auto;padding:7px 16px;background:#4F46E5;flex-shrink:0;" onclick="openRegPollModal()">📋 New Poll</button>
+      <button class="btn-outline" style="font-size:12px;width:auto;padding:7px 16px;flex-shrink:0;" onclick="openBulkAssignModal()">📊 Bulk Assign via Excel</button>
     </div>`;
 
   // Render the poll content section below the tabs
@@ -5413,6 +5415,242 @@ async function confirmImportMembers() {
     showError(errEl, 'Import failed. Try again.'); console.error(e);
   } finally {
     btn.textContent = '📥 Import Members'; btn.disabled = false;
+  }
+}
+
+// ═════════════════════════════════════════════════════════════
+//  BULK ASSIGN BRANDS VIA EXCEL  (Admin)
+//  Skips the poll entirely — admin uploads CDM ↔ brand/platform/region
+//  rows directly, and we auto-generate checklist entries.
+// ═════════════════════════════════════════════════════════════
+let bulkAssignMatched   = {}; // { uid: [{label,brand,platform,region}] }
+let bulkAssignUnmatched = []; // usernames in file that don't match any member
+
+function openBulkAssignModal() {
+  bulkAssignMatched   = {};
+  bulkAssignUnmatched = [];
+  document.getElementById('bulk-assign-file').value = '';
+  document.getElementById('bulk-assign-preview').innerHTML = '';
+  document.getElementById('bulk-assign-error').style.display = 'none';
+  document.getElementById('bulk-assign-btn').disabled = true;
+  document.getElementById('bulk-assign-new-name').value = '';
+
+  const sel = document.getElementById('bulk-assign-campaign-sel');
+  const activeCamps = Object.values(campaigns).sort((a, b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+  sel.innerHTML = '<option value="__new__">➕ Create a new campaign</option>' +
+    activeCamps.map(c => `<option value="${c.id}">${escHtml(c.name)}</option>`).join('');
+  onBulkAssignCampaignChange();
+
+  document.getElementById('bulk-assign-overlay').style.display = 'flex';
+}
+
+function closeBulkAssignModal(e) {
+  if (e && e.target !== document.getElementById('bulk-assign-overlay')) return;
+  document.getElementById('bulk-assign-overlay').style.display = 'none';
+}
+
+function onBulkAssignCampaignChange() {
+  const isNew = document.getElementById('bulk-assign-campaign-sel').value === '__new__';
+  document.getElementById('bulk-assign-new-name-field').style.display = isNew ? '' : 'none';
+}
+
+function downloadBulkAssignTemplate() {
+  const csv = 'username,brand,platform,region\njane,Marc Jacobs,Lazada,SG\njane,Marc Jacobs,Shopee,SG\nmark,Marc Jacobs,Lazada,MY\n';
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'bulk-assign-template.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function handleBulkAssignFileChange(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const errEl = document.getElementById('bulk-assign-error');
+  errEl.style.display = 'none';
+  bulkAssignMatched = {};
+  bulkAssignUnmatched = [];
+  document.getElementById('bulk-assign-preview').innerHTML = '';
+  document.getElementById('bulk-assign-btn').disabled = true;
+
+  const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+  if (isXlsx) {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = new Uint8Array(ev.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        _parseBulkAssignRows(rows, errEl);
+      } catch (err) {
+        showError(errEl, 'Failed to read Excel file. Make sure it is a valid .xlsx file.');
+        console.error(err);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target.result;
+      const rows = text.split(/\r?\n/).filter(r => r.trim() !== '').map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
+      _parseBulkAssignRows(rows, errEl);
+    };
+    reader.readAsText(file);
+  }
+}
+
+function _parseBulkAssignRows(rows, errEl) {
+  if (rows.length < 2) { showError(errEl, 'File appears empty or has no data rows.'); return; }
+  const headers = rows[0].map(h => String(h).toLowerCase().trim());
+  const uIdx = headers.indexOf('username');
+  const bIdx = headers.indexOf('brand');
+  const pIdx = headers.indexOf('platform');
+  const rIdx = headers.indexOf('region');
+
+  if (uIdx < 0 || bIdx < 0 || pIdx < 0 || rIdx < 0) {
+    showError(errEl, 'File must have columns: Username, Brand, Platform, Region.');
+    return;
+  }
+
+  // Build a username → member lookup
+  const byUsername = {};
+  Object.values(members).forEach(m => { if (m.username) byUsername[m.username.toLowerCase()] = m; });
+
+  bulkAssignMatched = {};
+  const unmatchedSet = new Set();
+
+  rows.slice(1).forEach(r => {
+    if (r.length <= Math.max(uIdx, bIdx, pIdx, rIdx)) return;
+    const username = String(r[uIdx] || '').trim().toLowerCase();
+    const brand    = String(r[bIdx] || '').trim();
+    const platform = String(r[pIdx] || '').trim();
+    const region   = String(r[rIdx] || '').trim();
+    if (!username || !brand) return;
+
+    const member = byUsername[username];
+    if (!member) { unmatchedSet.add(username); return; }
+
+    const entry = { label: [brand, platform, region].filter(Boolean).join('_'), brand, platform, region };
+    if (!bulkAssignMatched[member.uid]) bulkAssignMatched[member.uid] = [];
+    // Skip exact duplicates within the same upload
+    if (!bulkAssignMatched[member.uid].some(en => en.brand === brand && en.platform === platform && en.region === region)) {
+      bulkAssignMatched[member.uid].push(entry);
+    }
+  });
+
+  bulkAssignUnmatched = [...unmatchedSet];
+  _renderBulkAssignPreview();
+}
+
+function _renderBulkAssignPreview() {
+  const prev = document.getElementById('bulk-assign-preview');
+  const uids = Object.keys(bulkAssignMatched);
+  const totalEntries = uids.reduce((s, uid) => s + bulkAssignMatched[uid].length, 0);
+
+  if (uids.length === 0 && bulkAssignUnmatched.length === 0) {
+    prev.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">No valid rows found.</div>';
+    document.getElementById('bulk-assign-btn').disabled = true;
+    return;
+  }
+
+  let html = `<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px;">${uids.length} CDM(s), ${totalEntries} entries to generate</div>`;
+  html += uids.map(uid => {
+    const m = members[uid];
+    const chips = bulkAssignMatched[uid].map(en => `<span class="rp-reg-tag" style="margin:2px 4px 2px 0;display:inline-block;">${escHtml(en.label)}</span>`).join('');
+    return `<div style="padding:6px 0;border-bottom:1px solid var(--border);">
+      <div style="font-size:13px;font-weight:600;">${escHtml(m?.name || m?.username || uid)}</div>
+      <div style="margin-top:3px;">${chips}</div>
+    </div>`;
+  }).join('');
+
+  if (bulkAssignUnmatched.length > 0) {
+    html += `<div style="margin-top:10px;padding:8px 10px;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.25);border-radius:8px;font-size:12px;color:#DC2626;">
+      ⚠️ Unmatched username(s), skipped: ${bulkAssignUnmatched.map(escHtml).join(', ')}
+    </div>`;
+  }
+
+  prev.innerHTML = html;
+  document.getElementById('bulk-assign-btn').disabled = uids.length === 0;
+}
+
+async function confirmBulkAssign() {
+  const errEl = document.getElementById('bulk-assign-error');
+  errEl.style.display = 'none';
+  const uids = Object.keys(bulkAssignMatched);
+  if (uids.length === 0) { showError(errEl, 'No matched CDMs to assign. Upload a valid file first.'); return; }
+
+  const sel = document.getElementById('bulk-assign-campaign-sel');
+  const isNew = sel.value === '__new__';
+  let campaignId = sel.value;
+  let campaignName = '';
+
+  if (isNew) {
+    campaignName = document.getElementById('bulk-assign-new-name').value.trim();
+    if (!campaignName) { showError(errEl, 'Please enter a name for the new campaign.'); return; }
+  } else {
+    const camp = campaigns[campaignId];
+    if (!camp) { showError(errEl, 'Selected campaign not found.'); return; }
+    campaignName = camp.name;
+  }
+
+  const btn = document.getElementById('bulk-assign-btn');
+  btn.textContent = 'Generating…'; btn.disabled = true;
+
+  try {
+    if (isNew) {
+      const ref = await db.collection('campaigns').add({
+        name: campaignName,
+        assignedUids: uids,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdBy: ADMIN_UID,
+        fromPollId: null,
+        checklistTemplateId: null,
+        dday: null,
+        deadline: null,
+      });
+      campaignId = ref.id;
+    } else {
+      // Add any newly-assigned CDMs to the campaign's assignedUids
+      await db.collection('campaigns').doc(campaignId).update({
+        assignedUids: firebase.firestore.FieldValue.arrayUnion(...uids),
+      });
+    }
+
+    // Merge entries into each CDM's checklist for this campaign —
+    // append new ones, skip exact duplicates of brand+platform+region,
+    // and never touch their existing progress/status on current entries.
+    await Promise.all(uids.map(async uid => {
+      const docRef = db.collection('checklists').doc(uid);
+      const snap = await docRef.get();
+      const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
+      const existingEntries = existingCampData.entries || [];
+      const newOnes = bulkAssignMatched[uid].filter(en =>
+        !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+      );
+      const mergedEntries = [...existingEntries, ...newOnes];
+      await docRef.set({
+        [campaignId]: { ...existingCampData, entries: mergedEntries, lastActive: new Date().toISOString() }
+      }, { merge: true });
+    }));
+
+    await db.collection('broadcasts').add({
+      type: 'custom',
+      message: `🚀 Campaign "${campaignName}" — your brand assignments have been added! Go to the Checklist tab to start.`,
+      targetUid: null, targetName: 'everyone',
+      campaignId, campaignName,
+      sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
+    });
+
+    document.getElementById('bulk-assign-overlay').style.display = 'none';
+    await loadAdminData();
+    showToast(`✅ Generated entries for ${uids.length} CDM(s) in "${campaignName}".`, 'success');
+  } catch (e) {
+    showError(errEl, 'Failed to generate entries. Try again.');
+    console.error(e);
+  } finally {
+    btn.textContent = '📊 Generate Entries'; btn.disabled = false;
   }
 }
 
