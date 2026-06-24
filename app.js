@@ -2952,6 +2952,8 @@ async function deleteTaskCheck(checkId, title) {
     // Evict from cache and re-render
     _rspKitCheckData = _rspKitCheckData.filter(tc => tc.id !== checkId);
     renderRspKitList('__reload');
+    // Keep the admin dashboard "Recent Task Checks" panel in sync too
+    if (document.getElementById('dash-taskcheck-panel')) renderTaskChecksInDashboard();
   } catch(e) {
     console.error(e);
     showToast('Failed to delete task check. Try again.', 'error');
@@ -4088,8 +4090,12 @@ async function loadAndRenderRegPollAdmin() {
     const listDoc = await POLLS_LIST_REF().get();
     allPolls = listDoc.exists ? (listDoc.data().polls || []) : [];
 
-    // Legacy fallback: check old single-poll doc
-    if (allPolls.length === 0) {
+    // Legacy fallback: check old single-poll doc. Only relevant when the
+    // polls-list doc has never been created at all (pre-migration data) —
+    // once it exists, an empty array means the admin genuinely deleted
+    // every poll, and we must NOT resurrect the old doc (it can otherwise
+    // make a deleted poll like "Sample" reappear with stale counts).
+    if (allPolls.length === 0 && !listDoc.exists) {
       const legacyDoc = await db.collection('settings').doc('activePoll').get();
       if (legacyDoc.exists) {
         const d = legacyDoc.data();
@@ -4364,6 +4370,19 @@ async function deleteRegPoll(pollId) {
     }
     // Remove from local state and switch to next poll if needed
     allPolls = allPolls.filter(p => p.id !== pollId);
+
+    // Legacy cleanup: older data lived in a single settings/activePoll doc
+    // (used as a fallback whenever the polls list is empty — see
+    // loadAndRenderRegPollAdmin). If that legacy doc's internal `id` field
+    // didn't match its own document id, the delete above could miss it,
+    // letting a stale poll (e.g. "Sample") and its stale response counts
+    // keep reappearing once the real poll list is empty. Once there are no
+    // polls left, always scrub the legacy doc directly so it can't resurface.
+    if (allPolls.length === 0) {
+      await db.collection('settings').doc('activePoll').delete().catch(() => {});
+      await db.collection('settings').doc('pollResp_activePoll').delete().catch(() => {});
+    }
+
     if (activePollTabId === pollId) {
       activePollTabId = allPolls.length > 0 ? allPolls[0].id : null;
       currentPollData = null;
@@ -5607,9 +5626,13 @@ async function renderTaskChecksInDashboard() {
       const tc  = doc.data();
       const dt  = new Date(tc.sentAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
       const who = tc.targetUid ? (members[tc.targetUid]?.name || tc.targetName || '—') : 'All members';
-      html += `<div class="deadline-row" style="cursor:pointer;" onclick="openTaskCheckTracker('${doc.id}')">
-        <div class="deadline-name" title="${escHtml(tc.title)}">🎒 ${escHtml(tc.title)}<span style="font-size:11px;color:var(--text-faint);margin-left:6px;">${dt} · ${escHtml(who)}</span></div>
-        <span class="deadline-pill dp-blue" style="background:rgba(37,99,235,0.1);color:var(--blue-text);">View</span>
+      const safeTitle = escHtml(tc.title).replace(/'/g, "\\'");
+      html += `<div class="deadline-row">
+        <div class="deadline-name" style="cursor:pointer;" onclick="openTaskCheckTracker('${doc.id}')" title="${escHtml(tc.title)}">🎒 ${escHtml(tc.title)}<span style="font-size:11px;color:var(--text-faint);margin-left:6px;">${dt} · ${escHtml(who)}</span></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+          <span class="deadline-pill dp-blue" style="cursor:pointer;background:rgba(37,99,235,0.1);color:var(--blue-text);" onclick="openTaskCheckTracker('${doc.id}')">View</span>
+          <span class="deadline-pill" style="cursor:pointer;background:rgba(220,38,38,0.1);color:#DC2626;" onclick="deleteTaskCheck('${doc.id}','${safeTitle}')" title="Delete this task check">🗑</span>
+        </div>
       </div>`;
     });
     el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div class="dash-card-title">Recent Task Checks</div></div>` + html;

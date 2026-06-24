@@ -146,6 +146,11 @@
             </div>
             <div style="font-size:11px;color:var(--text-muted);margin:-4px 0 8px;">Click a campaign to view it across the whole dashboard</div>
             <div id="dash-deadlines-list"></div>
+
+            <!-- Recent Task Checks panel — placed here (instead of as its own
+                 full-width row) so it fills the vacant space below the
+                 checklist list rather than lengthening the page. -->
+            <div id="dash-taskcheck-panel" style="display:none;margin-top:18px;padding-top:14px;border-top:1px solid var(--border);"></div>
           </div>
 
           <!-- Member completion chart (injected by JS) -->
@@ -161,9 +166,6 @@
           </div>
         </div>
 
-
-        <!-- Recent Task Checks panel -->
-        <div id="dash-taskcheck-panel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 18px;box-shadow:var(--shadow);margin-bottom:16px;"></div>
 
         <!-- Status filter for team progress -->
         <div id="dash-status-filter-row" style="margin-bottom:8px;margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
