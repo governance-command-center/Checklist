@@ -104,10 +104,13 @@
       </nav>
 
       <div class="sidebar-footer">
-        <button class="nav-item nav-item-signout" onclick="handleLogout()" title="Sign out">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M13 15l4-4-4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 11H7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4H4a1 1 0 00-1 1v10a1 1 0 001 1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          <span class="nav-label">Sign out</span>
-        </button>
+        <div class="sidebar-signout-row">
+          <button class="nav-item nav-item-signout" onclick="handleLogout()" title="Sign out">
+            <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M13 15l4-4-4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 11H7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4H4a1 1 0 00-1 1v10a1 1 0 001 1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="nav-label">Sign out</span>
+          </button>
+          <span class="sidebar-username">Admin</span>
+        </div>
       </div>
     </aside>
 
@@ -404,7 +407,7 @@
       <div class="sidebar-header">
         <span class="logo-mark sm">TR</span>
         <div class="sidebar-brand" id="user-sidebar-brand-text">
-          <div class="sidebar-title" id="user-name-display">Loading…</div>
+          <div class="sidebar-title">Trackory</div>
           <div class="sidebar-sub">Member</div>
         </div>
         <button class="sidebar-toggle" onclick="toggleUserSidebar()" title="Collapse sidebar">
@@ -456,10 +459,13 @@
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><rect x="5" y="9" width="10" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M7 9V6a3 3 0 016 0v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Change Password</span>
         </button>
-        <button class="nav-item nav-item-signout" onclick="handleLogout()" title="Sign out">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M13 15l4-4-4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 11H7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4H4a1 1 0 00-1 1v10a1 1 0 001 1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          <span class="nav-label">Sign out</span>
-        </button>
+        <div class="sidebar-signout-row">
+          <button class="nav-item nav-item-signout" onclick="handleLogout()" title="Sign out">
+            <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M13 15l4-4-4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 11H7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4H4a1 1 0 00-1 1v10a1 1 0 001 1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="nav-label">Sign out</span>
+          </button>
+          <span class="sidebar-username" id="user-name-display">Loading…</span>
+        </div>
       </div>
     </aside> -->
     <main class="app-main" id="user-main">
@@ -655,6 +661,12 @@
           <button type="button" onclick="selectAllChips('member-assign-list')" style="font-size:11px;color:var(--blue);background:transparent;border:none;cursor:pointer;padding:0;font-weight:500;">Select All</button>
         </div>
         <div class="member-list" id="member-assign-list"></div>
+      </div>
+      <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
+        <label>📊 Bulk Assign Brands <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — upload Excel/CSV instead of doing it per-member)</span></label>
+        <input type="file" id="new-camp-bulk-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="font-size:12px;padding:6px;" onchange="handleNewCampBulkFileChange(event)" />
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Columns: Username, Brand, Platform, Region. Matched CDMs are auto-checked above and pre-filled with their entries. <a href="#" onclick="downloadBulkAssignTemplate();return false;" style="color:var(--blue);">Download template</a></div>
+        <div id="new-camp-bulk-preview" style="margin-top:8px;"></div>
       </div>
       <div id="modal-error" class="error-msg" style="display:none;"></div>
       <div class="modal-actions">
@@ -1116,7 +1128,7 @@
       <div class="sidebar-header">
         <span class="logo-mark sm">TR</span>
         <div class="sidebar-brand">
-          <div class="sidebar-title" id="tl-name-display">Loading…</div>
+          <div class="sidebar-title">Trackory</div>
           <div class="sidebar-sub">Team Lead</div>
         </div>
         <button class="sidebar-toggle" onclick="toggleTlSidebar()" title="Collapse sidebar">
@@ -1167,10 +1179,13 @@
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><rect x="5" y="9" width="10" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M7 9V6a3 3 0 016 0v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Change Password</span>
         </button>
-        <button class="nav-item nav-item-signout" onclick="handleLogout()" title="Sign out">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M13 15l4-4-4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 11H7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4H4a1 1 0 00-1 1v10a1 1 0 001 1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          <span class="nav-label">Sign out</span>
-        </button>
+        <div class="sidebar-signout-row">
+          <button class="nav-item nav-item-signout" onclick="handleLogout()" title="Sign out">
+            <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M13 15l4-4-4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 11H7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4H4a1 1 0 00-1 1v10a1 1 0 001 1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <span class="nav-label">Sign out</span>
+          </button>
+          <span class="sidebar-username" id="tl-name-display">Loading…</span>
+        </div>
       </div>
     </aside>
 

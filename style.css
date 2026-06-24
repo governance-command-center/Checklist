@@ -263,6 +263,25 @@ body {
   flex-shrink: 0;
 }
 
+.sidebar-signout-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.sidebar-signout-row .nav-item { flex: 1; min-width: 0; }
+.sidebar-username {
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 90px;
+  padding-right: 6px;
+  flex-shrink: 0;
+}
+.sidebar.collapsed .sidebar-username { display: none; }
+
 .sidebar-divider {
   height: 1px;
   background: rgba(255,255,255,0.08);
@@ -976,7 +995,8 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 #teamlead-modal-overlay,
 #edit-tl-modal-overlay,
 #change-password-overlay,
-#reset-password-overlay {
+#reset-password-overlay,
+#bulk-assign-overlay {
   position: fixed; inset: 0;
   background: rgba(17,40,80,0.55);
   display: flex; align-items: center; justify-content: center;

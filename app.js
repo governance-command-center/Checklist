@@ -1145,6 +1145,9 @@ function openNewCampaignModal() {
   document.getElementById('new-campaign-deadline').value      = '';
   document.getElementById('new-campaign-deadline-time').value = '';
   document.getElementById('modal-error').style.display   = 'none';
+  newCampBulkMatched = {};
+  document.getElementById('new-camp-bulk-file').value = '';
+  document.getElementById('new-camp-bulk-preview').innerHTML = '';
   populateCampaignTemplateSel();
   document.getElementById('modal-overlay').style.display = 'flex';
 }
@@ -1207,6 +1210,19 @@ async function createCampaign() {
             region:   r.region || '',
           }));
         }
+      });
+    }
+
+    // Merge in any entries from the optional "Bulk Assign Brands" Excel upload
+    if (newCampBulkMatched && Object.keys(newCampBulkMatched).length > 0) {
+      Object.entries(newCampBulkMatched).forEach(([uid, entries]) => {
+        if (!assignedUids.includes(uid)) return; // only for members actually assigned to this campaign
+        const existing = prefillData[uid] || [];
+        const merged = [...existing];
+        entries.forEach(en => {
+          if (!merged.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)) merged.push(en);
+        });
+        prefillData[uid] = merged;
       });
     }
 
@@ -5652,6 +5668,115 @@ async function confirmBulkAssign() {
   } finally {
     btn.textContent = '📊 Generate Entries'; btn.disabled = false;
   }
+}
+
+// Shared parser: turns raw sheet rows into { matched: {uid:[entries]}, unmatched: [usernames] }
+function parseBrandAssignmentRows(rows) {
+  const result = { matched: {}, unmatched: [], error: null };
+  if (rows.length < 2) { result.error = 'File appears empty or has no data rows.'; return result; }
+  const headers = rows[0].map(h => String(h).toLowerCase().trim());
+  const uIdx = headers.indexOf('username');
+  const bIdx = headers.indexOf('brand');
+  const pIdx = headers.indexOf('platform');
+  const rIdx = headers.indexOf('region');
+  if (uIdx < 0 || bIdx < 0 || pIdx < 0 || rIdx < 0) {
+    result.error = 'File must have columns: Username, Brand, Platform, Region.';
+    return result;
+  }
+
+  const byUsername = {};
+  Object.values(members).forEach(m => { if (m.username) byUsername[m.username.toLowerCase()] = m; });
+
+  const unmatchedSet = new Set();
+  rows.slice(1).forEach(r => {
+    if (r.length <= Math.max(uIdx, bIdx, pIdx, rIdx)) return;
+    const username = String(r[uIdx] || '').trim().toLowerCase();
+    const brand    = String(r[bIdx] || '').trim();
+    const platform = String(r[pIdx] || '').trim();
+    const region   = String(r[rIdx] || '').trim();
+    if (!username || !brand) return;
+
+    const member = byUsername[username];
+    if (!member) { unmatchedSet.add(username); return; }
+
+    const entry = { label: [brand, platform, region].filter(Boolean).join('_'), brand, platform, region };
+    if (!result.matched[member.uid]) result.matched[member.uid] = [];
+    if (!result.matched[member.uid].some(en => en.brand === brand && en.platform === platform && en.region === region)) {
+      result.matched[member.uid].push(entry);
+    }
+  });
+
+  result.unmatched = [...unmatchedSet];
+  return result;
+}
+
+function readSheetRows(file, callback) {
+  const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+  if (isXlsx) {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = new Uint8Array(ev.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        callback(XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }), null);
+      } catch (err) { callback(null, 'Failed to read Excel file. Make sure it is a valid .xlsx file.'); console.error(err); }
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target.result;
+      const rows = text.split(/\r?\n/).filter(r => r.trim() !== '').map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
+      callback(rows, null);
+    };
+    reader.readAsText(file);
+  }
+}
+
+function renderBrandAssignmentPreview(hostEl, matched, unmatched, compact) {
+  const uids = Object.keys(matched);
+  const totalEntries = uids.reduce((s, uid) => s + matched[uid].length, 0);
+  if (uids.length === 0 && unmatched.length === 0) {
+    hostEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">No valid rows found.</div>';
+    return;
+  }
+  let html = `<div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px;">${uids.length} CDM(s), ${totalEntries} entries${compact ? '' : ' to generate'}</div>`;
+  html += uids.map(uid => {
+    const m = members[uid];
+    const chips = matched[uid].map(en => `<span class="rp-reg-tag" style="margin:2px 4px 2px 0;display:inline-block;">${escHtml(en.label)}</span>`).join('');
+    return `<div style="padding:${compact ? '4px' : '6px'} 0;border-bottom:1px solid var(--border);">
+      <div style="font-size:${compact ? '12px' : '13px'};font-weight:600;">${escHtml(m?.name || m?.username || uid)}</div>
+      <div style="margin-top:3px;">${chips}</div>
+    </div>`;
+  }).join('');
+  if (unmatched.length > 0) {
+    html += `<div style="margin-top:10px;padding:8px 10px;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.25);border-radius:8px;font-size:12px;color:#DC2626;">
+      ⚠️ Unmatched username(s), skipped: ${unmatched.map(escHtml).join(', ')}
+    </div>`;
+  }
+  hostEl.innerHTML = html;
+}
+
+// ── New Campaign modal: optional bulk-assign-via-Excel field ──
+let newCampBulkMatched = {};
+
+function handleNewCampBulkFileChange(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  readSheetRows(file, (rows, err) => {
+    const previewEl = document.getElementById('new-camp-bulk-preview');
+    if (err) { previewEl.innerHTML = `<div class="error-msg" style="display:block;">${escHtml(err)}</div>`; return; }
+    const { matched, unmatched, error } = parseBrandAssignmentRows(rows);
+    if (error) { previewEl.innerHTML = `<div class="error-msg" style="display:block;">${escHtml(error)}</div>`; return; }
+    newCampBulkMatched = matched;
+    renderBrandAssignmentPreview(previewEl, matched, unmatched, true);
+    // Auto-check matched members in the assign list above
+    Object.keys(matched).forEach(uid => {
+      const chip = document.querySelector(`#member-assign-list .member-chip[data-uid="${uid}"]`);
+      if (chip) chip.classList.add('selected');
+    });
+  });
 }
 
 // ─── Reports: toggle collapsible registrations ───────────────
