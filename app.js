@@ -5779,6 +5779,29 @@ function handleNewCampBulkFileChange(e) {
   });
 }
 
+// ─── Admin: Export all members/leads' usernames to Excel ─────
+// Used as a reference sheet when filling in the Bulk Assign template,
+// so admins always have the correct username (not just the display name).
+function exportMembersToExcel() {
+  const rows = Object.values(members)
+    .filter(m => m.role !== 'admin')
+    .sort((a, b) => (a.name || a.username || '').localeCompare(b.name || b.username || ''))
+    .map(m => ({
+      Name:     m.name || '',
+      Username: m.username || '',
+      Role:     m.role === 'team_lead' ? 'Team Lead' : 'Member',
+    }));
+
+  if (rows.length === 0) { showToast('No members to export yet.', 'info'); return; }
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{ wch: 24 }, { wch: 20 }, { wch: 12 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Members');
+  XLSX.writeFile(wb, `trackory-members-${new Date().toISOString().slice(0,10)}.xlsx`);
+  showToast(`✅ Exported ${rows.length} member(s).`, 'success');
+}
+
 // ─── Reports: toggle collapsible registrations ───────────────
 function toggleRegList(id) {
   const more = document.getElementById(id + '-more');
