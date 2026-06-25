@@ -5370,18 +5370,19 @@ function _parseImportRows(rows, errEl) {
     showError(errEl, 'File appears empty or has no data rows.');
     return;
   }
-  const headers = rows[0].map(h => String(h).toLowerCase().trim());
+  const headerRowIdx = _findHeaderRowIndex(rows, [['name'], ['password']]);
+  if (headerRowIdx < 0) {
+    showError(errEl, 'File must have columns: Name, Password (Username is optional — auto-generated if missing). Make sure that row is the first row with those exact column headers (no title row above it).');
+    return;
+  }
+  const headers = rows[headerRowIdx].map(h => String(h).toLowerCase().trim());
   const nIdx = headers.indexOf('name');
   const pIdx = headers.indexOf('password');
   const uIdx = headers.indexOf('username'); // optional
 
-  if (nIdx < 0 || pIdx < 0) {
-    showError(errEl, 'File must have columns: Name, Password (Username is optional — auto-generated if missing)');
-    return;
-  }
   document.getElementById('import-members-error').style.display = 'none';
   importedMembersPreview = [];
-  rows.slice(1).forEach(r => {
+  rows.slice(headerRowIdx + 1).forEach(r => {
     if (r.length <= Math.max(nIdx, pIdx)) return;
     const name     = String(r[nIdx] || '').trim();
     const password = String(r[pIdx] || '').trim();
@@ -5554,18 +5555,33 @@ function _findMemberByIdentifier(identifier, lookup) {
   return { member: null, ambiguous: false };
 }
 
+// Some exports have a title/instructions row above the real header row.
+// Scan the first several rows for one that actually contains the required
+// column names, instead of blindly assuming row 0 is the header.
+function _findHeaderRowIndex(rows, requiredHeaderSets) {
+  const limit = Math.min(rows.length, 10);
+  for (let i = 0; i < limit; i++) {
+    const cells = (rows[i] || []).map(h => String(h || '').toLowerCase().trim());
+    const matchesAll = requiredHeaderSets.every(set => set.some(name => cells.includes(name)));
+    if (matchesAll) return i;
+  }
+  return -1;
+}
+
 function _parseBulkAssignRows(rows, errEl) {
   if (rows.length < 2) { showError(errEl, 'File appears empty or has no data rows.'); return; }
-  const headers = rows[0].map(h => String(h).toLowerCase().trim());
+
+  const headerRowIdx = _findHeaderRowIndex(rows, [['username', 'name'], ['brand'], ['platform'], ['region']]);
+  if (headerRowIdx < 0) {
+    showError(errEl, 'File must have columns: Username (or Name), Brand, Platform, Region. Make sure that row is the first row with those exact column headers (no title row above it).');
+    return;
+  }
+
+  const headers = rows[headerRowIdx].map(h => String(h).toLowerCase().trim());
   const uIdx = headers.indexOf('username') >= 0 ? headers.indexOf('username') : headers.indexOf('name');
   const bIdx = headers.indexOf('brand');
   const pIdx = headers.indexOf('platform');
   const rIdx = headers.indexOf('region');
-
-  if (uIdx < 0 || bIdx < 0 || pIdx < 0 || rIdx < 0) {
-    showError(errEl, 'File must have columns: Username (or Name), Brand, Platform, Region.');
-    return;
-  }
 
   const lookup = _buildMemberLookup();
 
@@ -5573,7 +5589,7 @@ function _parseBulkAssignRows(rows, errEl) {
   const unmatchedSet = new Set();
   const ambiguousSet = new Set();
 
-  rows.slice(1).forEach(r => {
+  rows.slice(headerRowIdx + 1).forEach(r => {
     if (r.length <= Math.max(uIdx, bIdx, pIdx, rIdx)) return;
     const identifier = String(r[uIdx] || '').trim();
     const brand    = String(r[bIdx] || '').trim();
@@ -5715,21 +5731,22 @@ async function confirmBulkAssign() {
 function parseBrandAssignmentRows(rows) {
   const result = { matched: {}, unmatched: [], error: null };
   if (rows.length < 2) { result.error = 'File appears empty or has no data rows.'; return result; }
-  const headers = rows[0].map(h => String(h).toLowerCase().trim());
+  const headerRowIdx = _findHeaderRowIndex(rows, [['username', 'name'], ['brand'], ['platform'], ['region']]);
+  if (headerRowIdx < 0) {
+    result.error = 'File must have columns: Username (or Name), Brand, Platform, Region. Make sure that row is the first row with those exact column headers (no title row above it).';
+    return result;
+  }
+  const headers = rows[headerRowIdx].map(h => String(h).toLowerCase().trim());
   const uIdx = headers.indexOf('username') >= 0 ? headers.indexOf('username') : headers.indexOf('name');
   const bIdx = headers.indexOf('brand');
   const pIdx = headers.indexOf('platform');
   const rIdx = headers.indexOf('region');
-  if (uIdx < 0 || bIdx < 0 || pIdx < 0 || rIdx < 0) {
-    result.error = 'File must have columns: Username (or Name), Brand, Platform, Region.';
-    return result;
-  }
 
   const lookup = _buildMemberLookup();
 
   const unmatchedSet = new Set();
   const ambiguousSet = new Set();
-  rows.slice(1).forEach(r => {
+  rows.slice(headerRowIdx + 1).forEach(r => {
     if (r.length <= Math.max(uIdx, bIdx, pIdx, rIdx)) return;
     const identifier = String(r[uIdx] || '').trim();
     const brand    = String(r[bIdx] || '').trim();
@@ -5867,16 +5884,17 @@ function handleMasterlistFileChange(e) {
   readSheetRows(file, async (rows, err) => {
     if (err) { dismissToast(readingToast); showToast(err, 'error'); return; }
     if (rows.length < 2) { dismissToast(readingToast); showToast('File appears empty or has no data rows.', 'error'); return; }
-    const headers = rows[0].map(h => String(h).toLowerCase().trim());
+    const headerRowIdx = _findHeaderRowIndex(rows, [['brand']]);
+    if (headerRowIdx < 0) { dismissToast(readingToast); showToast('File must have a "Brand" column (Platform, Region, PIC optional). Make sure that row is the first row with the column headers (no title row above it).', 'error'); return; }
+    const headers = rows[headerRowIdx].map(h => String(h).toLowerCase().trim());
     const bIdx = headers.indexOf('brand');
     const pIdx = headers.indexOf('platform');
     const rIdx = headers.indexOf('region');
     const picIdx = headers.indexOf('pic');
-    if (bIdx < 0) { dismissToast(readingToast); showToast('File must have a "Brand" column (Platform, Region, PIC optional).', 'error'); return; }
 
     const seen = new Set();
     const items = [];
-    rows.slice(1).forEach(r => {
+    rows.slice(headerRowIdx + 1).forEach(r => {
       const brand    = String(r[bIdx] || '').trim();
       const platform = pIdx >= 0 ? String(r[pIdx] || '').trim() : '';
       const region    = rIdx >= 0 ? String(r[rIdx] || '').trim() : '';

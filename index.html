@@ -289,7 +289,7 @@
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;">
                 <button class="btn-outline" style="font-size:12px;padding:6px 14px;" onclick="document.getElementById('masterlist-file').click()">📥 Upload Masterlist</button>
-                <input type="file" id="masterlist-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;" onchange="handleMasterlistFileChange(event)" />
+                <input type="file" id="masterlist-file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none;" onchange="handleMasterlistFileChange(event)" />
                 <button class="btn-primary" style="width:auto;font-size:12px;padding:6px 14px;background:#4F46E5;" onclick="openMapMasterlistModal()">🔗 Map Brands to CDM</button>
                 <button class="btn-outline" style="font-size:12px;padding:6px 14px;" onclick="openBulkAssignModal()">📊 Bulk Assign via Excel</button>
               </div>
@@ -683,7 +683,7 @@
       </div>
       <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
         <label>📊 Bulk Assign Brands <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — upload Excel/CSV instead of doing it per-member)</span></label>
-        <input type="file" id="new-camp-bulk-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="font-size:12px;padding:6px;" onchange="handleNewCampBulkFileChange(event)" />
+        <input type="file" id="new-camp-bulk-file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="font-size:12px;padding:6px;" onchange="handleNewCampBulkFileChange(event)" />
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Columns: Username (or Name — first name works too), Brand, Platform, Region. Matched CDMs are auto-checked above and pre-filled with their entries. <a href="#" onclick="downloadBulkAssignTemplate();return false;" style="color:var(--blue);">Download template</a></div>
         <div id="new-camp-bulk-preview" style="margin-top:8px;"></div>
       </div>
@@ -849,7 +849,7 @@
       </div>
       <div class="field">
         <label>Select Excel (.xlsx) or CSV file</label>
-        <input type="file" id="import-csv-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="font-size:13px;padding:6px;" onchange="handleImportCsvChange(event)" />
+        <input type="file" id="import-csv-file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="font-size:13px;padding:6px;" onchange="handleImportCsvChange(event)" />
       </div>
       <div id="import-preview" style="max-height:200px;overflow-y:auto;margin-top:10px;"></div>
       <div id="import-members-error" class="error-msg" style="display:none;"></div>
@@ -999,7 +999,7 @@
 
       <div class="field">
         <label>Select Excel (.xlsx) or CSV file</label>
-        <input type="file" id="bulk-assign-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="font-size:13px;padding:6px;" onchange="handleBulkAssignFileChange(event)" />
+        <input type="file" id="bulk-assign-file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="font-size:13px;padding:6px;" onchange="handleBulkAssignFileChange(event)" />
       </div>
 
       <div class="field">
