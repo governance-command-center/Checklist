@@ -5335,7 +5335,7 @@ function handleImportCsvChange(e) {
   importedMembersPreview = [];
   document.getElementById('import-preview').innerHTML = '';
 
-  const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+  const isXlsx = /\.(xlsx|xls|xlsm)$/i.test(file.name);
 
   if (isXlsx) {
     // Excel path — use SheetJS
@@ -5348,7 +5348,7 @@ function handleImportCsvChange(e) {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
         _parseImportRows(rows, errEl);
       } catch(err) {
-        showError(errEl, 'Failed to read Excel file. Make sure it is a valid .xlsx file.');
+        showError(errEl, 'Failed to read the file. Make sure it is a valid .xlsx or .xls file.');
         console.error(err);
       }
     };
@@ -5357,7 +5357,7 @@ function handleImportCsvChange(e) {
     // CSV path
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = ev.target.result;
+      const text = ev.target.result.replace(/^\uFEFF/, ''); // strip BOM some Excel CSV exports add
       const rows = text.split(/\r?\n/).map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
       _parseImportRows(rows, errEl);
     };
@@ -5491,7 +5491,7 @@ function handleBulkAssignFileChange(e) {
   document.getElementById('bulk-assign-preview').innerHTML = '';
   document.getElementById('bulk-assign-btn').disabled = true;
 
-  const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+  const isXlsx = /\.(xlsx|xls|xlsm)$/i.test(file.name);
   if (isXlsx) {
     const reader = new FileReader();
     reader.onload = (ev) => {
@@ -5502,7 +5502,7 @@ function handleBulkAssignFileChange(e) {
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
         _parseBulkAssignRows(rows, errEl);
       } catch (err) {
-        showError(errEl, 'Failed to read Excel file. Make sure it is a valid .xlsx file.');
+        showError(errEl, 'Failed to read the file. Make sure it is a valid .xlsx or .xls file.');
         console.error(err);
       }
     };
@@ -5510,7 +5510,7 @@ function handleBulkAssignFileChange(e) {
   } else {
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = ev.target.result;
+      const text = ev.target.result.replace(/^\uFEFF/, ''); // strip BOM some Excel CSV exports add
       const rows = text.split(/\r?\n/).filter(r => r.trim() !== '').map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
       _parseBulkAssignRows(rows, errEl);
     };
@@ -5755,7 +5755,7 @@ function parseBrandAssignmentRows(rows) {
 }
 
 function readSheetRows(file, callback) {
-  const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+  const isXlsx = /\.(xlsx|xls|xlsm)$/i.test(file.name);
   if (isXlsx) {
     const reader = new FileReader();
     reader.onload = (ev) => {
@@ -5764,13 +5764,13 @@ function readSheetRows(file, callback) {
         const workbook = XLSX.read(data, { type: 'array' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         callback(XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }), null);
-      } catch (err) { callback(null, 'Failed to read Excel file. Make sure it is a valid .xlsx file.'); console.error(err); }
+      } catch (err) { callback(null, 'Failed to read the file. Make sure it is a valid .xlsx or .xls file.'); console.error(err); }
     };
     reader.readAsArrayBuffer(file);
   } else {
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = ev.target.result;
+      const text = ev.target.result.replace(/^\uFEFF/, ''); // strip BOM some Excel CSV exports add
       const rows = text.split(/\r?\n/).filter(r => r.trim() !== '').map(r => r.split(',').map(c => c.trim().replace(/^"|"$/g, '')));
       callback(rows, null);
     };
