@@ -5824,12 +5824,14 @@ function handleNewCampBulkFileChange(e) {
 }
 
 // ═════════════════════════════════════════════════════════════
-//  MASTERLIST  (brand / platform / region reference data)
-//  settings/masterlist → { items: [{brand,platform,region}], updatedAt }
+//  MASTERLIST  (brand / platform / region / PIC reference data)
+//  settings/masterlist → { items: [{brand,platform,region,pic}], updatedAt }
 //  Used to map CDMs to valid brand/platform/region combos without
 //  free-typing them, then feeds straight into Bulk Assign.
+//  "PIC" (person in charge) is matched by name against existing members
+//  so rows can be auto-assigned instead of picked manually every time.
 // ═════════════════════════════════════════════════════════════
-let masterlistItems = []; // [{brand, platform, region}]
+let masterlistItems = []; // [{brand, platform, region, pic}]
 
 async function loadMasterlist() {
   try {
@@ -5843,12 +5845,14 @@ function renderMasterlistSummary() {
   const host = document.getElementById('masterlist-summary');
   if (!host) return;
   if (masterlistItems.length === 0) {
-    host.innerHTML = `<span>No masterlist uploaded yet. Upload an Excel/CSV with columns <strong>Brand, Platform, Region</strong> to get started.</span>`;
+    host.innerHTML = `<span>No masterlist uploaded yet. Upload an Excel/CSV with columns <strong>Brand, Platform, Region, PIC</strong> to get started.</span>`;
     return;
   }
   const brandCount = new Set(masterlistItems.map(i => i.brand)).size;
+  const picCount = masterlistItems.filter(i => i.pic).length;
   host.innerHTML = `
-    <strong>${masterlistItems.length}</strong> brand/platform/region combo(s) across <strong>${brandCount}</strong> brand(s).
+    <strong>${masterlistItems.length}</strong> brand/platform/region combo(s) across <strong>${brandCount}</strong> brand(s)
+    (${picCount} with a PIC name).
     <button class="btn-ghost-light" style="font-size:11px;padding:3px 10px;margin-left:8px;color:#DC2626;" onclick="clearMasterlist()">🗑 Clear masterlist</button>`;
 }
 
@@ -5867,7 +5871,8 @@ function handleMasterlistFileChange(e) {
     const bIdx = headers.indexOf('brand');
     const pIdx = headers.indexOf('platform');
     const rIdx = headers.indexOf('region');
-    if (bIdx < 0) { dismissToast(readingToast); showToast('File must have a "Brand" column (Platform and Region optional).', 'error'); return; }
+    const picIdx = headers.indexOf('pic');
+    if (bIdx < 0) { dismissToast(readingToast); showToast('File must have a "Brand" column (Platform, Region, PIC optional).', 'error'); return; }
 
     const seen = new Set();
     const items = [];
@@ -5875,11 +5880,12 @@ function handleMasterlistFileChange(e) {
       const brand    = String(r[bIdx] || '').trim();
       const platform = pIdx >= 0 ? String(r[pIdx] || '').trim() : '';
       const region    = rIdx >= 0 ? String(r[rIdx] || '').trim() : '';
+      const pic       = picIdx >= 0 ? String(r[picIdx] || '').trim() : '';
       if (!brand) return;
       const key = `${brand}|${platform}|${region}`;
       if (seen.has(key)) return;
       seen.add(key);
-      items.push({ brand, platform, region });
+      items.push({ brand, platform, region, pic });
     });
 
     if (items.length === 0) { dismissToast(readingToast); showToast('No valid rows found.', 'error'); return; }
@@ -5962,6 +5968,7 @@ function renderMapBrandChecklist(filterText) {
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;padding:2px 0 2px 8px;">
           <input type="checkbox" class="map-item-cb" data-idx="${item.idx}" style="accent-color:var(--blue);width:14px;height:14px;" />
           <span>${escHtml([item.platform, item.region].filter(Boolean).join(' · ') || '—')}</span>
+          ${item.pic ? `<span style="color:var(--text-muted);font-size:11px;">— PIC: ${escHtml(item.pic)}</span>` : ''}
         </label>
       `).join('')}
     </div>
@@ -5969,6 +5976,50 @@ function renderMapBrandChecklist(filterText) {
 }
 
 function filterMapBrandChecklist(query) { renderMapBrandChecklist(query); }
+
+// Normalize a name for matching: lowercase, trim, collapse whitespace.
+function _normName(s) { return String(s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+
+// Auto-match every masterlist row that has a PIC name to an existing member
+// (matched against member.name, falling back to member.username), and add
+// matches straight into the working table. Rows whose PIC can't be matched
+// to any member are reported back so they can be fixed or added manually.
+function autoMatchMasterlistByPic() {
+  const errEl = document.getElementById('map-masterlist-error');
+  errEl.style.display = 'none';
+
+  const nameIndex = {};
+  Object.values(members).forEach(m => {
+    if (m.role === 'admin') return;
+    nameIndex[_normName(m.name)] = m;
+    nameIndex[_normName(m.username)] = m;
+  });
+
+  let added = 0;
+  const unmatched = [];
+
+  masterlistItems.forEach(item => {
+    if (!item.pic) return;
+    const member = nameIndex[_normName(item.pic)];
+    if (!member) { unmatched.push(item); return; }
+    const dup = mapWorkingRows.some(r => r.uid === member.uid && r.brand === item.brand && r.platform === item.platform && r.region === item.region);
+    if (!dup) {
+      mapWorkingRows.push({ uid: member.uid, username: member.username, name: member.name || member.username, brand: item.brand, platform: item.platform, region: item.region });
+      added++;
+    }
+  });
+
+  renderMapWorkingTable();
+
+  if (unmatched.length > 0) {
+    const names = [...new Set(unmatched.map(i => i.pic))];
+    showError(errEl, `Added ${added} row(s). ${unmatched.length} row(s) couldn't be matched — no member named: ${names.join(', ')}. Check spelling or add them as members first.`);
+  } else if (added === 0) {
+    showToast('No new PIC matches to add — everything with a PIC is already in the list.', 'info');
+  } else {
+    showToast(`✅ Auto-matched ${added} row(s) by PIC name.`, 'success');
+  }
+}
 
 function addMapSelectionToWorking() {
   const errEl = document.getElementById('map-masterlist-error');
