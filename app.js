@@ -3724,7 +3724,7 @@ async function renderEntryRspKitBanner(bannerId, entries) {
           </div>
           <span style="font-size:11px;color:var(--text-muted);">${dt}</span>
         </div>
-        <div id="${panelId}" style="display:${idx === 0 ? 'block' : 'none'};margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
+        <div id="${panelId}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
           ${entriesHtml}
         </div>
       </div>`;
@@ -6943,17 +6943,36 @@ function closeMemberTaskCheck(e) {
 }
 
 // ── Admin dashboard: load & show recent task checks ──────────
-// Grouped per team lead — same collapsible pattern as the "Completion by
-// team lead" widget — so admins can see each lead's team's RSP & Kit
-// checks without scrolling through one long flat list.
+// Mirrors the "Completion by team lead" widget: collapsible lead groups,
+// an overall Kit/RSP progress rate per lead, and per-member rows with
+// Kit-progress / RSP-progress bars (instead of D-5/D-1, since this panel
+// is specifically about Kit & RSP Check completion).
 async function renderTaskChecksInDashboard() {
   // Called from renderDashboardWidgets – shows a compact list below stats
   const el = document.getElementById('dash-taskcheck-panel');
   if (!el) return;
 
   try {
-    const snap = await db.collection('taskChecks').orderBy('sentAt','desc').limit(30).get();
+    const snap = await db.collection('taskChecks').orderBy('sentAt','desc').get();
     if (snap.empty) { el.style.display = 'none'; return; }
+
+    const checks = [];
+    snap.forEach(doc => checks.push({ id: doc.id, ...doc.data() }));
+
+    // Need each member's checklist entries to resolve entry-scoped checks
+    // (a check can target specific brand×platform×region entries only).
+    const checklistSnap = await db.collection('checklists').get();
+    const allChecklists = {};
+    checklistSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+
+    // Load every check's responses in parallel
+    const respByCheck = {};
+    await Promise.all(checks.map(async tc => {
+      const rs = await db.collection('taskCheckResponses').doc(tc.id).collection('responses').get();
+      const responses = {};
+      rs.forEach(d => { responses[d.id] = d.data(); });
+      respByCheck[tc.id] = responses;
+    }));
 
     // Map a member uid -> their team lead's uid/name (or the member
     // themself, if they ARE a team lead). Falls back to "Unassigned".
@@ -6965,58 +6984,121 @@ async function renderTaskChecksInDashboard() {
       return lead ? { uid: lead.uid, name: lead.name || lead.username } : { uid: '_unassigned', name: 'Unassigned (no team lead)' };
     };
 
-    const groups = {}; // leadUid -> { name, checks: [] }
-    const ensureGroup = (g) => { if (!groups[g.uid]) groups[g.uid] = { name: g.name, checks: [] }; return groups[g.uid]; };
+    const isKitItem = (item) => /kit/i.test(item.id) || /kit/i.test(item.label || '');
+    const isRspItem = (item) => /rsp/i.test(item.id) || /rsp/i.test(item.label || '');
 
-    snap.forEach(doc => {
-      const tc = { id: doc.id, ...doc.data() };
-      const targetLeads = tc.targetUid
-        ? [leadOf(tc.targetUid)].filter(Boolean)
-        : Object.values(members).filter(m => m.role !== 'admin').map(m => leadOf(m.uid)).filter(Boolean);
-      // Dedup leads for "sent to all members" checks so they don't repeat per-member
-      const seen = new Set();
-      targetLeads.forEach(g => {
-        if (seen.has(g.uid)) return;
-        seen.add(g.uid);
-        ensureGroup(g).checks.push(tc);
+    // memberStats: uid -> { uid, name, isLead, kitDone, kitTotal, rspDone, rspTotal }
+    const memberStats = {};
+    const ensureStat = (m) => {
+      if (!memberStats[m.uid]) memberStats[m.uid] = { uid: m.uid, name: m.name || m.username, isLead: m.role === 'team_lead', kitDone: 0, kitTotal: 0, rspDone: 0, rspTotal: 0 };
+      return memberStats[m.uid];
+    };
+
+    checks.forEach(tc => {
+      const responses = respByCheck[tc.id] || {};
+      const targetMembers = tc.targetUid
+        ? [members[tc.targetUid]].filter(Boolean)
+        : Object.values(members).filter(m => m.role !== 'admin');
+
+      targetMembers.forEach(m => {
+        const r = responses[m.uid];
+        const stat = ensureStat(m);
+        const tally = (item, status) => {
+          if (isKitItem(item)) { stat.kitTotal++; if (status === 'done') stat.kitDone++; }
+          else if (isRspItem(item)) { stat.rspTotal++; if (status === 'done') stat.rspDone++; }
+        };
+
+        if (tc.campaignId) {
+          const cl = (allChecklists[m.uid] || {})[tc.campaignId] || {};
+          const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
+          entries.forEach(entry => {
+            if (!rspCheckAppliesToEntry(tc, entry)) return;
+            const key = rspEntryKey(entry);
+            tc.items.forEach(item => tally(item, rspItemStatus(r, key, item.id)));
+          });
+        } else {
+          tc.items.forEach(item => tally(item, ((r && r.items) || {})[item.id] || 'pending'));
+        }
       });
     });
 
-    const groupList = Object.values(groups).sort((a, b) => b.checks.length - a.checks.length);
-    if (groupList.length === 0) { el.style.display = 'none'; return; }
+    const memberList = Object.values(memberStats);
+    if (memberList.length === 0) { el.style.display = 'none'; return; }
+    memberList.forEach(s => {
+      s.kitPct = s.kitTotal > 0 ? Math.round((s.kitDone / s.kitTotal) * 100) : 0;
+      s.rspPct = s.rspTotal > 0 ? Math.round((s.rspDone / s.rspTotal) * 100) : 0;
+    });
 
+    // Group members under their team lead — a lead's own row sits inside
+    // their own group (tagged "Team Lead"), same as "Completion by team lead".
+    const groupsMap = {};
+    memberList.forEach(s => {
+      const g = s.isLead ? { uid: s.uid, name: s.name } : leadOf(s.uid);
+      if (!g) return;
+      if (!groupsMap[g.uid]) groupsMap[g.uid] = { uid: g.uid, name: g.name, members: [] };
+      groupsMap[g.uid].members.push(s);
+    });
+
+    const groupList = Object.values(groupsMap).map(g => {
+      const kitDone = g.members.reduce((s, m) => s + m.kitDone, 0);
+      const kitTotal = g.members.reduce((s, m) => s + m.kitTotal, 0);
+      const rspDone = g.members.reduce((s, m) => s + m.rspDone, 0);
+      const rspTotal = g.members.reduce((s, m) => s + m.rspTotal, 0);
+      const hasOwnChecklist = g.members.some(m => m.isLead);
+      const memberCount = g.members.filter(m => !m.isLead).length;
+      return {
+        ...g,
+        kitPct: kitTotal > 0 ? Math.round((kitDone / kitTotal) * 100) : 0,
+        rspPct: rspTotal > 0 ? Math.round((rspDone / rspTotal) * 100) : 0,
+        memberCount, hasOwnChecklist,
+        memberList: g.members.slice().sort((a, b) => (b.kitPct + b.rspPct) - (a.kitPct + a.rspPct)),
+      };
+    });
+    groupList.sort((a, b) => (b.kitPct + b.rspPct) - (a.kitPct + a.rspPct));
+
+    if (groupList.length === 0) { el.style.display = 'none'; return; }
     el.style.display = 'block';
-    const rowsHtml = (checks) => checks.map(tc => {
-      const dt  = new Date(tc.sentAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
-      const who = tc.targetUid ? (members[tc.targetUid]?.name || tc.targetName || '—') : 'All members';
-      const safeTitle = escHtml(tc.title).replace(/'/g, "\\'");
-      return `<div class="deadline-row">
-        <div class="deadline-name" style="cursor:pointer;" onclick="openTaskCheckTracker('${tc.id}')" title="${escHtml(tc.title)}">📦 ${escHtml(tc.title)}<span style="font-size:11px;color:var(--text-faint);margin-left:6px;">${dt} · ${escHtml(who)}</span></div>
-        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
-          <span class="deadline-pill dp-blue" style="cursor:pointer;background:rgba(37,99,235,0.1);color:var(--blue-text);" onclick="openTaskCheckTracker('${tc.id}')">View</span>
-          <span class="deadline-pill" style="cursor:pointer;background:rgba(220,38,38,0.1);color:#DC2626;" onclick="deleteTaskCheck('${tc.id}','${safeTitle}')" title="Delete this task check">🗑</span>
-        </div>
-      </div>`;
-    }).join('');
+    const barColor = pct => pct === 100 ? '#059669' : pct >= 50 ? '#D97706' : pct > 0 ? '#3B82F6' : '#D1D5DB';
 
     const html = groupList.map((g, idx) => {
       const panelId = `taskcheck-lead-panel-${idx}`;
+      const memberRowsHtml = g.memberList.map(m => `
+        <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);">
+          <div style="flex:1.4;font-size:12px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(m.name)}${m.isLead ? ' <span style="font-size:9px;color:var(--text-muted);font-weight:400;">(Team Lead)</span>' : ''}</div>
+          <div style="font-size:10px;color:var(--text-muted);width:26px;">Kit</div>
+          <div style="flex:1;background:#F3F4F6;border-radius:4px;height:6px;overflow:hidden;"><div style="width:${m.kitPct}%;background:${barColor(m.kitPct)};height:100%;border-radius:4px;"></div></div>
+          <div style="font-size:11px;font-family:var(--mono);color:var(--text-muted);width:32px;text-align:right;">${m.kitPct}%</div>
+          <div style="font-size:10px;color:var(--text-muted);width:26px;">RSP</div>
+          <div style="flex:1;background:#F3F4F6;border-radius:4px;height:6px;overflow:hidden;"><div style="width:${m.rspPct}%;background:${barColor(m.rspPct)};height:100%;border-radius:4px;"></div></div>
+          <div style="font-size:11px;font-family:var(--mono);color:var(--text-muted);width:32px;text-align:right;">${m.rspPct}%</div>
+        </div>`).join('') || '<div style="font-size:12px;color:var(--text-muted);padding:6px 0;">No members.</div>';
+
       return `<div class="completion-member-block" style="margin-bottom:10px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;cursor:pointer;" onclick="toggleLeadCompletionPanel('${panelId}', this)" title="Click to view this team's task checks">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;cursor:pointer;" onclick="toggleLeadCompletionPanel('${panelId}', this)" title="Click to view individual members' Kit & RSP progress">
           <div style="display:flex;align-items:center;gap:6px;min-width:0;">
             <span class="lead-completion-caret" data-panel="${panelId}" style="display:inline-block;font-size:10px;color:var(--text-muted);transition:transform .15s;">▶</span>
             <span class="completion-name" style="width:auto;font-weight:600;">${escHtml(g.name)}</span>
-            <span style="font-size:11px;color:var(--text-muted);white-space:nowrap;">(${g.checks.length} check${g.checks.length !== 1 ? 's' : ''})</span>
+            <span style="font-size:11px;color:var(--text-muted);white-space:nowrap;">(${g.memberCount} member${g.memberCount !== 1 ? 's' : ''}${g.hasOwnChecklist ? ' + lead' : ''})</span>
           </div>
         </div>
+        <div class="completion-bar-row" style="margin-bottom:3px;">
+          <div class="completion-name" style="width:32px;font-size:10px;color:var(--text-muted);">Kit</div>
+          <div class="completion-track"><div class="completion-fill" style="width:${g.kitPct}%;background:${barColor(g.kitPct)};"></div></div>
+          <div class="completion-pct">${g.kitPct}%</div>
+        </div>
+        <div class="completion-bar-row">
+          <div class="completion-name" style="width:32px;font-size:10px;color:var(--text-muted);">RSP</div>
+          <div class="completion-track"><div class="completion-fill" style="width:${g.rspPct}%;background:${barColor(g.rspPct)};"></div></div>
+          <div class="completion-pct">${g.rspPct}%</div>
+        </div>
         <div id="${panelId}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
-          ${rowsHtml(g.checks)}
+          ${memberRowsHtml}
         </div>
       </div>`;
     }).join('');
 
     el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div class="dash-card-title">Recent Task Checks</div></div>` + html;
-  } catch(e) { el.style.display = 'none'; }
+  } catch(e) { el.style.display = 'none'; console.error('Task check dashboard error', e); }
 }
 
 
