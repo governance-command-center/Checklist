@@ -300,7 +300,7 @@
           <!-- RSP & Kit Checking — above Checklist Progress -->
           <div class="data-card data-card-full" style="border-color:rgba(15,118,110,0.35);">
             <div class="data-card-header" style="background:rgba(15,118,110,0.06);border-bottom-color:rgba(15,118,110,0.2);">
-              <span class="data-card-icon">🎒</span>
+              <span class="data-card-icon">📦</span>
               <div>
                 <div class="data-card-title">RSP &amp; Kit Checking</div>
                 <div class="data-card-sub">Send task checks and view member responses</div>
@@ -1121,7 +1121,7 @@
     <div class="modal" style="max-width:560px;">
       <div class="modal-header">
         <div>
-          <h3>🎒 Send Task Check</h3>
+          <h3>📦 Send Task Check</h3>
           <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">Members will see this as an interactive checklist they can update their status on.</div>
         </div>
         <button class="btn-ghost-light" onclick="closeTaskCheckModal()">✕</button>
@@ -1137,6 +1137,14 @@
         <select id="tc-campaign-sel">
           <option value="">All campaigns</option>
         </select>
+      </div>
+
+      <div class="field" id="tc-entries-field" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <label style="margin-bottom:0;">Target entries <span style="font-size:11px;font-weight:400;color:var(--text-muted);">(by brand/platform/region — leave all unselected to apply to every entry)</span></label>
+          <button type="button" onclick="tcToggleAllEntries()" style="font-size:11px;color:var(--blue);background:transparent;border:none;cursor:pointer;padding:0;font-weight:500;">Select All</button>
+        </div>
+        <div class="member-list" id="tc-entries-chips" style="max-height:120px;overflow-y:auto;"></div>
       </div>
 
       <div class="field">
@@ -1156,7 +1164,7 @@
       <div id="tc-error" class="error-msg" style="display:none;"></div>
       <div class="modal-actions">
         <button class="btn-ghost-light" onclick="closeTaskCheckModal()">Cancel</button>
-        <button class="btn-primary" style="width:auto;background:#0F766E;" onclick="sendTaskCheck()">🎒 Send Task Check</button>
+        <button class="btn-primary" style="width:auto;background:#0F766E;" onclick="sendTaskCheck()">📦 Send Task Check</button>
       </div>
     </div>
   </div>

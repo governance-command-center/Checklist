@@ -249,23 +249,39 @@ async function renderAdminView() {
 
   const overallCompletionRate = total > 0 ? Math.round((complete / total) * 100) : 0;
 
-  // Load RSP & Kit completion rate for dashboard stat card
+  // Load RSP & Kit completion rate for dashboard stat card.
+  // Campaign-scoped checks are counted per (member × applicable entry);
+  // checks with no campaign (legacy "All campaigns" checks) are still
+  // counted per member, since entries only exist within a campaign.
   let rspTotal = 0, rspComplete = 0;
   try {
     const tcSnap = await db.collection('taskChecks').get();
     for (const tcDoc of tcSnap.docs) {
-      const tc = tcDoc.data();
-      const targetMembers = tc.targetUid
-        ? [members[tc.targetUid]].filter(Boolean)
-        : Object.values(members).filter(m => m.role !== 'admin');
+      const tc = { id: tcDoc.id, ...tcDoc.data() };
+      if (filterCampaign && tc.campaignId !== filterCampaign) continue;
       const respSnap = await db.collection('taskCheckResponses').doc(tcDoc.id).collection('responses').get();
       const responses = {};
       respSnap.forEach(d => { responses[d.id] = d.data(); });
+
+      const targetMembers = tc.targetUid
+        ? [members[tc.targetUid]].filter(Boolean)
+        : Object.values(members).filter(m => m.role !== 'admin');
+
       targetMembers.forEach(m => {
-        rspTotal++;
-        const r = responses[m.uid] || {};
-        const allDone = tc.items.every(item => ((r.items || {})[item.id] || 'pending') === 'done');
-        if (allDone) rspComplete++;
+        const r = responses[m.uid];
+        if (tc.campaignId) {
+          const cl = (allChecklists[m.uid] || {})[tc.campaignId] || {};
+          const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
+          entries.forEach(entry => {
+            if (!rspCheckAppliesToEntry(tc, entry)) return;
+            rspTotal++;
+            if (rspEntryOverallStatus(tc, r, rspEntryKey(entry)) === 'done') rspComplete++;
+          });
+        } else {
+          rspTotal++;
+          const allDone = tc.items.every(item => ((r && r.items) || {})[item.id] === 'done');
+          if (allDone) rspComplete++;
+        }
       });
     }
   } catch(e) { /* non-blocking */ }
@@ -284,7 +300,7 @@ async function renderAdminView() {
       <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${notStartPct}%;background:#DC2626;"></div></div></div>
     <div class="stat-card"><div class="label">Completion Rate</div><div class="value" style="color:${overallCompletionRate===100?'#059669':overallCompletionRate>=50?'#D97706':'#2563EB'}">${overallCompletionRate}%</div>
       <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${overallCompletionRate}%;background:${overallCompletionRate===100?'#059669':overallCompletionRate>=50?'#D97706':'#2563EB'};"></div></div></div>
-    <div class="stat-card"><div class="label">🎒 RSP &amp; Kit Rate</div><div class="value" style="color:${rspColor}">${rspDisplay}</div>
+    <div class="stat-card"><div class="label">📦 RSP &amp; Kit Rate</div><div class="value" style="color:${rspColor}">${rspDisplay}</div>
       <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${rspRate||0}%;background:${rspColor};"></div></div></div>
   `;
 
@@ -1661,6 +1677,8 @@ async function loadUserChecklist() {
     document.getElementById('user-no-campaign').style.display     = 'block';
     document.getElementById('user-checklist').style.display       = 'none';
     document.getElementById('user-progress-bar-wrap').style.display = 'none';
+    const banner = document.getElementById('user-progress-banner');
+    if (banner) banner.style.display = 'none';
     return;
   }
 
@@ -2136,6 +2154,11 @@ function renderUserChecklist() {
 
   html += `</tbody></table></div></div>`;
   container.innerHTML = html;
+
+  // RSP & Kit Checking banner — per brand/platform/region entry, sitting
+  // right above the table (same column order as the entry headers above).
+  const bannerId = containerId === 'tl-checklist' ? 'tl-progress-banner' : 'user-progress-banner';
+  renderEntryRspKitBanner(bannerId, entries);
 
   // Keep the second header row (D-5/D-1 Status, Notes) pinned directly under
   // the first header row regardless of actual rendered height, so the two
@@ -3089,7 +3112,7 @@ async function renderRspKitList(filter) {
       html += `<div style="margin-bottom:18px;border:1px solid var(--border);border-radius:10px;overflow:hidden;">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface2);border-bottom:1px solid var(--border);">
           <div>
-            <span style="font-weight:600;font-size:13px;">🎒 ${escHtml(tc.title)}</span>
+            <span style="font-weight:600;font-size:13px;">📦 ${escHtml(tc.title)}</span>
             ${targetLabel}
             ${campTag}
             <span style="font-size:11px;color:var(--text-muted);margin-left:8px;">${dt}</span>
@@ -3277,6 +3300,19 @@ async function renderUserDashboard() {
     // campaign's real total item count (see resolveCampaignTotalItems).
     const dashTotalItemsMap = await resolveCampaignTotalItems(myCampaigns);
 
+    // Fetch all RSP & Kit task checks + responses once, so each campaign
+    // card below can show its own entry-aware completion rate.
+    let dashTaskChecks = [];
+    try {
+      const tcSnap = await db.collection('taskChecks').get();
+      dashTaskChecks = await Promise.all(tcSnap.docs.map(async d => {
+        const respSnap = await db.collection('taskCheckResponses').doc(d.id).collection('responses').get();
+        const responses = {};
+        respSnap.forEach(r => { responses[r.id] = r.data(); });
+        return { id: d.id, ...d.data(), responses };
+      }));
+    } catch(e) { /* non-blocking */ }
+
     for (const camp of myCampaigns) {
       const allAssigned = camp.assignedUids || [];
       // Team leads see their managed members; plain members see ONLY themselves.
@@ -3286,6 +3322,11 @@ async function renderUserDashboard() {
       let cTotal = 0, cComplete = 0, cInProgress = 0, cNotStarted = 0;
       let d5DoneSum = 0, d1DoneSum = 0;
       const memberRows = [];
+
+      // RSP & Kit rate for this campaign — counted per (member × entry) for
+      // checks scoped to this campaign (respecting entry targeting).
+      let campRspTotal = 0, campRspDone = 0;
+      const campRspChecks = dashTaskChecks.filter(tc => tc.campaignId === camp.id);
 
       for (const uid of assignedUids) {
         const cl = (allChecklists[uid] || {})[camp.id] || {};
@@ -3302,6 +3343,18 @@ async function renderUserDashboard() {
           d1DoneSum += eb.d1Done;
           memberRows.push({ uid, d5Pct: eb.d5Pct, d1Pct: eb.d1Pct, label: eb.label, hasD5: eb.hasD5 });
         });
+
+        const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
+        const checksForUid = campRspChecks.filter(tc => rspCheckAppliesToUser(tc, uid));
+        if (checksForUid.length > 0) {
+          entries.forEach(entry => {
+            const checksForEntry = checksForUid.filter(tc => rspCheckAppliesToEntry(tc, entry));
+            if (checksForEntry.length === 0) return;
+            campRspTotal++;
+            const allDone = checksForEntry.every(tc => rspEntryOverallStatus(tc, tc.responses[uid], rspEntryKey(entry)) === 'done');
+            if (allDone) campRspDone++;
+          });
+        }
       }
 
       totalRows      += cTotal;
@@ -3316,7 +3369,8 @@ async function renderUserDashboard() {
       const campTi   = dashTotalItemsMap[camp.id]?.total || TOTAL_ITEMS;
       const campD5Pct = cTotal > 0 ? Math.round((d5DoneSum / (campTi * cTotal)) * 100) : 0;
       const campD1Pct = cTotal > 0 ? Math.round((d1DoneSum / (campTi * cTotal)) * 100) : 0;
-      campCards.push({ camp, cTotal, cComplete, cInProgress, cNotStarted, campRate, campD5Pct, campD1Pct, memberRows });
+      const campRspPct = campRspTotal > 0 ? Math.round((campRspDone / campRspTotal) * 100) : null;
+      campCards.push({ camp, cTotal, cComplete, cInProgress, cNotStarted, campRate, campD5Pct, campD1Pct, campRspPct, memberRows });
     }
 
     // ── Overall stat cards ──
@@ -3354,9 +3408,10 @@ async function renderUserDashboard() {
     let breakHtml = `<div class="section-label" style="margin-bottom:12px;">Breakdown by Campaign</div>`;
     breakHtml += `<div class="user-dash-camp-grid">`;
 
-    for (const { camp, cTotal, cComplete, cInProgress, cNotStarted, campRate, campD5Pct, campD1Pct, memberRows } of campCards) {
+    for (const { camp, cTotal, cComplete, cInProgress, cNotStarted, campRate, campD5Pct, campD1Pct, campRspPct, memberRows } of campCards) {
       const campD5Color = campD5Pct === 100 ? '#059669' : campD5Pct >= 50 ? '#D97706' : '#2563EB';
       const campD1Color = campD1Pct === 100 ? '#059669' : campD1Pct >= 50 ? '#D97706' : '#2563EB';
+      const campRspColor = campRspPct === null ? 'var(--text-muted)' : campRspPct === 100 ? '#059669' : campRspPct >= 50 ? '#D97706' : '#2563EB';
       const deadlineStr = camp.dday
         ? `<span style="font-size:11px;color:var(--text-muted);">📅 D-Day: ${new Date(camp.dday).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>`
         : '';
@@ -3395,6 +3450,7 @@ async function renderUserDashboard() {
             <div style="text-align:right;">
               <div style="font-size:12px;font-weight:700;color:${campD5Color};">D-5 ${campD5Pct}%</div>
               <div style="font-size:12px;font-weight:700;color:${campD1Color};margin-top:2px;">D-1 ${campD1Pct}%</div>
+              ${campRspPct !== null ? `<div style="font-size:12px;font-weight:700;color:${campRspColor};margin-top:2px;">📦 ${campRspPct}%</div>` : ''}
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px;margin:8px 0 12px;">
@@ -3404,6 +3460,9 @@ async function renderUserDashboard() {
             <div class="user-dash-camp-rate-bar" style="height:5px;">
               <div style="width:${campD1Pct}%;background:${campD1Color};height:100%;border-radius:4px;transition:width .4s;"></div>
             </div>
+            ${campRspPct !== null ? `<div class="user-dash-camp-rate-bar" style="height:5px;" title="RSP & Kit checking progress">
+              <div style="width:${campRspPct}%;background:${campRspColor};height:100%;border-radius:4px;transition:width .4s;"></div>
+            </div>` : ''}
           </div>
           <div class="user-dash-camp-pills">
             <span class="user-dash-pill pill-green">✓ ${cComplete} Complete</span>
@@ -3438,13 +3497,16 @@ async function renderMemberRspKitPanel() {
   if (!breakdownEl || !currentUser) return;
 
   try {
-    // Load task checks targeted at this member or all members
-    const snap = await db.collection('taskChecks').orderBy('sentAt', 'desc').limit(10).get();
-    if (snap.empty) return;
+    // Load task checks targeted at this member or all members.
+    // Only show campaign-LESS checks here — campaign-scoped checks are now
+    // surfaced inline on the campaign card above (rate) and on the Checklist
+    // tab banner (per brand/platform/region entry), so they're not repeated.
+    const snap = await db.collection('taskChecks').orderBy('sentAt', 'desc').get();
 
     const myChecks = [];
     snap.forEach(doc => {
       const tc = doc.data();
+      if (tc.campaignId) return;
       if (!tc.targetUid || tc.targetUid === currentUser.uid) {
         myChecks.push({ id: doc.id, ...tc });
       }
@@ -3455,7 +3517,7 @@ async function renderMemberRspKitPanel() {
     panel.id = 'member-rsp-kit-panel';
     panel.style.cssText = 'margin-top:28px;';
 
-    let html = `<div class="section-label" style="margin-bottom:12px;">🎒 RSP &amp; Kit Checking</div>`;
+    let html = `<div class="section-label" style="margin-bottom:12px;">📦 RSP &amp; Kit Checking</div>`;
 
     for (const tc of myChecks) {
       // Load my response
@@ -3556,6 +3618,111 @@ async function saveMemberDashTaskCheck(checkId, btn) {
 function showError(el, msg) {
   el.textContent    = msg;
   el.style.display  = 'block';
+}
+
+// ── Member/TL: RSP & Kit Checking banner on the Checklist tab ────────
+// Sits in the (previously empty) #user-progress-banner / #tl-progress-banner
+// slot just above the entry table, broken out per brand/platform/region
+// entry — same entries as the table's column headers.
+async function renderEntryRspKitBanner(bannerId, entries) {
+  const banner = document.getElementById(bannerId);
+  if (!banner || !currentUser || !selectedCampaignId) return;
+  banner.style.display = 'none';
+  banner.innerHTML = '';
+
+  try {
+    const snap = await db.collection('taskChecks')
+      .where('campaignId', '==', selectedCampaignId)
+      .orderBy('sentAt', 'desc').get();
+
+    const checks = [];
+    snap.forEach(doc => {
+      const tc = doc.data();
+      if (rspCheckAppliesToUser(tc, currentUser.uid)) checks.push({ id: doc.id, ...tc });
+    });
+    if (checks.length === 0) return;
+
+    // Load my responses for each check
+    const responses = {};
+    await Promise.all(checks.map(async tc => {
+      const respDoc = await db.collection('taskCheckResponses').doc(tc.id).collection('responses').doc(currentUser.uid).get();
+      responses[tc.id] = respDoc.exists ? respDoc.data() : {};
+    }));
+
+    // Only keep checks that apply to at least one of this campaign's entries
+    const relevantChecks = checks.filter(tc => entries.some(e => rspCheckAppliesToEntry(tc, e)));
+    if (relevantChecks.length === 0) return;
+
+    let html = '';
+    relevantChecks.forEach(tc => {
+      const dt = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      const applicableEntries = entries.map((e, i) => ({ e, i })).filter(({ e }) => rspCheckAppliesToEntry(tc, e));
+
+      const entriesHtml = applicableEntries.map(({ e, i }) => {
+        const key = rspEntryKey(e);
+        const resp = responses[tc.id];
+        const overall = rspEntryOverallStatus(tc, resp, key);
+        const label = buildEntryLabel(e, i);
+        const itemsHtml = tc.items.map(item => {
+          const current = rspItemStatus(resp, key, item.id);
+          const opts = [
+            { v: 'pending', l: '— Pending' },
+            { v: 'in-progress', l: '⟳ In Progress' },
+            { v: 'done', l: '✓ Done' },
+          ];
+          const selectHtml = opts.map(o => `<option value="${o.v}" ${current===o.v?'selected':''}>${o.l}</option>`).join('');
+          return `<select class="status-sel ${statusClass(current)}" style="font-size:11px;padding:2px 6px;"
+            data-checkid="${tc.id}" data-entrykey="${escHtml(key)}" data-itemid="${item.id}"
+            title="${escHtml(item.label)}"
+            onchange="onEntryRspItemChange('${tc.id}','${escHtml(key).replace(/'/g,"\\'")}', this)">
+            ${selectHtml}
+          </select>`;
+        }).join(' ');
+
+        return `<div class="rsp-banner-entry" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px dashed var(--border);">
+          <span class="rv-status ${statusClass(overall)}" style="font-size:10px;min-width:90px;">${RSP_STATUS_LABEL[overall]}</span>
+          <span style="font-size:12px;font-weight:600;color:var(--text);min-width:140px;">${escHtml(label)}</span>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">${itemsHtml}</div>
+        </div>`;
+      }).join('');
+
+      html += `<div class="rsp-banner" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <span style="font-weight:600;font-size:13px;">📦 ${escHtml(tc.title)}</span>
+          <span style="font-size:11px;color:var(--text-muted);">${dt}</span>
+        </div>
+        ${entriesHtml}
+      </div>`;
+    });
+
+    banner.innerHTML = html;
+    banner.style.display = 'block';
+  } catch(e) { console.error('Entry RSP banner error', e); }
+}
+
+// ── Member/TL: inline status change in the Checklist-tab RSP banner ──
+// Auto-saves on every change (the banner is compact, no separate save step).
+async function onEntryRspItemChange(checkId, entryKey, sel) {
+  sel.className = `status-sel ${statusClass(sel.value)}`;
+  if (!currentUser) return;
+  try {
+    await db.collection('taskCheckResponses').doc(checkId)
+      .collection('responses').doc(currentUser.uid)
+      .set({ entries: { [entryKey]: { items: { [sel.dataset.itemid]: sel.value } } }, updatedAt: new Date().toISOString() }, { merge: true });
+
+    // Recompute & refresh the overall status pill for this entry's row
+    const row = sel.closest('.rsp-banner-entry');
+    const allSels = row ? row.querySelectorAll(`select[data-checkid="${checkId}"][data-entrykey="${entryKey}"]`) : [];
+    const statuses = [...allSels].map(s => s.value);
+    const allDone  = statuses.every(s => s === 'done');
+    const anyProg  = statuses.some(s => s === 'in-progress' || s === 'done');
+    const overall  = allDone ? 'done' : anyProg ? 'in-progress' : 'pending';
+    const pill = row ? row.querySelector('.rv-status') : null;
+    if (pill) { pill.textContent = RSP_STATUS_LABEL[overall]; pill.className = `rv-status ${RSP_STATUS_CLASS[overall]}`; }
+  } catch(e) {
+    showToast('Failed to save status. Try again.', 'warn');
+    console.error(e);
+  }
 }
 
 function escHtml(str) {
@@ -3693,7 +3860,7 @@ async function loadBroadcastFeed() {
       const isUnread = !b.readBy?.includes(uid);
       if (isUnread) unreadIds.push(doc.id);
 
-      const typeIcon  = { shoutout: '🏆', nudge: '⏰', custom: '📢', registration: '📋', taskcheck: '🎒' }[b.type] || '📣';
+      const typeIcon  = { shoutout: '🏆', nudge: '⏰', custom: '📢', registration: '📋', taskcheck: '📦' }[b.type] || '📣';
       const typeColor = { shoutout: '#059669', nudge: '#D97706', custom: '#2563EB', registration: '#7C3AED', taskcheck: '#0F766E' }[b.type] || '#64748B';
       const timeStr   = new Date(b.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
       const campTag   = b.campaignName ? `<span class="bcast-tag">${b.campaignName}</span>` : '';
@@ -3706,7 +3873,7 @@ async function loadBroadcastFeed() {
 
       // Task check card — show "Update Status" button for members
       const taskCheckBtn = (b.type === 'taskcheck' && b.taskCheckId && currentUser?.role !== 'admin')
-        ? `<button onclick="closeBroadcastFeed();openMemberTaskCheck('${b.taskCheckId}')" style="margin-top:10px;padding:7px 16px;font-size:12px;font-weight:600;background:rgba(15,118,110,0.18);border:1px solid rgba(15,118,110,0.5);color:#5EEAD4;border-radius:8px;cursor:pointer;">🎒 Update My Status</button>`
+        ? `<button onclick="closeBroadcastFeed();openMemberTaskCheck('${b.taskCheckId}')" style="margin-top:10px;padding:7px 16px;font-size:12px;font-weight:600;background:rgba(15,118,110,0.18);border:1px solid rgba(15,118,110,0.5);color:#5EEAD4;border-radius:8px;cursor:pointer;">📦 Update My Status</button>`
         : '';
 
       html += `<div class="bcast-card ${isUnread ? 'bcast-unread' : ''}">
@@ -6226,6 +6393,45 @@ const DEFAULT_TASK_CHECK_ITEMS = [
 
 let _taskCheckItems = []; // working copy during admin modal editing
 let _activeMemberTaskCheck = null; // { checkId, data, myResponse }
+let _tcSelectedEntries = []; // working copy of entry chips selected in "Send Task Check" modal
+
+// ── Shared RSP & Kit helpers: entry-level targeting & status lookup ──
+// A taskCheck can optionally carry `entries: [{brand,platform,region}]`.
+// - entries missing/empty  → check applies to the member's WHOLE checklist
+//   for that campaign (legacy behaviour) — only valid when campaignId is set.
+// - entries present        → check applies ONLY to the matching brand ×
+//   platform × region entries; other entries on the same checklist are
+//   unaffected.
+// Responses are stored as `{ entries: { [entryKey]: { items:{...} } } }`.
+// Old (pre-entry) responses used a flat `{ items:{...} }` shape — that shape
+// is treated as applying to every entry, for backward compatibility.
+function rspEntryKey(entry) {
+  return `${(entry && entry.brand) || ''}|${(entry && entry.platform) || ''}|${(entry && entry.region) || ''}`;
+}
+function rspCheckAppliesToEntry(tc, entry) {
+  if (!tc.entries || tc.entries.length === 0) return true;
+  return tc.entries.some(ce =>
+    (ce.brand || '') === (entry.brand || '') &&
+    (ce.platform || '') === (entry.platform || '') &&
+    (ce.region || '') === (entry.region || ''));
+}
+function rspCheckAppliesToUser(tc, uid) {
+  return !tc.targetUid || tc.targetUid === uid;
+}
+function rspItemStatus(resp, entryKey, itemId) {
+  if (!resp) return 'pending';
+  if (resp.entries && resp.entries[entryKey]) return (resp.entries[entryKey].items || {})[itemId] || 'pending';
+  if (!resp.entries && resp.items) return resp.items[itemId] || 'pending'; // legacy flat response
+  return 'pending';
+}
+function rspEntryOverallStatus(tc, resp, entryKey) {
+  const statuses = tc.items.map(it => rspItemStatus(resp, entryKey, it.id));
+  const allDone = statuses.every(s => s === 'done');
+  const anyProg = statuses.some(s => s === 'in-progress' || s === 'done');
+  return allDone ? 'done' : anyProg ? 'in-progress' : 'pending';
+}
+const RSP_STATUS_LABEL = { done: '✓ Completed', 'in-progress': '⟳ In Progress', pending: '— Pending' };
+const RSP_STATUS_CLASS = { done: 'rv-done', 'in-progress': 'rv-progress', pending: 'rv-pending' };
 
 // ── Admin: Open "Send Task Check" modal ──────────────────────
 function openTaskCheckModal() {
@@ -6255,14 +6461,84 @@ function openTaskCheckModal() {
   document.getElementById('tc-title').value = 'Kit & RSP Check';
   document.getElementById('tc-error').style.display = 'none';
 
-  // Auto-update title when campaign changes
+  // Reset entry targeting (campaign-specific brand/platform/region) field
+  _tcSelectedEntries = [];
+  const entriesField = document.getElementById('tc-entries-field');
+  if (entriesField) entriesField.style.display = 'none';
+  const entriesChips = document.getElementById('tc-entries-chips');
+  if (entriesChips) entriesChips.innerHTML = '';
+
+  // Auto-update title + reload entry chips when campaign changes
   document.getElementById('tc-campaign-sel').onchange = function() {
     const campName = this.options[this.selectedIndex].text;
     const base = 'Kit & RSP Check';
     document.getElementById('tc-title').value = this.value ? `${base} — ${campName}` : base;
+    tcLoadEntriesForCampaign(this.value);
   };
 
   document.getElementById('taskcheck-overlay').style.display = 'flex';
+}
+
+// ── Admin: load distinct brand/platform/region entries used by members'
+//    checklists for the chosen campaign, so the admin can optionally target
+//    the RSP & Kit check to specific entries only ────────────────────────
+async function tcLoadEntriesForCampaign(campId) {
+  const field = document.getElementById('tc-entries-field');
+  const chipWrap = document.getElementById('tc-entries-chips');
+  _tcSelectedEntries = [];
+  if (!field || !chipWrap) return;
+
+  if (!campId) { field.style.display = 'none'; chipWrap.innerHTML = ''; return; }
+
+  field.style.display = 'block';
+  chipWrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Loading entries…</div>';
+
+  try {
+    const camp = campaigns[campId];
+    const assignedUids = (camp?.assignedUids) || [];
+    const uniqueEntries = [];
+    for (const uid of assignedUids) {
+      const clDoc = await db.collection('checklists').doc(uid).get();
+      const cl = clDoc.exists ? (clDoc.data()[campId] || {}) : {};
+      const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
+      entries.forEach(e => {
+        const label = buildEntryLabel(e, uniqueEntries.length);
+        if (!uniqueEntries.some(ex => rspEntryKey(ex) === rspEntryKey(e))) {
+          uniqueEntries.push({ brand: e.brand || '', platform: e.platform || '', region: e.region || '', label });
+        }
+      });
+    }
+
+    if (uniqueEntries.length === 0) {
+      chipWrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No brand/platform/region entries found for this campaign yet.</div>';
+      return;
+    }
+
+    chipWrap.innerHTML = uniqueEntries.map((e, i) => {
+      const safe = escHtml(e.label || [e.brand, e.platform, e.region].filter(Boolean).join(' · ') || `Entry ${i + 1}`);
+      return `<div class="member-chip" data-brand="${escHtml(e.brand)}" data-platform="${escHtml(e.platform)}" data-region="${escHtml(e.region)}"
+        onclick="tcToggleEntryChip(this)" title="${safe}">${safe}</div>`;
+    }).join('');
+  } catch(e) {
+    chipWrap.innerHTML = '<div style="color:var(--danger);font-size:12px;">Failed to load entries.</div>';
+    console.error(e);
+  }
+}
+
+function tcToggleEntryChip(el) {
+  el.classList.toggle('selected');
+  _tcSelectedEntries = [...document.querySelectorAll('#tc-entries-chips .member-chip.selected')].map(c => ({
+    brand: c.dataset.brand || '', platform: c.dataset.platform || '', region: c.dataset.region || '',
+  }));
+}
+
+function tcToggleAllEntries() {
+  const chips = document.querySelectorAll('#tc-entries-chips .member-chip');
+  const allSelected = [...chips].every(c => c.classList.contains('selected'));
+  chips.forEach(c => allSelected ? c.classList.remove('selected') : c.classList.add('selected'));
+  _tcSelectedEntries = allSelected ? [] : [...chips].map(c => ({
+    brand: c.dataset.brand || '', platform: c.dataset.platform || '', region: c.dataset.region || '',
+  }));
 }
 
 function tcToggleAllMembers() {
@@ -6325,6 +6601,9 @@ async function sendTaskCheck() {
 
   try {
     const campName = campId ? campaigns[campId]?.name : null;
+    // Entry targeting only makes sense when a campaign is selected; entries
+    // selected for a different campaign (left over in memory) are ignored.
+    const targetEntries = campId ? _tcSelectedEntries : [];
 
     if (sendToAll) {
       // Single task check for everyone
@@ -6334,17 +6613,18 @@ async function sendTaskCheck() {
         sentAt: new Date().toISOString(), sentBy: 'Admin',
         targetUid: null, targetName: memberName,
         campaignId: campId || null, campaignName: campName || null,
+        entries: targetEntries,
       };
       const ref = await db.collection('taskChecks').add(checkData);
       await db.collection('broadcasts').add({
         type: 'taskcheck',
-        message: `🎒 New Task Check sent: "${title}" — please review and update your status.`,
+        message: `📦 New Task Check sent: "${title}" — please review and update your status.`,
         targetUid: null, targetName: memberName,
         campaignId: campId || null, campaignName: campName || null,
         sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
         taskCheckId: ref.id,
       });
-      showToast(`🎒 Task Check "${title}" sent to All members!`, 'success');
+      showToast(`📦 Task Check "${title}" sent to All members!`, 'success');
     } else {
       // One task check per selected member
       for (const uid of selectedUids) {
@@ -6356,11 +6636,12 @@ async function sendTaskCheck() {
           sentAt: new Date().toISOString(), sentBy: 'Admin',
           targetUid: uid, targetName: memberName,
           campaignId: campId || null, campaignName: campName || null,
+          entries: targetEntries,
         };
         const ref = await db.collection('taskChecks').add(checkData);
         await db.collection('broadcasts').add({
           type: 'taskcheck',
-          message: `🎒 New Task Check sent: "${title}" — please review and update your status.`,
+          message: `📦 New Task Check sent: "${title}" — please review and update your status.`,
           targetUid: uid, targetName: memberName,
           campaignId: campId || null, campaignName: campName || null,
           sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
@@ -6368,7 +6649,7 @@ async function sendTaskCheck() {
         });
       }
       const names = selectedChips.map(c => c.textContent.trim()).join(', ');
-      showToast(`🎒 Task Check "${title}" sent to ${selectedUids.length} member${selectedUids.length !== 1 ? 's' : ''}: ${names}`, 'success');
+      showToast(`📦 Task Check "${title}" sent to ${selectedUids.length} member${selectedUids.length !== 1 ? 's' : ''}: ${names}`, 'success');
     }
 
     document.getElementById('taskcheck-overlay').style.display = 'none';
@@ -6378,7 +6659,7 @@ async function sendTaskCheck() {
     showError(errEl, 'Failed to send. Please try again.');
     console.error(e);
   } finally {
-    btn.textContent = '🎒 Send Task Check'; btn.disabled = false;
+    btn.textContent = '📦 Send Task Check'; btn.disabled = false;
   }
 }
 
@@ -6392,7 +6673,7 @@ async function openTaskCheckTracker(checkId) {
     const checkDoc = await db.collection('taskChecks').doc(checkId).get();
     if (!checkDoc.exists) { content.innerHTML = '<div style="color:var(--text-muted);">Task check not found.</div>'; return; }
     const check = checkDoc.data();
-    document.getElementById('tc-tracker-title').textContent = `🎒 ${check.title}`;
+    document.getElementById('tc-tracker-title').textContent = `📦 ${check.title}`;
 
     const respSnap = await db.collection('taskCheckResponses').doc(checkId).collection('responses').get();
     const responses = {};
@@ -6405,8 +6686,11 @@ async function openTaskCheckTracker(checkId) {
 
     const sentStr = new Date(check.sentAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
     const campTag = check.campaignName ? `<span class="bcast-tag" style="margin-left:6px;">${escHtml(check.campaignName)}</span>` : '';
+    const entriesTag = (check.entries && check.entries.length)
+      ? `<span class="bcast-tag" style="margin-left:6px;" title="Only these brand/platform/region entries were targeted">🎯 ${check.entries.length} entr${check.entries.length===1?'y':'ies'}</span>`
+      : '';
 
-    let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Sent ${sentStr} ${campTag} · ${targetMembers.length} member${targetMembers.length!==1?'s':''}</div>`;
+    let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Sent ${sentStr} ${campTag}${entriesTag} · ${targetMembers.length} member${targetMembers.length!==1?'s':''}</div>`;
 
     // Summary pills
     let cDone = 0, cProg = 0, cPend = 0;
@@ -6487,7 +6771,7 @@ async function openMemberTaskCheck(checkId) {
 
     _activeMemberTaskCheck = { checkId, check, myResponse };
 
-    document.getElementById('mtc-title').textContent = `🎒 ${check.title}`;
+    document.getElementById('mtc-title').textContent = `📦 ${check.title}`;
     document.getElementById('mtc-subtitle').textContent = check.campaignName
       ? `Campaign: ${check.campaignName}`
       : `Sent by Admin · ${new Date(check.sentAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}`;
@@ -6585,7 +6869,7 @@ async function renderTaskChecksInDashboard() {
       const who = tc.targetUid ? (members[tc.targetUid]?.name || tc.targetName || '—') : 'All members';
       const safeTitle = escHtml(tc.title).replace(/'/g, "\\'");
       html += `<div class="deadline-row">
-        <div class="deadline-name" style="cursor:pointer;" onclick="openTaskCheckTracker('${doc.id}')" title="${escHtml(tc.title)}">🎒 ${escHtml(tc.title)}<span style="font-size:11px;color:var(--text-faint);margin-left:6px;">${dt} · ${escHtml(who)}</span></div>
+        <div class="deadline-name" style="cursor:pointer;" onclick="openTaskCheckTracker('${doc.id}')" title="${escHtml(tc.title)}">📦 ${escHtml(tc.title)}<span style="font-size:11px;color:var(--text-faint);margin-left:6px;">${dt} · ${escHtml(who)}</span></div>
         <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
           <span class="deadline-pill dp-blue" style="cursor:pointer;background:rgba(37,99,235,0.1);color:var(--blue-text);" onclick="openTaskCheckTracker('${doc.id}')">View</span>
           <span class="deadline-pill" style="cursor:pointer;background:rgba(220,38,38,0.1);color:#DC2626;" onclick="deleteTaskCheck('${doc.id}','${safeTitle}')" title="Delete this task check">🗑</span>
@@ -6828,12 +7112,14 @@ async function renderTeamLeadView() {
   const checklistCompletionRate = d1TotalSum > 0 ? Math.round((d1DoneSum / d1TotalSum) * 100) : 0;
   const checklistRateColor = checklistCompletionRate === 100 ? '#16a34a' : checklistCompletionRate >= 50 ? '#d97706' : '#2563eb';
 
-  // RSP & Kit completion rate for team lead's members
+  // RSP & Kit completion rate for team lead's members (entry-aware for
+  // campaign-scoped checks, same logic as the admin dashboard).
   let tlRspTotal = 0, tlRspComplete = 0;
   try {
     const tcSnap = await db.collection('taskChecks').get();
     for (const tcDoc of tcSnap.docs) {
-      const tc = tcDoc.data();
+      const tc = { id: tcDoc.id, ...tcDoc.data() };
+      if (filterCampId && tc.campaignId !== filterCampId) continue;
       const targetMembers = tc.targetUid
         ? (managedUids.includes(tc.targetUid) ? [tlMembers[tc.targetUid]].filter(Boolean) : [])
         : Object.values(tlMembers);
@@ -6842,10 +7128,20 @@ async function renderTeamLeadView() {
       const responses = {};
       respSnap.forEach(d => { responses[d.id] = d.data(); });
       targetMembers.forEach(m => {
-        tlRspTotal++;
-        const r = responses[m.uid] || {};
-        const allDone = tc.items.every(item => ((r.items || {})[item.id] || 'pending') === 'done');
-        if (allDone) tlRspComplete++;
+        const r = responses[m.uid];
+        if (tc.campaignId) {
+          const cl = (checklistData[m.uid] || {})[tc.campaignId] || {};
+          const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
+          entries.forEach(entry => {
+            if (!rspCheckAppliesToEntry(tc, entry)) return;
+            tlRspTotal++;
+            if (rspEntryOverallStatus(tc, r, rspEntryKey(entry)) === 'done') tlRspComplete++;
+          });
+        } else {
+          tlRspTotal++;
+          const allDone = tc.items.every(item => ((r && r.items) || {})[item.id] === 'done');
+          if (allDone) tlRspComplete++;
+        }
       });
     }
   } catch(e) { /* non-blocking */ }
@@ -6873,7 +7169,7 @@ async function renderTeamLeadView() {
     </div>
     <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px 18px;text-align:center;">
       <div style="font-size:22px;font-weight:700;color:${tlRspColor};">${tlRspDisplay}</div>
-      <div style="font-size:11px;color:#2563eb;margin-top:2px;">🎒 RSP &amp; Kit Rate</div>
+      <div style="font-size:11px;color:#2563eb;margin-top:2px;">📦 RSP &amp; Kit Rate</div>
     </div>
     <div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:10px;padding:14px 18px;text-align:center;">
       <div style="font-size:22px;font-weight:700;color:${checklistRateColor};">${checklistCompletionRate}%</div>
