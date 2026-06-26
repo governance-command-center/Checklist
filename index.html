@@ -67,10 +67,6 @@
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><rect x="2" y="4" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 2v4M14 2v4M2 9h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Calendar</span>
         </button>
-        <button class="nav-item" id="navbtn-registration" onclick="switchAdminTab('registration')" title="Registration">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M4 6h12M4 10h8M4 14h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="2" y="2" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/></svg>
-          <span class="nav-label">Registration</span>
-        </button>
         <button class="nav-item" id="navbtn-reports" onclick="switchAdminTab('reports')" title="Reports">
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 7h8M6 10h5M6 13h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Reports</span>
@@ -453,10 +449,6 @@
           <span class="nav-label">Messages</span>
           <span class="nav-badge" id="user-broadcast-badge" style="display:none;"></span>
         </button>
-        <button class="nav-item nav-item-green" id="user-reg-poll-btn" style="display:none;" onclick="openUserRegModal()" title="Register">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M4 6h12M4 10h8M4 14h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="2" y="2" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/></svg>
-          <span class="nav-label">Register</span>
-        </button>
       </nav>
 
       <!-- User progress summary (shown when campaign is selected) -->
@@ -526,6 +518,7 @@
           <!-- progress moved to sidebar -->
         </div>
         <div id="user-progress-banner" style="display:none;margin-bottom:16px;"></div>
+        <div id="user-rspkit-banner" style="display:none;margin-bottom:16px;"></div>
         <div id="user-no-campaign" class="empty-state">
           <div class="empty-icon">📋</div>
           <p>Select a campaign above to start your checklist.</p>
@@ -1232,10 +1225,6 @@
           <span class="nav-label">Messages</span>
           <span class="nav-badge" id="tl-broadcast-badge" style="display:none;"></span>
         </button>
-        <button class="nav-item nav-item-green" id="tl-reg-poll-btn" style="display:none;" onclick="openUserRegModal()" title="Register">
-          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M4 6h12M4 10h8M4 14h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="2" y="2" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/></svg>
-          <span class="nav-label">Register</span>
-        </button>
       </nav>
 
       <!-- Team Lead's own checklist progress summary (shown when a campaign is selected) -->
@@ -1345,6 +1334,7 @@
           </div>
         </div>
         <div id="tl-progress-banner" style="display:none;margin-bottom:16px;"></div>
+        <div id="tl-rspkit-banner" style="display:none;margin-bottom:16px;"></div>
         <div id="tl-no-campaign" class="empty-state">
           <div class="empty-icon">📋</div>
           <p>Select a campaign above to start your checklist.</p>

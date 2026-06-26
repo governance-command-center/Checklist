@@ -540,19 +540,8 @@ function toggleLeadCompletionPanel(panelId, headerEl) {
   if (caret) caret.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
 }
 
-// Admin > Data > RSP & Kit list: each task check's member breakdown is
-// collapsed by default (just the check name + done/in-progress/pending
-// counts), since the same per-member detail is already visible in the
-// admin dashboard / tracker — expand only when an admin wants to dig in.
-function toggleRspKitPanel(panelId, headerEl, evt) {
-  if (evt) evt.stopPropagation();
-  const panel = document.getElementById(panelId);
-  if (!panel) return;
-  const isOpen = panel.style.display !== 'none';
-  panel.style.display = isOpen ? 'none' : 'flex';
-  const caret = headerEl.querySelector(`.lead-completion-caret[data-panel="${panelId}"]`);
-  if (caret) caret.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
-}
+// (formerly toggleRspKitPanel — removed; the RSP & Kit list in Admin > Data
+// is now a compact one-line-per-check list, no per-check expand/collapse.)
 
 function renderDeadlinePanel() {
   // Renamed to renderActiveCampaignsPanel — kept for backward compat
@@ -987,6 +976,53 @@ async function openReviewModal(uid, campId) {
   });
 
   html += `</tbody></table></div>`;
+
+  // ── RSP & Kit Check details (read-only) — lets team leads (and admins)
+  // see a member's Kit & RSP check status for this campaign without
+  // leaving the review modal. Previously this detail wasn't visible to
+  // leads anywhere outside the member's own Checklist tab.
+  try {
+    const tcSnap = await db.collection('taskChecks').where('campaignId', '==', campId).get();
+    const relevantChecks = [];
+    tcSnap.forEach(doc => {
+      const tc = { id: doc.id, ...doc.data() };
+      if (rspCheckAppliesToUser(tc, uid) && entries.some(e => rspCheckAppliesToEntry(tc, e))) relevantChecks.push(tc);
+    });
+
+    if (relevantChecks.length > 0) {
+      const respDocs = await Promise.all(relevantChecks.map(tc =>
+        db.collection('taskCheckResponses').doc(tc.id).collection('responses').doc(uid).get()));
+
+      let rspHtml = `<div style="margin-top:20px;"><div class="section-label" style="margin-bottom:8px;">📦 RSP &amp; Kit Check</div>`;
+      relevantChecks.forEach((tc, idx) => {
+        const resp = respDocs[idx].exists ? respDocs[idx].data() : {};
+        const applicableEntries = entries.map((e, i) => ({ e, i })).filter(({ e }) => rspCheckAppliesToEntry(tc, e));
+
+        const entriesHtml = applicableEntries.map(({ e, i }) => {
+          const key = rspEntryKey(e);
+          const overall = rspEntryOverallStatus(tc, resp, key);
+          const label = buildEntryLabel(e, i);
+          const itemsHtml = tc.items.map(item => {
+            const st = rspItemStatus(resp, key, item.id);
+            return `<span class="rv-status ${RSP_STATUS_CLASS[st]}" style="font-size:10px;margin-right:6px;">${escHtml(item.label)}: ${RSP_STATUS_LABEL[st]}</span>`;
+          }).join('');
+          return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px dashed var(--border);">
+            <span class="rv-status ${RSP_STATUS_CLASS[overall]}" style="font-size:10px;min-width:90px;">${RSP_STATUS_LABEL[overall]}</span>
+            <span style="font-size:12px;font-weight:600;min-width:140px;">${escHtml(label)}</span>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">${itemsHtml}</div>
+          </div>`;
+        }).join('');
+
+        rspHtml += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px;">📦 ${escHtml(tc.title)}</div>
+          ${entriesHtml}
+        </div>`;
+      });
+      rspHtml += `</div>`;
+      html += rspHtml;
+    }
+  } catch(e) { console.error('Review modal RSP load error', e); }
+
   document.getElementById('review-content').innerHTML = html;
   document.getElementById('review-overlay').style.display = 'flex';
 
@@ -1693,6 +1729,8 @@ async function loadUserChecklist() {
     document.getElementById('user-progress-bar-wrap').style.display = 'none';
     const banner = document.getElementById('user-progress-banner');
     if (banner) banner.style.display = 'none';
+    const rspBanner = document.getElementById('user-rspkit-banner');
+    if (rspBanner) rspBanner.style.display = 'none';
     return;
   }
 
@@ -2171,7 +2209,7 @@ function renderUserChecklist() {
 
   // RSP & Kit Checking banner — per brand/platform/region entry, sitting
   // right above the table (same column order as the entry headers above).
-  const bannerId = containerId === 'tl-checklist' ? 'tl-progress-banner' : 'user-progress-banner';
+  const bannerId = containerId === 'tl-checklist' ? 'tl-rspkit-banner' : 'user-rspkit-banner';
   renderEntryRspKitBanner(bannerId, entries);
 
   // Keep the second header row (D-5/D-1 Status, Notes) pinned directly under
@@ -2715,7 +2753,7 @@ async function deleteCalEntry() {
 
 // Admin calendar view (inside admin screen)
 function switchAdminTab(tab) {
-  const tabs = ['dashboard', 'calendar', 'data', 'members', 'registration', 'reports', 'alerts', 'checklist'];
+  const tabs = ['dashboard', 'calendar', 'data', 'members', 'reports', 'alerts', 'checklist'];
   tabs.forEach(t => {
     const el = document.getElementById('admin-tab-' + t);
     if (el) el.style.display = t === tab ? 'block' : 'none';
@@ -2742,9 +2780,6 @@ function switchAdminTab(tab) {
   }
   if (tab === 'members') {
     renderMembersTab();
-  }
-  if (tab === 'registration') {
-    loadAndRenderRegPollAdmin();
   }
   if (tab === 'alerts') {
     renderAlertsTab();
@@ -3101,12 +3136,7 @@ async function renderRspKitList(filter) {
         ? [members[tc.targetUid]].filter(Boolean)
         : Object.values(members).filter(m => m.role !== 'admin');
 
-      // Label: "All" when sent to everyone; member name tag when targeted
-      const targetLabel = tc.targetUid
-        ? `<span class="bcast-tag" style="margin-left:6px;background:rgba(37,99,235,0.10);color:#2563EB;border-color:rgba(37,99,235,0.25);">👤 ${escHtml(tc.targetName || members[tc.targetUid]?.name || members[tc.targetUid]?.username || tc.targetUid)}</span>`
-        : `<span class="bcast-tag" style="margin-left:6px;">All</span>`;
-
-      // Compute per-member overall status
+      // Compute per-member overall status (used for the status filter buttons)
       const memberStatuses = targetMembers.map(m => {
         const r = responses[m.uid] || {};
         const statuses = tc.items.map(item => (r.items || {})[item.id] || 'pending');
@@ -3121,46 +3151,19 @@ async function renderRspKitList(filter) {
       if (filtered.length === 0) continue;
 
       const dt      = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
-      const campTag = tc.campaignName ? `<span class="bcast-tag" style="margin-left:6px;">${escHtml(tc.campaignName)}</span>` : '';
 
-      // Summary counts only by default — the full per-member breakdown is
-      // already visible in the admin dashboard / tracker, so we don't
-      // repeat the whole member list here unless the admin expands it.
-      const doneCt = filtered.filter(f => f.overall === 'done').length;
-      const progCt = filtered.filter(f => f.overall === 'in-progress').length;
-      const pendCt = filtered.filter(f => f.overall === 'pending').length;
-      const panelId = `rsp-kit-panel-${tc.id}`;
+      // Assignee names only, comma-separated — same compact presentation
+      // as the "Campaigns" list above, instead of a long per-member
+      // breakdown (that detail still lives behind "View All").
+      const assigneeNames = targetMembers.map(m => m.name || m.username).join(', ') || '—';
 
-      html += `<div style="margin-bottom:18px;border:1px solid var(--border);border-radius:10px;overflow:hidden;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface2);border-bottom:1px solid var(--border);cursor:pointer;" onclick="toggleRspKitPanel('${panelId}', this, event)">
-          <div style="display:flex;align-items:center;gap:6px;min-width:0;">
-            <span class="lead-completion-caret" data-panel="${panelId}" style="display:inline-block;font-size:10px;color:var(--text-muted);transition:transform .15s;">▶</span>
-            <span style="font-weight:600;font-size:13px;">📦 ${escHtml(tc.title)}</span>
-            ${targetLabel}
-            ${campTag}
-            <span style="font-size:11px;color:var(--text-muted);margin-left:8px;">${dt}</span>
-            <span style="font-size:11px;color:var(--text-faint);margin-left:6px;">✓ ${doneCt} · ⟳ ${progCt} · — ${pendCt}</span>
-          </div>
-          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;" onclick="event.stopPropagation();">
-            <button class="btn-ghost-light btn-sm" onclick="openTaskCheckTracker('${tc.id}')">View All</button>
-            <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="deleteTaskCheck('${tc.id}','${escHtml(tc.title).replace(/'/g,"\\'")}')">🗑 Delete</button>
-          </div>
+      html += `<div class="data-list-row">
+        <div style="min-width:0;flex:1;">
+          <div class="data-row-title">📦 ${escHtml(tc.title)}${tc.campaignName ? ` <span style="font-weight:400;color:var(--text-muted);">· ${escHtml(tc.campaignName)}</span>` : ''}</div>
+          <div class="data-row-sub">Sent to: ${escHtml(assigneeNames)} &nbsp;·&nbsp; ${dt}</div>
         </div>
-        <div id="${panelId}" style="display:none;padding:8px 14px;flex-direction:column;gap:0;">
-          ${filtered.map(({ m, overall, updatedAt }) => {
-            const stLbl = { done: '✓ Completed', 'in-progress': '⟳ In Progress', pending: '— Pending' }[overall];
-            const stCls = { done: 'rv-done', 'in-progress': 'rv-progress', pending: 'rv-pending' }[overall];
-            const updStr = updatedAt ? `Updated ${new Date(updatedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}` : 'No response';
-            return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);">
-              <div style="flex:1;">
-                <span style="font-size:13px;font-weight:500;">${escHtml(m.name || m.username)}</span>
-                <span style="font-size:11px;color:var(--text-muted);margin-left:5px;">@${escHtml(m.username)}</span>
-              </div>
-              <span style="font-size:11px;color:var(--text-faint);">${updStr}</span>
-              <span class="rv-status ${stCls}" style="font-size:11px;">${stLbl}</span>
-            </div>`;
-          }).join('')}
-        </div>
+        <button class="btn-ghost-light btn-sm" onclick="openTaskCheckTracker('${tc.id}')">View All</button>
+        <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="deleteTaskCheck('${tc.id}','${escHtml(tc.title).replace(/'/g,"\\'")}')">🗑 Delete</button>
       </div>`;
     }
 
@@ -3318,6 +3321,7 @@ async function renderUserDashboard() {
 
     // Build aggregate rows across all campaigns this user can see
     let totalRows = 0, completeRows = 0, inProgressRows = 0, notStartedRows = 0;
+    let overallRspTotal = 0, overallRspDone = 0;
     const campCards = [];
 
     // Campaigns can use a non-default checklist template — resolve each
@@ -3385,6 +3389,8 @@ async function renderUserDashboard() {
       completeRows   += cComplete;
       inProgressRows += cInProgress;
       notStartedRows += cNotStarted;
+      overallRspTotal += campRspTotal;
+      overallRspDone  += campRspDone;
 
       const campRate = cTotal > 0 ? Math.round((cComplete / cTotal) * 100) : 0;
       // Campaign-level rate — D-5 and D-1 aggregated across every row
@@ -3400,6 +3406,9 @@ async function renderUserDashboard() {
     // ── Overall stat cards ──
     const overallRate = totalRows > 0 ? Math.round((completeRows / totalRows) * 100) : 0;
     const rateColor   = overallRate === 100 ? '#059669' : overallRate >= 50 ? '#D97706' : '#2563EB';
+    const overallRspRate  = overallRspTotal > 0 ? Math.round((overallRspDone / overallRspTotal) * 100) : null;
+    const overallRspColor = overallRspRate === null ? 'var(--text-muted)' : overallRspRate === 100 ? '#059669' : overallRspRate >= 50 ? '#D97706' : '#2563EB';
+    const overallRspDisplay = overallRspRate === null ? '—' : overallRspRate + '%';
     statsEl.innerHTML = `
       <div class="stat-card">
         <div class="label">Total Checklists</div>
@@ -3425,6 +3434,11 @@ async function renderUserDashboard() {
         <div class="label">Completion Rate</div>
         <div class="value" style="color:${rateColor};">${overallRate}%</div>
         <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${overallRate}%;background:${rateColor};"></div></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">📦 RSP &amp; Kit Progress</div>
+        <div class="value" style="color:${overallRspColor};">${overallRspDisplay}</div>
+        <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${overallRspRate||0}%;background:${overallRspColor};"></div></div>
       </div>
     `;
 
@@ -7197,6 +7211,8 @@ async function loadTlChecklist() {
     document.getElementById('tl-checklist').style.display   = 'none';
     const banner = document.getElementById('tl-progress-banner');
     if (banner) banner.style.display = 'none';
+    const rspBanner = document.getElementById('tl-rspkit-banner');
+    if (rspBanner) rspBanner.style.display = 'none';
     const sideWrap = document.getElementById('tl-sidebar-progress');
     if (sideWrap) sideWrap.style.display = 'none';
     return;
