@@ -540,6 +540,20 @@ function toggleLeadCompletionPanel(panelId, headerEl) {
   if (caret) caret.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
 }
 
+// Admin > Data > RSP & Kit list: each task check's member breakdown is
+// collapsed by default (just the check name + done/in-progress/pending
+// counts), since the same per-member detail is already visible in the
+// admin dashboard / tracker — expand only when an admin wants to dig in.
+function toggleRspKitPanel(panelId, headerEl, evt) {
+  if (evt) evt.stopPropagation();
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'flex';
+  const caret = headerEl.querySelector(`.lead-completion-caret[data-panel="${panelId}"]`);
+  if (caret) caret.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
 function renderDeadlinePanel() {
   // Renamed to renderActiveCampaignsPanel — kept for backward compat
   renderActiveCampaignsPanel();
@@ -3109,20 +3123,30 @@ async function renderRspKitList(filter) {
       const dt      = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
       const campTag = tc.campaignName ? `<span class="bcast-tag" style="margin-left:6px;">${escHtml(tc.campaignName)}</span>` : '';
 
+      // Summary counts only by default — the full per-member breakdown is
+      // already visible in the admin dashboard / tracker, so we don't
+      // repeat the whole member list here unless the admin expands it.
+      const doneCt = filtered.filter(f => f.overall === 'done').length;
+      const progCt = filtered.filter(f => f.overall === 'in-progress').length;
+      const pendCt = filtered.filter(f => f.overall === 'pending').length;
+      const panelId = `rsp-kit-panel-${tc.id}`;
+
       html += `<div style="margin-bottom:18px;border:1px solid var(--border);border-radius:10px;overflow:hidden;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface2);border-bottom:1px solid var(--border);">
-          <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface2);border-bottom:1px solid var(--border);cursor:pointer;" onclick="toggleRspKitPanel('${panelId}', this, event)">
+          <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+            <span class="lead-completion-caret" data-panel="${panelId}" style="display:inline-block;font-size:10px;color:var(--text-muted);transition:transform .15s;">▶</span>
             <span style="font-weight:600;font-size:13px;">📦 ${escHtml(tc.title)}</span>
             ${targetLabel}
             ${campTag}
             <span style="font-size:11px;color:var(--text-muted);margin-left:8px;">${dt}</span>
+            <span style="font-size:11px;color:var(--text-faint);margin-left:6px;">✓ ${doneCt} · ⟳ ${progCt} · — ${pendCt}</span>
           </div>
-          <div style="display:flex;gap:6px;align-items:center;">
+          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;" onclick="event.stopPropagation();">
             <button class="btn-ghost-light btn-sm" onclick="openTaskCheckTracker('${tc.id}')">View All</button>
             <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="deleteTaskCheck('${tc.id}','${escHtml(tc.title).replace(/'/g,"\\'")}')">🗑 Delete</button>
           </div>
         </div>
-        <div style="padding:8px 14px;display:flex;flex-direction:column;gap:0;">
+        <div id="${panelId}" style="display:none;padding:8px 14px;flex-direction:column;gap:0;">
           ${filtered.map(({ m, overall, updatedAt }) => {
             const stLbl = { done: '✓ Completed', 'in-progress': '⟳ In Progress', pending: '— Pending' }[overall];
             const stCls = { done: 'rv-done', 'in-progress': 'rv-progress', pending: 'rv-pending' }[overall];
@@ -3654,7 +3678,7 @@ async function renderEntryRspKitBanner(bannerId, entries) {
     if (relevantChecks.length === 0) return;
 
     let html = '';
-    relevantChecks.forEach(tc => {
+    relevantChecks.forEach((tc, idx) => {
       const dt = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
       const applicableEntries = entries.map((e, i) => ({ e, i })).filter(({ e }) => rspCheckAppliesToEntry(tc, e));
 
@@ -3686,18 +3710,39 @@ async function renderEntryRspKitBanner(bannerId, entries) {
         </div>`;
       }).join('');
 
+      // Quick summary shown in the (collapsed) header so the status is
+      // visible at a glance without expanding the entry list.
+      const doneCt = applicableEntries.filter(({ e, i }) => rspEntryOverallStatus(tc, responses[tc.id], rspEntryKey(e)) === 'done').length;
+      const panelId = `rsp-banner-panel-${tc.id}`;
+
       html += `<div class="rsp-banner" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
-          <span style="font-weight:600;font-size:13px;">📦 ${escHtml(tc.title)}</span>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;cursor:pointer;" onclick="toggleRspBannerPanel('${panelId}', this)" title="Click to view entries">
+          <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+            <span class="lead-completion-caret" data-panel="${panelId}" style="display:inline-block;font-size:10px;color:var(--text-muted);transition:transform .15s;">▶</span>
+            <span style="font-weight:600;font-size:13px;">📦 ${escHtml(tc.title)}</span>
+            <span style="font-size:11px;color:var(--text-muted);">${doneCt}/${applicableEntries.length} done</span>
+          </div>
           <span style="font-size:11px;color:var(--text-muted);">${dt}</span>
         </div>
-        ${entriesHtml}
+        <div id="${panelId}" style="display:${idx === 0 ? 'block' : 'none'};margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
+          ${entriesHtml}
+        </div>
       </div>`;
     });
 
     banner.innerHTML = html;
     banner.style.display = 'block';
   } catch(e) { console.error('Entry RSP banner error', e); }
+}
+
+// Member/TL Checklist tab: expand/collapse a single Kit & RSP Check card.
+function toggleRspBannerPanel(panelId, headerEl) {
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'block';
+  const caret = headerEl.querySelector(`.lead-completion-caret[data-panel="${panelId}"]`);
+  if (caret) caret.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
 }
 
 // ── Member/TL: inline status change in the Checklist-tab RSP banner ──
@@ -6898,30 +6943,78 @@ function closeMemberTaskCheck(e) {
 }
 
 // ── Admin dashboard: load & show recent task checks ──────────
+// Grouped per team lead — same collapsible pattern as the "Completion by
+// team lead" widget — so admins can see each lead's team's RSP & Kit
+// checks without scrolling through one long flat list.
 async function renderTaskChecksInDashboard() {
   // Called from renderDashboardWidgets – shows a compact list below stats
   const el = document.getElementById('dash-taskcheck-panel');
   if (!el) return;
 
   try {
-    const snap = await db.collection('taskChecks').orderBy('sentAt','desc').limit(5).get();
+    const snap = await db.collection('taskChecks').orderBy('sentAt','desc').limit(30).get();
     if (snap.empty) { el.style.display = 'none'; return; }
 
-    el.style.display = 'block';
-    let html = '';
+    // Map a member uid -> their team lead's uid/name (or the member
+    // themself, if they ARE a team lead). Falls back to "Unassigned".
+    const leadOf = (uid) => {
+      const m = members[uid];
+      if (!m) return null;
+      if (m.role === 'team_lead') return { uid: m.uid, name: m.name || m.username };
+      const lead = Object.values(members).find(t => t.role === 'team_lead' && (t.managedUids || []).includes(uid));
+      return lead ? { uid: lead.uid, name: lead.name || lead.username } : { uid: '_unassigned', name: 'Unassigned (no team lead)' };
+    };
+
+    const groups = {}; // leadUid -> { name, checks: [] }
+    const ensureGroup = (g) => { if (!groups[g.uid]) groups[g.uid] = { name: g.name, checks: [] }; return groups[g.uid]; };
+
     snap.forEach(doc => {
-      const tc  = doc.data();
+      const tc = { id: doc.id, ...doc.data() };
+      const targetLeads = tc.targetUid
+        ? [leadOf(tc.targetUid)].filter(Boolean)
+        : Object.values(members).filter(m => m.role !== 'admin').map(m => leadOf(m.uid)).filter(Boolean);
+      // Dedup leads for "sent to all members" checks so they don't repeat per-member
+      const seen = new Set();
+      targetLeads.forEach(g => {
+        if (seen.has(g.uid)) return;
+        seen.add(g.uid);
+        ensureGroup(g).checks.push(tc);
+      });
+    });
+
+    const groupList = Object.values(groups).sort((a, b) => b.checks.length - a.checks.length);
+    if (groupList.length === 0) { el.style.display = 'none'; return; }
+
+    el.style.display = 'block';
+    const rowsHtml = (checks) => checks.map(tc => {
       const dt  = new Date(tc.sentAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
       const who = tc.targetUid ? (members[tc.targetUid]?.name || tc.targetName || '—') : 'All members';
       const safeTitle = escHtml(tc.title).replace(/'/g, "\\'");
-      html += `<div class="deadline-row">
-        <div class="deadline-name" style="cursor:pointer;" onclick="openTaskCheckTracker('${doc.id}')" title="${escHtml(tc.title)}">📦 ${escHtml(tc.title)}<span style="font-size:11px;color:var(--text-faint);margin-left:6px;">${dt} · ${escHtml(who)}</span></div>
+      return `<div class="deadline-row">
+        <div class="deadline-name" style="cursor:pointer;" onclick="openTaskCheckTracker('${tc.id}')" title="${escHtml(tc.title)}">📦 ${escHtml(tc.title)}<span style="font-size:11px;color:var(--text-faint);margin-left:6px;">${dt} · ${escHtml(who)}</span></div>
         <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
-          <span class="deadline-pill dp-blue" style="cursor:pointer;background:rgba(37,99,235,0.1);color:var(--blue-text);" onclick="openTaskCheckTracker('${doc.id}')">View</span>
-          <span class="deadline-pill" style="cursor:pointer;background:rgba(220,38,38,0.1);color:#DC2626;" onclick="deleteTaskCheck('${doc.id}','${safeTitle}')" title="Delete this task check">🗑</span>
+          <span class="deadline-pill dp-blue" style="cursor:pointer;background:rgba(37,99,235,0.1);color:var(--blue-text);" onclick="openTaskCheckTracker('${tc.id}')">View</span>
+          <span class="deadline-pill" style="cursor:pointer;background:rgba(220,38,38,0.1);color:#DC2626;" onclick="deleteTaskCheck('${tc.id}','${safeTitle}')" title="Delete this task check">🗑</span>
         </div>
       </div>`;
-    });
+    }).join('');
+
+    const html = groupList.map((g, idx) => {
+      const panelId = `taskcheck-lead-panel-${idx}`;
+      return `<div class="completion-member-block" style="margin-bottom:10px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;cursor:pointer;" onclick="toggleLeadCompletionPanel('${panelId}', this)" title="Click to view this team's task checks">
+          <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+            <span class="lead-completion-caret" data-panel="${panelId}" style="display:inline-block;font-size:10px;color:var(--text-muted);transition:transform .15s;">▶</span>
+            <span class="completion-name" style="width:auto;font-weight:600;">${escHtml(g.name)}</span>
+            <span style="font-size:11px;color:var(--text-muted);white-space:nowrap;">(${g.checks.length} check${g.checks.length !== 1 ? 's' : ''})</span>
+          </div>
+        </div>
+        <div id="${panelId}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
+          ${rowsHtml(g.checks)}
+        </div>
+      </div>`;
+    }).join('');
+
     el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div class="dash-card-title">Recent Task Checks</div></div>` + html;
   } catch(e) { el.style.display = 'none'; }
 }
