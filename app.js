@@ -3152,13 +3152,15 @@ async function renderRspKitList(filter) {
 
       const dt = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
 
-      // Keep the row to a single compact line: title + which campaign it
-      // belongs to + date. The full per-member breakdown (who it was sent
-      // to and their status) only shows up once "View All" is clicked —
-      // that's what was making this list so long before.
+      // Match the Campaigns card style: one row per task check, with the
+      // assigned member names listed right below the title (instead of
+      // hiding them behind a "View All" click), so the whole task can be
+      // scanned and deleted in one go.
+      const assignedNames = targetMembers.map(m => m.name || m.username).join(', ') || '—';
       html += `<div class="data-list-row">
         <div style="min-width:0;flex:1;">
           <div class="data-row-title">📦 ${escHtml(tc.title)}${tc.campaignName ? ` <span style="font-weight:400;color:var(--text-muted);">· ${escHtml(tc.campaignName)}</span>` : ''}</div>
+          <div class="data-row-sub">Members: ${escHtml(assignedNames)}</div>
           <div class="data-row-sub">${dt}</div>
         </div>
         <button class="btn-ghost-light btn-sm" onclick="openTaskCheckTracker('${tc.id}')">View All</button>
@@ -7124,7 +7126,7 @@ async function renderTaskChecksInDashboard() {
       </div>`;
     }).join('');
 
-    el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div class="dash-card-title">Recent Task Checks</div></div>` + html;
+    el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div class="dash-card-title">Kit & RSP Checking</div></div>` + html;
   } catch(e) { el.style.display = 'none'; console.error('Task check dashboard error', e); }
 }
 
