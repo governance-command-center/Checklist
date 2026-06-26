@@ -3632,14 +3632,14 @@ async function renderEntryRspKitBanner(bannerId, entries) {
 
   try {
     const snap = await db.collection('taskChecks')
-      .where('campaignId', '==', selectedCampaignId)
-      .orderBy('sentAt', 'desc').get();
+      .where('campaignId', '==', selectedCampaignId).get();
 
     const checks = [];
     snap.forEach(doc => {
       const tc = doc.data();
       if (rspCheckAppliesToUser(tc, currentUser.uid)) checks.push({ id: doc.id, ...tc });
     });
+    checks.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt));
     if (checks.length === 0) return;
 
     // Load my responses for each check
@@ -3873,7 +3873,7 @@ async function loadBroadcastFeed() {
 
       // Task check card — show "Update Status" button for members
       const taskCheckBtn = (b.type === 'taskcheck' && b.taskCheckId && currentUser?.role !== 'admin')
-        ? `<button onclick="closeBroadcastFeed();openMemberTaskCheck('${b.taskCheckId}')" style="margin-top:10px;padding:7px 16px;font-size:12px;font-weight:600;background:rgba(15,118,110,0.18);border:1px solid rgba(15,118,110,0.5);color:#5EEAD4;border-radius:8px;cursor:pointer;">📦 Update My Status</button>`
+        ? `<button onclick="closeBroadcastFeed();goToTaskCheck('${b.taskCheckId}')" style="margin-top:10px;padding:7px 16px;font-size:12px;font-weight:600;background:rgba(15,118,110,0.18);border:1px solid rgba(15,118,110,0.5);color:#5EEAD4;border-radius:8px;cursor:pointer;">📦 Update My Status</button>`
         : '';
 
       html += `<div class="bcast-card ${isUnread ? 'bcast-unread' : ''}">
@@ -6754,6 +6754,52 @@ function closeTaskCheckTracker(e) {
 // This is handled by patching the broadcast render — see below
 
 // ── Member: Open task check response modal ───────────────────
+// ── Member/TL: jump straight to where the RSP & Kit check actually lives ──
+// Campaign-scoped checks now live on the Checklist tab (per-entry banner),
+// so route there instead of the old flat popup. Checks with no campaign
+// (legacy / "All campaigns") have no entries to show, so the flat popup is
+// still the right place for those.
+async function goToTaskCheck(checkId) {
+  try {
+    const checkDoc = await db.collection('taskChecks').doc(checkId).get();
+    if (!checkDoc.exists) { openMemberTaskCheck(checkId); return; }
+    const check = checkDoc.data();
+
+    if (!check.campaignId) { openMemberTaskCheck(checkId); return; }
+
+    const isTl = currentUser?.role === 'team_lead';
+    if (isTl) {
+      const dashView = document.getElementById('tl-dashboard-view');
+      const calView  = document.getElementById('tl-calendar-view');
+      const clView   = document.getElementById('tl-checklist-view');
+      if (dashView) dashView.style.display = 'none';
+      if (calView)  calView.style.display  = 'none';
+      if (clView)   clView.style.display   = 'block';
+      ['dashboard','calendar','checklist'].forEach(t => {
+        const btn = document.getElementById('tl-navbtn-' + t);
+        if (btn) btn.classList.toggle('active', t === 'checklist');
+      });
+      await enterTlChecklistTab();
+      const sel = document.getElementById('tl-campaign-select');
+      if (sel && tlOwnCampaigns[check.campaignId]) {
+        sel.value = check.campaignId;
+        await loadTlChecklist();
+      }
+    } else {
+      showUserTab('checklist');
+      const sel = document.getElementById('user-campaign-select');
+      if (sel) {
+        sel.value = check.campaignId;
+        await loadUserChecklist();
+      }
+    }
+    showToast('📦 Update your RSP & Kit status in the banner above the checklist', 'success');
+  } catch(e) {
+    console.error(e);
+    openMemberTaskCheck(checkId);
+  }
+}
+
 async function openMemberTaskCheck(checkId) {
   _activeMemberTaskCheck = null;
   document.getElementById('member-taskcheck-overlay').style.display = 'flex';
