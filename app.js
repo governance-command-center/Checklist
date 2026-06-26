@@ -3150,17 +3150,16 @@ async function renderRspKitList(filter) {
       const filtered = filter === 'all' ? memberStatuses : memberStatuses.filter(ms => ms.overall === filter);
       if (filtered.length === 0) continue;
 
-      const dt      = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
+      const dt = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
 
-      // Assignee names only, comma-separated — same compact presentation
-      // as the "Campaigns" list above, instead of a long per-member
-      // breakdown (that detail still lives behind "View All").
-      const assigneeNames = targetMembers.map(m => m.name || m.username).join(', ') || '—';
-
+      // Keep the row to a single compact line: title + which campaign it
+      // belongs to + date. The full per-member breakdown (who it was sent
+      // to and their status) only shows up once "View All" is clicked —
+      // that's what was making this list so long before.
       html += `<div class="data-list-row">
         <div style="min-width:0;flex:1;">
           <div class="data-row-title">📦 ${escHtml(tc.title)}${tc.campaignName ? ` <span style="font-weight:400;color:var(--text-muted);">· ${escHtml(tc.campaignName)}</span>` : ''}</div>
-          <div class="data-row-sub">Sent to: ${escHtml(assigneeNames)} &nbsp;·&nbsp; ${dt}</div>
+          <div class="data-row-sub">${dt}</div>
         </div>
         <button class="btn-ghost-light btn-sm" onclick="openTaskCheckTracker('${tc.id}')">View All</button>
         <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="deleteTaskCheck('${tc.id}','${escHtml(tc.title).replace(/'/g,"\\'")}')">🗑 Delete</button>
@@ -3696,6 +3695,19 @@ async function renderEntryRspKitBanner(bannerId, entries) {
       const dt = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
       const applicableEntries = entries.map((e, i) => ({ e, i })).filter(({ e }) => rspCheckAppliesToEntry(tc, e));
 
+      const itemColWidth = 130;
+      const itemShortLabel = (item) => /kit/i.test(item.id) || /kit/i.test(item.label) ? '📦 Kit'
+        : /rsp/i.test(item.id) || /rsp/i.test(item.label) ? '📋 RSP'
+        : item.label;
+
+      const headerHtml = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 0 4px 0;">
+        <span style="min-width:90px;"></span>
+        <span style="min-width:140px;"></span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${tc.items.map(item => `<span style="font-size:10px;font-weight:700;color:var(--text-muted);min-width:${itemColWidth}px;text-align:center;text-transform:uppercase;letter-spacing:.03em;">${escHtml(itemShortLabel(item))}</span>`).join('')}
+        </div>
+      </div>`;
+
       const entriesHtml = applicableEntries.map(({ e, i }) => {
         const key = rspEntryKey(e);
         const resp = responses[tc.id];
@@ -3709,7 +3721,7 @@ async function renderEntryRspKitBanner(bannerId, entries) {
             { v: 'done', l: '✓ Done' },
           ];
           const selectHtml = opts.map(o => `<option value="${o.v}" ${current===o.v?'selected':''}>${o.l}</option>`).join('');
-          return `<select class="status-sel ${statusClass(current)}" style="font-size:11px;padding:2px 6px;"
+          return `<select class="status-sel ${statusClass(current)}" style="font-size:11px;padding:2px 6px;min-width:${itemColWidth}px;"
             data-checkid="${tc.id}" data-entrykey="${escHtml(key)}" data-itemid="${item.id}"
             title="${escHtml(item.label)}"
             onchange="onEntryRspItemChange('${tc.id}','${escHtml(key).replace(/'/g,"\\'")}', this)">
@@ -3739,6 +3751,7 @@ async function renderEntryRspKitBanner(bannerId, entries) {
           <span style="font-size:11px;color:var(--text-muted);">${dt}</span>
         </div>
         <div id="${panelId}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
+          ${headerHtml}
           ${entriesHtml}
         </div>
       </div>`;
@@ -3902,7 +3915,7 @@ async function loadBroadcastFeed() {
 
   try {
     const snap = await db.collection('broadcasts')
-      .orderBy('sentAt', 'desc').limit(30).get();
+      .orderBy('sentAt', 'desc').limit(50).get();
 
     if (snap.empty) {
       list.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-muted);">No broadcasts yet.</div>';
