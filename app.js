@@ -3702,18 +3702,20 @@ async function renderEntryRspKitBanner(bannerId, entries) {
         : /rsp/i.test(item.id) || /rsp/i.test(item.label) ? '📋 RSP'
         : item.label;
 
-      const headerHtml = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 0 4px 0;">
-        <span style="min-width:90px;"></span>
-        <span style="min-width:140px;"></span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          ${tc.items.map(item => `<span style="font-size:10px;font-weight:700;color:var(--text-muted);min-width:${itemColWidth}px;text-align:center;text-transform:uppercase;letter-spacing:.03em;">${escHtml(itemShortLabel(item))}</span>`).join('')}
-        </div>
-      </div>`;
+      // Same navy-header look as the main checklist table (.review-table),
+      // so this panel feels like part of the same design system. First
+      // column is now labeled "Brand" (was unlabeled before), and the
+      // per-row status pill that used to sit in front of the brand name
+      // has been removed — overall status is still visible from the
+      // collapsed header summary above.
+      const headerHtml = `<thead><tr>
+        <th style="min-width:160px;">Brand</th>
+        ${tc.items.map(item => `<th style="min-width:${itemColWidth}px;text-align:center;">${escHtml(itemShortLabel(item))}</th>`).join('')}
+      </tr></thead>`;
 
       const entriesHtml = applicableEntries.map(({ e, i }) => {
         const key = rspEntryKey(e);
         const resp = responses[tc.id];
-        const overall = rspEntryOverallStatus(tc, resp, key);
         const label = buildEntryLabel(e, i);
         const itemsHtml = tc.items.map(item => {
           const current = rspItemStatus(resp, key, item.id);
@@ -3723,19 +3725,17 @@ async function renderEntryRspKitBanner(bannerId, entries) {
             { v: 'done', l: '✓ Done' },
           ];
           const selectHtml = opts.map(o => `<option value="${o.v}" ${current===o.v?'selected':''}>${o.l}</option>`).join('');
-          return `<select class="status-sel ${statusClass(current)}" style="font-size:11px;padding:2px 6px;min-width:${itemColWidth}px;"
-            data-checkid="${tc.id}" data-entrykey="${escHtml(key)}" data-itemid="${item.id}"
-            title="${escHtml(item.label)}"
-            onchange="onEntryRspItemChange('${tc.id}','${escHtml(key).replace(/'/g,"\\'")}', this)">
-            ${selectHtml}
-          </select>`;
-        }).join(' ');
+          return `<td style="text-align:center;">
+            <select class="status-sel ${statusClass(current)}" style="font-size:11px;padding:2px 6px;min-width:${itemColWidth - 16}px;"
+              data-checkid="${tc.id}" data-entrykey="${escHtml(key)}" data-itemid="${item.id}"
+              title="${escHtml(item.label)}"
+              onchange="onEntryRspItemChange('${tc.id}','${escHtml(key).replace(/'/g,"\\'")}', this)">
+              ${selectHtml}
+            </select>
+          </td>`;
+        }).join('');
 
-        return `<div class="rsp-banner-entry" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px dashed var(--border);">
-          <span class="rv-status ${statusClass(overall)}" style="font-size:10px;min-width:90px;">${RSP_STATUS_LABEL[overall]}</span>
-          <span style="font-size:12px;font-weight:600;color:var(--text);min-width:140px;">${escHtml(label)}</span>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;">${itemsHtml}</div>
-        </div>`;
+        return `<tr><td style="font-weight:600;">${escHtml(label)}</td>${itemsHtml}</tr>`;
       }).join('');
 
       // Quick summary shown in the (collapsed) header so the status is
@@ -3753,8 +3753,12 @@ async function renderEntryRspKitBanner(bannerId, entries) {
           <span style="font-size:11px;color:var(--text-muted);">${dt}</span>
         </div>
         <div id="${panelId}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
-          ${headerHtml}
-          ${entriesHtml}
+          <div class="review-table-wrap" style="max-height:none;">
+            <table class="review-table" style="width:100%;">
+              ${headerHtml}
+              <tbody>${entriesHtml}</tbody>
+            </table>
+          </div>
         </div>
       </div>`;
     });
@@ -7126,7 +7130,7 @@ async function renderTaskChecksInDashboard() {
       </div>`;
     }).join('');
 
-    el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div class="dash-card-title">Kit & RSP Checking</div></div>` + html;
+    el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div class="dash-card-title">Kit & RSP Checking by Team Lead</div></div>` + html;
   } catch(e) { el.style.display = 'none'; console.error('Task check dashboard error', e); }
 }
 
