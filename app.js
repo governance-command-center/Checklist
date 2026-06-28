@@ -3125,46 +3125,66 @@ async function renderRspKitList(filter) {
       return;
     }
 
-    // For each task check, load responses and compute member statuses
+    // Group individual per-member taskChecks back into one logical "send"
+    // action, the same way Campaigns shows one row covering every assigned
+    // member. New sends are tagged with a shared batchId (see
+    // sendTaskCheck); older data without one falls back to grouping by
+    // title + campaign + same-minute timestamp, since a single "Send Check"
+    // click creates all its per-member docs within the same minute.
+    const groups = {};
+    const groupOrder = [];
+    _rspKitCheckData.forEach(tc => {
+      const key = tc.batchId || `legacy_${tc.title}|${tc.campaignId || ''}|${(tc.sentAt || '').slice(0, 16)}`;
+      if (!groups[key]) { groups[key] = []; groupOrder.push(key); }
+      groups[key].push(tc);
+    });
+
+    // For each group, load responses and compute member statuses
     let html = '';
-    for (const tc of _rspKitCheckData) {
-      const respSnap = await db.collection('taskCheckResponses').doc(tc.id).collection('responses').get();
-      const responses = {};
-      respSnap.forEach(d => { responses[d.id] = d.data(); });
+    for (const key of groupOrder) {
+      const group = groups[key];
+      const tc = group[0]; // representative doc for title/campaign/date display
 
-      const targetMembers = tc.targetUid
-        ? [members[tc.targetUid]].filter(Boolean)
-        : Object.values(members).filter(m => m.role !== 'admin');
+      const allTargetMembers = [];
+      for (const doc of group) {
+        const members_ = doc.targetUid
+          ? [members[doc.targetUid]].filter(Boolean)
+          : Object.values(members).filter(m => m.role !== 'admin');
+        members_.forEach(m => { if (!allTargetMembers.some(x => x.uid === m.uid)) allTargetMembers.push(m); });
+      }
 
-      // Compute per-member overall status (used for the status filter buttons)
-      const memberStatuses = targetMembers.map(m => {
-        const r = responses[m.uid] || {};
-        const statuses = tc.items.map(item => (r.items || {})[item.id] || 'pending');
+      // Compute per-member overall status (used for the status filter buttons),
+      // pulling each member's response from whichever doc in the group targets them.
+      const memberStatuses = await Promise.all(allTargetMembers.map(async m => {
+        const owningDoc = group.find(d => !d.targetUid || d.targetUid === m.uid) || group[0];
+        const respDoc = await db.collection('taskCheckResponses').doc(owningDoc.id).collection('responses').doc(m.uid).get();
+        const r = respDoc.exists ? respDoc.data() : {};
+        const statuses = owningDoc.items.map(item => (r.items || {})[item.id] || 'pending');
         const allDone  = statuses.every(s => s === 'done');
         const anyProg  = statuses.some(s => s === 'in-progress' || s === 'done');
         const overall  = allDone ? 'done' : anyProg ? 'in-progress' : 'pending';
-        return { m, overall, updatedAt: r.updatedAt || null };
-      });
+        return { m, overall };
+      }));
 
       // Apply filter
       const filtered = filter === 'all' ? memberStatuses : memberStatuses.filter(ms => ms.overall === filter);
       if (filtered.length === 0) continue;
 
       const dt = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
+      const groupIds = group.map(d => d.id);
 
-      // Match the Campaigns card style: one row per task check, with the
-      // assigned member names listed right below the title (instead of
-      // hiding them behind a "View All" click), so the whole task can be
-      // scanned and deleted in one go.
-      const assignedNames = targetMembers.map(m => m.name || m.username).join(', ') || '—';
+      // Match the Campaigns card style: one row per "send" action, with the
+      // assigned member names listed right below the title, and a single
+      // Delete button that removes every underlying doc in the group at once.
+      const assignedNames = allTargetMembers.map(m => m.name || m.username).join(', ') || '—';
       html += `<div class="data-list-row">
         <div style="min-width:0;flex:1;">
           <div class="data-row-title">📦 ${escHtml(tc.title)}${tc.campaignName ? ` <span style="font-weight:400;color:var(--text-muted);">· ${escHtml(tc.campaignName)}</span>` : ''}</div>
           <div class="data-row-sub">Members: ${escHtml(assignedNames)}</div>
           <div class="data-row-sub">${dt}</div>
         </div>
-        <button class="btn-ghost-light btn-sm" onclick="openTaskCheckTracker('${tc.id}')">View All</button>
-        <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="deleteTaskCheck('${tc.id}','${escHtml(tc.title).replace(/'/g,"\\'")}')">🗑 Delete</button>
+        <button class="btn-ghost-light btn-sm" onclick='openTaskCheckTrackerGroup(${JSON.stringify(groupIds)})'>View All</button>
+        <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick='deleteTaskCheckGroup(${JSON.stringify(groupIds)},${JSON.stringify(tc.title)})'>🗑 Delete</button>
       </div>`;
     }
 
@@ -3181,37 +3201,49 @@ function filterRspKitList(btn, filter) {
   renderRspKitList(filter);
 }
 
-async function deleteTaskCheck(checkId, title) {
-  if (!confirm(`Delete the task check "${title}"?\n\nThis will permanently remove the task check, all member responses, and the linked broadcast message. This cannot be undone.`)) return;
+// Opens the tracker for the first check in a group; "View All" on a grouped
+// row is mainly a quick peek, so showing the first member's doc covers the
+// common case without building a separate multi-doc tracker view.
+function openTaskCheckTrackerGroup(groupIds) {
+  openTaskCheckTracker(groupIds[0]);
+}
+
+// Deletes every taskCheck doc (+ responses + linked broadcast) in a group
+// with a single confirmation — this is the "1 delete button" the Campaigns
+// list already has, applied to RSP & Kit Checking batches.
+async function deleteTaskCheckGroup(groupIds, title) {
+  const memberCount = groupIds.length;
+  if (!confirm(`Delete the task check "${title}"?\n\nThis will permanently remove the task check for all ${memberCount} assigned member(s), their responses, and the linked broadcast message(s). This cannot be undone.`)) return;
   try {
-    // Delete member responses subcollection
-    const respSnap = await db.collection('taskCheckResponses').doc(checkId).collection('responses').get();
-    const delBatch = db.batch();
-    respSnap.forEach(d => delBatch.delete(d.ref));
-    await delBatch.commit();
+    for (const checkId of groupIds) {
+      const respSnap = await db.collection('taskCheckResponses').doc(checkId).collection('responses').get();
+      const delBatch = db.batch();
+      respSnap.forEach(d => delBatch.delete(d.ref));
+      await delBatch.commit();
 
-    // Delete taskCheckResponses parent doc
-    await db.collection('taskCheckResponses').doc(checkId).delete();
+      await db.collection('taskCheckResponses').doc(checkId).delete();
+      await db.collection('taskChecks').doc(checkId).delete();
 
-    // Delete the taskCheck document
-    await db.collection('taskChecks').doc(checkId).delete();
-
-    // Delete linked broadcast(s)
-    const bcastSnap = await db.collection('broadcasts').where('taskCheckId', '==', checkId).get();
-    const bcastBatch = db.batch();
-    bcastSnap.forEach(d => bcastBatch.delete(d.ref));
-    await bcastBatch.commit();
+      const bcastSnap = await db.collection('broadcasts').where('taskCheckId', '==', checkId).get();
+      const bcastBatch = db.batch();
+      bcastSnap.forEach(d => bcastBatch.delete(d.ref));
+      await bcastBatch.commit();
+    }
 
     showToast(`🗑 Task check "${title}" deleted.`, 'success');
     // Evict from cache and re-render
-    _rspKitCheckData = _rspKitCheckData.filter(tc => tc.id !== checkId);
+    _rspKitCheckData = _rspKitCheckData.filter(tc => !groupIds.includes(tc.id));
     renderRspKitList('__reload');
-    // Keep the admin dashboard "Recent Task Checks" panel in sync too
+    // Keep the admin dashboard "Kit & RSP Checking by Team Lead" panel in sync too
     if (document.getElementById('dash-taskcheck-panel')) renderTaskChecksInDashboard();
   } catch(e) {
     console.error(e);
     showToast('Failed to delete task check. Try again.', 'error');
   }
+}
+
+async function deleteTaskCheck(checkId, title) {
+  return deleteTaskCheckGroup([checkId], title);
 }
 
 function renderAdminCalendarTab() {
@@ -6704,7 +6736,10 @@ async function sendTaskCheck() {
       });
       showToast(`📦 Task Check "${title}" sent to All members!`, 'success');
     } else {
-      // One task check per selected member
+      // One task check per selected member, but tagged with a shared
+      // batchId so the admin list can group them back into a single row
+      // (with a single Delete button) instead of one row per member.
+      const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       for (const uid of selectedUids) {
         const m = members[uid];
         if (!m) continue;
@@ -6715,6 +6750,7 @@ async function sendTaskCheck() {
           targetUid: uid, targetName: memberName,
           campaignId: campId || null, campaignName: campName || null,
           entries: targetEntries,
+          batchId,
         };
         const ref = await db.collection('taskChecks').add(checkData);
         await db.collection('broadcasts').add({
