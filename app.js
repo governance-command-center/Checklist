@@ -122,7 +122,7 @@ async function loadAdminData() {
   });
 
   populateAdminCampaignFilter();
-  renderAdminView();
+  renderAdminView(true);
   await loadChecklistOverrides();
   await loadCalendarEntries();
   await loadMasterlist();
@@ -175,14 +175,52 @@ function populateAdminCampaignFilter() {
   if (label) label.textContent = sel.value ? (campaigns[sel.value]?.name || 'All campaigns') : 'All campaigns';
 }
 
-async function renderAdminView() {
+// ── Admin dashboard data cache ────────────────────────────────
+// renderAdminView() used to re-fetch the ENTIRE checklists + taskChecks
+// (+ each taskCheck's responses, one network round-trip at a time) every
+// single time an admin clicked a campaign filter — that sequential refetch
+// was the actual cause of the "delay before accurate details show up" bug.
+// Now this data is fetched once into a shared cache; selecting a campaign
+// just re-filters/re-aggregates the cache in memory (effectively instant).
+// Pass force=true to actually refetch (used after sending/deleting a check,
+// editing checklists, or clicking the explicit "Refresh" button).
+let _dashCache = { checklists: null, taskChecks: null, taskCheckResponses: null };
+
+async function loadAdminDashboardCache(force) {
+  if (!force && _dashCache.checklists && _dashCache.taskChecks && _dashCache.taskCheckResponses) return;
+
+  const [checkSnap, tcSnap] = await Promise.all([
+    db.collection('checklists').get(),
+    db.collection('taskChecks').get(),
+  ]);
+
+  const allChecklists = {};
+  checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+
+  const taskChecks = [];
+  tcSnap.forEach(doc => taskChecks.push({ id: doc.id, ...doc.data() }));
+
+  // Fetch every taskCheck's responses IN PARALLEL (was a sequential
+  // for-loop before — the main culprit for the multi-second delay).
+  const respPairs = await Promise.all(taskChecks.map(async tc => {
+    const rs = await db.collection('taskCheckResponses').doc(tc.id).collection('responses').get();
+    const responses = {};
+    rs.forEach(d => { responses[d.id] = d.data(); });
+    return [tc.id, responses];
+  }));
+  const taskCheckResponses = {};
+  respPairs.forEach(([id, responses]) => { taskCheckResponses[id] = responses; });
+
+  _dashCache = { checklists: allChecklists, taskChecks, taskCheckResponses };
+}
+
+async function renderAdminView(force) {
+  await loadAdminDashboardCache(force);
   const filterCampaign = document.getElementById('admin-campaign-filter').value;
   const label = document.getElementById('dashboard-campaign-label');
   if (label) label.textContent = filterCampaign ? (campaigns[filterCampaign]?.name || 'All campaigns') : 'All campaigns';
 
-  const checkSnap = await db.collection('checklists').get();
-  const allChecklists = {};
-  checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+  const allChecklists = _dashCache.checklists;
 
   let rows = [];
   let allRows = [];
@@ -255,13 +293,9 @@ async function renderAdminView() {
   // counted per member, since entries only exist within a campaign.
   let rspTotal = 0, rspComplete = 0;
   try {
-    const tcSnap = await db.collection('taskChecks').get();
-    for (const tcDoc of tcSnap.docs) {
-      const tc = { id: tcDoc.id, ...tcDoc.data() };
+    for (const tc of _dashCache.taskChecks) {
       if (filterCampaign && tc.campaignId !== filterCampaign) continue;
-      const respSnap = await db.collection('taskCheckResponses').doc(tcDoc.id).collection('responses').get();
-      const responses = {};
-      respSnap.forEach(d => { responses[d.id] = d.data(); });
+      const responses = _dashCache.taskCheckResponses[tc.id] || {};
 
       const targetMembers = tc.targetUid
         ? [members[tc.targetUid]].filter(Boolean)
@@ -848,23 +882,38 @@ function getEntryBreakdown(cl, totalItems, validIds, hasD5) {
 // campaigns through them would corrupt that and also still only reflect
 // the last campaign processed).
 // Returns { [campaignId]: { total, validIds, hasD5 } }.
+// Memoized — checklist templates / global checklist settings rarely change
+// mid-session, but resolveCampaignTotalItems() used to be called on every
+// dashboard render (and several other tabs), each time re-fetching both
+// settings docs. Call invalidateChecklistSettingsCache() after editing
+// templates or the global checklist so the next call picks up changes.
+let _checklistSettingsCache = null;
+function invalidateChecklistSettingsCache() { _checklistSettingsCache = null; }
+
 async function resolveCampaignTotalItems(campaignList) {
   const map = {};
   let templates = [];
   let globalSections = null;
   let globalTotal = TOTAL_ITEMS;
-  try {
-    const tmplDoc = await db.collection('settings').doc('checklistTemplates').get();
-    templates = tmplDoc.exists ? (tmplDoc.data().templates || []) : [];
-  } catch (e) { /* fall back to default below */ }
-  try {
-    const glDoc = await db.collection('settings').doc('checklist').get();
-    if (glDoc.exists && glDoc.data().sections) {
-      globalSections = glDoc.data().sections;
-      const sum = globalSections.reduce((s, sec) => s + ((sec.items || []).length), 0);
-      if (sum > 0) globalTotal = sum;
-    }
-  } catch (e) { /* fall back to default below */ }
+
+  if (_checklistSettingsCache) {
+    ({ templates, globalSections, globalTotal } = _checklistSettingsCache);
+  } else {
+    try {
+      const tmplDoc = await db.collection('settings').doc('checklistTemplates').get();
+      templates = tmplDoc.exists ? (tmplDoc.data().templates || []) : [];
+    } catch (e) { /* fall back to default below */ }
+    try {
+      const glDoc = await db.collection('settings').doc('checklist').get();
+      if (glDoc.exists && glDoc.data().sections) {
+        globalSections = glDoc.data().sections;
+        const sum = globalSections.reduce((s, sec) => s + ((sec.items || []).length), 0);
+        if (sum > 0) globalTotal = sum;
+      }
+    } catch (e) { /* fall back to default below */ }
+    _checklistSettingsCache = { templates, globalSections, globalTotal };
+  }
+
   const globalValidIds = templateItemIds(globalSections || DEFAULT_CHECKLIST_SECTIONS);
 
   (campaignList || []).forEach(camp => {
@@ -1092,7 +1141,7 @@ async function confirmDeleteChecklist(uid, campId) {
       await db.collection('checklists').doc(uid).set(data);
     }
     document.getElementById('delete-cl-overlay').style.display = 'none';
-    await renderAdminView();
+    await renderAdminView(true);
   } catch(e) {
     showError(errEl, 'Failed to delete checklist. Try again.');
     console.error(e);
@@ -1128,7 +1177,7 @@ async function confirmDeleteAllChecklists() {
     await batch.commit();
     userChecklist = {};
     document.getElementById('delete-all-cl-overlay').style.display = 'none';
-    await renderAdminView();
+    await renderAdminView(true);
   } catch(e) {
     showError(errEl, 'Failed to delete all checklists. Try again.');
     console.error(e);
@@ -2788,7 +2837,7 @@ function switchAdminTab(tab) {
     renderReportTab();
   }
   if (tab === 'dashboard') {
-    renderDashboardWidgets();
+    renderAdminView(true);
   }
   if (tab === 'checklist') {
     renderChecklistTab();
@@ -3107,11 +3156,13 @@ async function removeSelectedMembers() {
 }
 
 let _rspKitCheckData = []; // cache for filtering
+let _rspKitGroupRegistry = []; // per-render lookup so onclick attrs only need a plain integer key (see renderRspKitList)
 
 async function renderRspKitList(filter) {
   const el = document.getElementById('data-rsp-kit-list');
   if (!el) return;
   el.innerHTML = '<div class="data-empty">Loading…</div>';
+  _rspKitGroupRegistry = [];
 
   try {
     if (_rspKitCheckData.length === 0 || filter === '__reload') {
@@ -3173,6 +3224,13 @@ async function renderRspKitList(filter) {
       const dt = new Date(tc.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
       const groupIds = group.map(d => d.id);
 
+      // Register this group's data and reference it by a plain integer key
+      // in the onclick attributes below, instead of embedding raw
+      // JSON/strings inline — titles or campaign names containing an
+      // apostrophe would otherwise break out of the onclick='...' attribute
+      // and silently no-op the button (this was the "delete isn't working" bug).
+      const regKey = _rspKitGroupRegistry.push({ groupIds, title: tc.title }) - 1;
+
       // Match the Campaigns card style: one row per "send" action, with the
       // assigned member names listed right below the title, and a single
       // Delete button that removes every underlying doc in the group at once.
@@ -3183,8 +3241,8 @@ async function renderRspKitList(filter) {
           <div class="data-row-sub">Members: ${escHtml(assignedNames)}</div>
           <div class="data-row-sub">${dt}</div>
         </div>
-        <button class="btn-ghost-light btn-sm" onclick='openTaskCheckTrackerGroup(${JSON.stringify(groupIds)})'>View All</button>
-        <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick='deleteTaskCheckGroup(${JSON.stringify(groupIds)},${JSON.stringify(tc.title)})'>🗑 Delete</button>
+        <button class="btn-ghost-light btn-sm" onclick="openTaskCheckTrackerGroup(${regKey})">View All</button>
+        <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="deleteTaskCheckGroup(${regKey})">🗑 Delete</button>
       </div>`;
     }
 
@@ -3204,14 +3262,26 @@ function filterRspKitList(btn, filter) {
 // Opens the tracker for the first check in a group; "View All" on a grouped
 // row is mainly a quick peek, so showing the first member's doc covers the
 // common case without building a separate multi-doc tracker view.
-function openTaskCheckTrackerGroup(groupIds) {
-  openTaskCheckTracker(groupIds[0]);
+function openTaskCheckTrackerGroup(regKey) {
+  const entry = _rspKitGroupRegistry[regKey];
+  if (!entry) return;
+  openTaskCheckTracker(entry.groupIds[0]);
 }
 
 // Deletes every taskCheck doc (+ responses + linked broadcast) in a group
 // with a single confirmation — this is the "1 delete button" the Campaigns
 // list already has, applied to RSP & Kit Checking batches.
-async function deleteTaskCheckGroup(groupIds, title) {
+async function deleteTaskCheckGroup(regKeyOrIds, titleIfRaw) {
+  // Accepts either a registry key (normal path, from the rendered list) or
+  // a raw [groupIds, title] pair (used by the legacy deleteTaskCheck shim below).
+  let groupIds, title;
+  if (Array.isArray(regKeyOrIds)) { groupIds = regKeyOrIds; title = titleIfRaw; }
+  else {
+    const entry = _rspKitGroupRegistry[regKeyOrIds];
+    if (!entry) { showToast('Could not find that task check — please refresh and try again.', 'error'); return; }
+    groupIds = entry.groupIds; title = entry.title;
+  }
+
   const memberCount = groupIds.length;
   if (!confirm(`Delete the task check "${title}"?\n\nThis will permanently remove the task check for all ${memberCount} assigned member(s), their responses, and the linked broadcast message(s). This cannot be undone.`)) return;
   try {
@@ -3776,15 +3846,15 @@ async function renderEntryRspKitBanner(bannerId, entries) {
       const panelId = `rsp-banner-panel-${tc.id}`;
 
       html += `<div class="rsp-banner" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;cursor:pointer;" onclick="toggleRspBannerPanel('${panelId}', this)" title="Click to view entries">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;cursor:pointer;" onclick="toggleRspBannerPanel('${panelId}', this)" title="Click to collapse/expand">
           <div style="display:flex;align-items:center;gap:6px;min-width:0;">
-            <span class="lead-completion-caret" data-panel="${panelId}" style="display:inline-block;font-size:10px;color:var(--text-muted);transition:transform .15s;">▶</span>
+            <span class="lead-completion-caret" data-panel="${panelId}" style="display:inline-block;font-size:10px;color:var(--text-muted);transition:transform .15s;transform:rotate(90deg);">▶</span>
             <span style="font-weight:600;font-size:13px;">📦 ${escHtml(tc.title)}</span>
             <span style="font-size:11px;color:var(--text-muted);">${doneCt}/${applicableEntries.length} done</span>
           </div>
           <span style="font-size:11px;color:var(--text-muted);">${dt}</span>
         </div>
-        <div id="${panelId}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
+        <div id="${panelId}" style="display:block;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
           <div class="review-table-wrap" style="max-height:none;">
             <table class="review-table" style="width:100%;">
               ${headerHtml}
@@ -4164,6 +4234,7 @@ async function loadChecklistTemplates() {
 
 async function saveChecklistTemplates() {
   await db.collection('settings').doc('checklistTemplates').set({ templates: checklistTemplates });
+  invalidateChecklistSettingsCache();
 }
 
 // ── Tab render ───────────────────────────────────────────────
@@ -7016,32 +7087,31 @@ function closeMemberTaskCheck(e) {
 // an overall Kit/RSP progress rate per lead, and per-member rows with
 // Kit-progress / RSP-progress bars (instead of D-5/D-1, since this panel
 // is specifically about Kit & RSP Check completion).
-async function renderTaskChecksInDashboard() {
+async function renderTaskChecksInDashboard(force) {
   // Called from renderDashboardWidgets – shows a compact list below stats
   const el = document.getElementById('dash-taskcheck-panel');
   if (!el) return;
 
-  try {
-    const snap = await db.collection('taskChecks').orderBy('sentAt','desc').get();
-    if (snap.empty) { el.style.display = 'none'; return; }
+  // Scope to the campaign currently selected on the dashboard (sidebar
+  // filter, or by clicking a campaign in the "Active Checklists" panel) —
+  // same filter that already drives "Checklist Progress by Team Lead",
+  // so both panels change together when a campaign is selected.
+  const filterCampId = document.getElementById('admin-campaign-filter')?.value || '';
 
-    const checks = [];
-    snap.forEach(doc => checks.push({ id: doc.id, ...doc.data() }));
+  try {
+    // Reuses the same shared cache renderAdminView() just loaded (no second
+    // full refetch of taskChecks/checklists/responses on every click).
+    await loadAdminDashboardCache(force);
+    if (_dashCache.taskChecks.length === 0) { el.style.display = 'none'; return; }
+
+    let checks = _dashCache.taskChecks;
+    if (filterCampId) checks = checks.filter(tc => tc.campaignId === filterCampId);
+    if (checks.length === 0) { el.style.display = 'none'; return; }
 
     // Need each member's checklist entries to resolve entry-scoped checks
     // (a check can target specific brand×platform×region entries only).
-    const checklistSnap = await db.collection('checklists').get();
-    const allChecklists = {};
-    checklistSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
-
-    // Load every check's responses in parallel
-    const respByCheck = {};
-    await Promise.all(checks.map(async tc => {
-      const rs = await db.collection('taskCheckResponses').doc(tc.id).collection('responses').get();
-      const responses = {};
-      rs.forEach(d => { responses[d.id] = d.data(); });
-      respByCheck[tc.id] = responses;
-    }));
+    const allChecklists = _dashCache.checklists;
+    const respByCheck = _dashCache.taskCheckResponses;
 
     // Map a member uid -> their team lead's uid/name (or the member
     // themself, if they ARE a team lead). Falls back to "Unassigned".
@@ -7166,7 +7236,10 @@ async function renderTaskChecksInDashboard() {
       </div>`;
     }).join('');
 
-    el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div class="dash-card-title">Kit & RSP Checking by Team Lead</div></div>` + html;
+    const subtitleHtml = filterCampId
+      ? `<div style="font-size:11px;color:var(--blue);font-weight:600;margin-top:2px;">📁 ${escHtml(campaigns[filterCampId]?.name || '')}</div>`
+      : '';
+    el.innerHTML = `<div class="dash-card-header" style="margin-bottom:8px;"><div><div class="dash-card-title">Kit & RSP Checking by Team Lead</div>${subtitleHtml}</div></div>` + html;
   } catch(e) { el.style.display = 'none'; console.error('Task check dashboard error', e); }
 }
 
