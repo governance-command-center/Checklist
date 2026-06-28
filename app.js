@@ -313,7 +313,7 @@ async function renderAdminView(force) {
           });
         } else {
           rspTotal++;
-          const allDone = tc.items.every(item => ((r && r.items) || {})[item.id] === 'done');
+          const allDone = tc.items.every(item => rspIsDoneLike(((r && r.items) || {})[item.id]));
           if (allDone) rspComplete++;
         }
       });
@@ -1056,7 +1056,6 @@ async function openReviewModal(uid, campId) {
             return `<span class="rv-status ${RSP_STATUS_CLASS[st]}" style="font-size:10px;margin-right:6px;">${escHtml(item.label)}: ${RSP_STATUS_LABEL[st]}</span>`;
           }).join('');
           return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px dashed var(--border);">
-            <span class="rv-status ${RSP_STATUS_CLASS[overall]}" style="font-size:10px;min-width:90px;">${RSP_STATUS_LABEL[overall]}</span>
             <span style="font-size:12px;font-weight:600;min-width:140px;">${escHtml(label)}</span>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">${itemsHtml}</div>
           </div>`;
@@ -2368,6 +2367,7 @@ function updateUserProgress() {
           <span>D-1: ${d1Done}/${ti * entries.length} (${d1Pct}%)</span>
           <span>${done} / ${total} items complete</span>
         </div>
+        <div id="${uiPrefix}-kitrsp-mini" class="user-prog-detail" style="display:none;margin-top:4px;"></div>
       </div>`;
   }
 
@@ -3157,15 +3157,16 @@ async function removeSelectedMembers() {
 
 let _rspKitCheckData = []; // cache for filtering
 let _rspKitGroupRegistry = []; // per-render lookup so onclick attrs only need a plain integer key (see renderRspKitList)
+let _rspKitActiveFilter = 'all'; // currently selected status filter button, tracked separately from "reload"
 
-async function renderRspKitList(filter) {
+async function renderRspKitList(filter, forceReload) {
   const el = document.getElementById('data-rsp-kit-list');
   if (!el) return;
   el.innerHTML = '<div class="data-empty">Loading…</div>';
   _rspKitGroupRegistry = [];
 
   try {
-    if (_rspKitCheckData.length === 0 || filter === '__reload') {
+    if (_rspKitCheckData.length === 0 || forceReload) {
       const snap = await db.collection('taskChecks').orderBy('sentAt', 'desc').get();
       _rspKitCheckData = [];
       snap.forEach(doc => _rspKitCheckData.push({ id: doc.id, ...doc.data() }));
@@ -3211,8 +3212,8 @@ async function renderRspKitList(filter) {
         const respDoc = await db.collection('taskCheckResponses').doc(owningDoc.id).collection('responses').doc(m.uid).get();
         const r = respDoc.exists ? respDoc.data() : {};
         const statuses = owningDoc.items.map(item => (r.items || {})[item.id] || 'pending');
-        const allDone  = statuses.every(s => s === 'done');
-        const anyProg  = statuses.some(s => s === 'in-progress' || s === 'done');
+        const allDone  = statuses.every(rspIsDoneLike);
+        const anyProg  = statuses.some(s => s === 'in-progress' || rspIsDoneLike(s));
         const overall  = allDone ? 'done' : anyProg ? 'in-progress' : 'pending';
         return { m, overall };
       }));
@@ -3256,6 +3257,7 @@ async function renderRspKitList(filter) {
 function filterRspKitList(btn, filter) {
   document.querySelectorAll('.rsp-filter-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  _rspKitActiveFilter = filter;
   renderRspKitList(filter);
 }
 
@@ -3301,9 +3303,13 @@ async function deleteTaskCheckGroup(regKeyOrIds, titleIfRaw) {
     }
 
     showToast(`🗑 Task check "${title}" deleted.`, 'success');
-    // Evict from cache and re-render
+    // Evict from cache and re-render — force a refetch, but keep showing
+    // whichever status filter button was active (previously this passed
+    // the literal string '__reload' as the filter itself, which doesn't
+    // match any status and made the whole list vanish — looking like the
+    // delete had silently failed even though the doc was actually removed).
     _rspKitCheckData = _rspKitCheckData.filter(tc => !groupIds.includes(tc.id));
-    renderRspKitList('__reload');
+    renderRspKitList(_rspKitActiveFilter, true);
     // Keep the admin dashboard "Kit & RSP Checking by Team Lead" panel in sync too
     if (document.getElementById('dash-taskcheck-panel')) renderTaskChecksInDashboard();
   } catch(e) {
@@ -3671,11 +3677,11 @@ async function renderMemberRspKitPanel() {
 
       // Overall status summary
       const statuses = tc.items.map(item => (myResp.items || {})[item.id] || 'pending');
-      const allDone  = statuses.every(s => s === 'done');
-      const anyProg  = statuses.some(s => s === 'in-progress' || s === 'done');
+      const allDone  = statuses.every(rspIsDoneLike);
+      const anyProg  = statuses.some(s => s === 'in-progress' || rspIsDoneLike(s));
       const overallStatus = allDone ? 'done' : anyProg ? 'in-progress' : 'pending';
-      const overallLbl = { done: '✓ Completed', 'in-progress': '⟳ In Progress', pending: '— Pending' }[overallStatus];
-      const overallCls = { done: 'rv-done', 'in-progress': 'rv-progress', pending: 'rv-pending' }[overallStatus];
+      const overallLbl = RSP_STATUS_LABEL[overallStatus];
+      const overallCls = RSP_STATUS_CLASS[overallStatus];
 
       const itemsHtml = tc.items.map(item => {
         const current = (myResp.items || {})[item.id] || 'pending';
@@ -3683,6 +3689,7 @@ async function renderMemberRspKitPanel() {
           { v: 'pending',     l: '— Pending' },
           { v: 'in-progress', l: '⟳ In Progress' },
           { v: 'done',        l: '✓ Done' },
+          { v: 'na',          l: 'N/A' },
         ];
         const selectHtml = opts.map(o => `<option value="${o.v}" ${current===o.v?'selected':''}>${o.l}</option>`).join('');
         return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);">
@@ -3725,13 +3732,13 @@ async function onMemberDashItemChange(checkId, itemId, sel) {
   // Recompute overall status for this check
   const allSels = document.querySelectorAll(`select[data-checkid="${checkId}"]`);
   const statuses = [...allSels].map(s => s.value);
-  const allDone  = statuses.every(s => s === 'done');
-  const anyProg  = statuses.some(s => s === 'in-progress' || s === 'done');
+  const allDone  = statuses.every(rspIsDoneLike);
+  const anyProg  = statuses.some(s => s === 'in-progress' || rspIsDoneLike(s));
   const overall  = allDone ? 'done' : anyProg ? 'in-progress' : 'pending';
   const overallEl = document.getElementById(`rsp-overall-${checkId}`);
   if (overallEl) {
-    const lbl = { done: '✓ Completed', 'in-progress': '⟳ In Progress', pending: '— Pending' }[overall];
-    const cls = { done: 'rv-done', 'in-progress': 'rv-progress', pending: 'rv-pending' }[overall];
+    const lbl = RSP_STATUS_LABEL[overall];
+    const cls = RSP_STATUS_CLASS[overall];
     overallEl.textContent = lbl;
     overallEl.className = `rv-status ${cls}`;
   }
@@ -3771,6 +3778,10 @@ async function renderEntryRspKitBanner(bannerId, entries) {
   banner.style.display = 'none';
   banner.innerHTML = '';
 
+  const uiPrefix = bannerId.replace('-rspkit-banner', '');
+  const miniEl = document.getElementById(`${uiPrefix}-kitrsp-mini`);
+  const hideMini = () => { if (miniEl) miniEl.style.display = 'none'; };
+
   try {
     const snap = await db.collection('taskChecks')
       .where('campaignId', '==', selectedCampaignId).get();
@@ -3781,7 +3792,7 @@ async function renderEntryRspKitBanner(bannerId, entries) {
       if (rspCheckAppliesToUser(tc, currentUser.uid)) checks.push({ id: doc.id, ...tc });
     });
     checks.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt));
-    if (checks.length === 0) return;
+    if (checks.length === 0) { hideMini(); return; }
 
     // Load my responses for each check
     const responses = {};
@@ -3792,7 +3803,7 @@ async function renderEntryRspKitBanner(bannerId, entries) {
 
     // Only keep checks that apply to at least one of this campaign's entries
     const relevantChecks = checks.filter(tc => entries.some(e => rspCheckAppliesToEntry(tc, e)));
-    if (relevantChecks.length === 0) return;
+    if (relevantChecks.length === 0) { hideMini(); return; }
 
     let html = '';
     relevantChecks.forEach((tc, idx) => {
@@ -3825,6 +3836,7 @@ async function renderEntryRspKitBanner(bannerId, entries) {
             { v: 'pending', l: '— Pending' },
             { v: 'in-progress', l: '⟳ In Progress' },
             { v: 'done', l: '✓ Done' },
+            { v: 'na', l: 'N/A' },
           ];
           const selectHtml = opts.map(o => `<option value="${o.v}" ${current===o.v?'selected':''}>${o.l}</option>`).join('');
           return `<td style="text-align:center;">
@@ -3867,7 +3879,43 @@ async function renderEntryRspKitBanner(bannerId, entries) {
 
     banner.innerHTML = html;
     banner.style.display = 'block';
-  } catch(e) { console.error('Entry RSP banner error', e); }
+
+    // Small Kit/RSP completion % shown right below the main checklist
+    // progress banner — separate from the detailed entry table above,
+    // this is just a quick at-a-glance rate. N/A counts as done, same as
+    // everywhere else this rate is calculated.
+    if (miniEl) {
+      let kitTotal = 0, kitDone = 0, rspTotal = 0, rspDone = 0;
+      relevantChecks.forEach(tc => {
+        const applicableEntries = entries.filter(e => rspCheckAppliesToEntry(tc, e));
+        const resp = responses[tc.id];
+        applicableEntries.forEach(e => {
+          const key = rspEntryKey(e);
+          tc.items.forEach(item => {
+            const st = rspItemStatus(resp, key, item.id);
+            const isKit = /kit/i.test(item.id) || /kit/i.test(item.label || '');
+            const isRsp = /rsp/i.test(item.id) || /rsp/i.test(item.label || '');
+            if (isKit) { kitTotal++; if (rspIsDoneLike(st)) kitDone++; }
+            else if (isRsp) { rspTotal++; if (rspIsDoneLike(st)) rspDone++; }
+          });
+        });
+      });
+      const kitPct = kitTotal > 0 ? Math.round((kitDone / kitTotal) * 100) : null;
+      const rspPct = rspTotal > 0 ? Math.round((rspDone / rspTotal) * 100) : null;
+      if (kitPct === null && rspPct === null) {
+        miniEl.style.display = 'none';
+      } else {
+        miniEl.style.display = 'flex';
+        miniEl.innerHTML = [
+          kitPct !== null ? `<span>📦 Kit: ${kitDone}/${kitTotal} (${kitPct}%)</span>` : '',
+          rspPct !== null ? `<span>📋 RSP: ${rspDone}/${rspTotal} (${rspPct}%)</span>` : '',
+        ].filter(Boolean).join('');
+      }
+    }
+  } catch(e) {
+    console.error('Entry RSP banner error', e);
+    hideMini();
+  }
 }
 
 // Member/TL Checklist tab: expand/collapse a single Kit & RSP Check card.
@@ -3894,8 +3942,8 @@ async function onEntryRspItemChange(checkId, entryKey, sel) {
     const row = sel.closest('.rsp-banner-entry');
     const allSels = row ? row.querySelectorAll(`select[data-checkid="${checkId}"][data-entrykey="${entryKey}"]`) : [];
     const statuses = [...allSels].map(s => s.value);
-    const allDone  = statuses.every(s => s === 'done');
-    const anyProg  = statuses.some(s => s === 'in-progress' || s === 'done');
+    const allDone  = statuses.every(rspIsDoneLike);
+    const anyProg  = statuses.some(s => s === 'in-progress' || rspIsDoneLike(s));
     const overall  = allDone ? 'done' : anyProg ? 'in-progress' : 'pending';
     const pill = row ? row.querySelector('.rv-status') : null;
     if (pill) { pill.textContent = RSP_STATUS_LABEL[overall]; pill.className = `rv-status ${RSP_STATUS_CLASS[overall]}`; }
@@ -6605,14 +6653,17 @@ function rspItemStatus(resp, entryKey, itemId) {
   if (!resp.entries && resp.items) return resp.items[itemId] || 'pending'; // legacy flat response
   return 'pending';
 }
+// N/A is treated the same as Done for completion/progress-rate purposes —
+// it just means "this item doesn't apply", not "still outstanding".
+function rspIsDoneLike(s) { return s === 'done' || s === 'na'; }
 function rspEntryOverallStatus(tc, resp, entryKey) {
   const statuses = tc.items.map(it => rspItemStatus(resp, entryKey, it.id));
-  const allDone = statuses.every(s => s === 'done');
-  const anyProg = statuses.some(s => s === 'in-progress' || s === 'done');
+  const allDone = statuses.every(rspIsDoneLike);
+  const anyProg = statuses.some(s => s === 'in-progress' || rspIsDoneLike(s));
   return allDone ? 'done' : anyProg ? 'in-progress' : 'pending';
 }
-const RSP_STATUS_LABEL = { done: '✓ Completed', 'in-progress': '⟳ In Progress', pending: '— Pending' };
-const RSP_STATUS_CLASS = { done: 'rv-done', 'in-progress': 'rv-progress', pending: 'rv-pending' };
+const RSP_STATUS_LABEL = { done: '✓ Completed', 'in-progress': '⟳ In Progress', pending: '— Pending', na: 'N/A' };
+const RSP_STATUS_CLASS = { done: 'rv-done', 'in-progress': 'rv-progress', pending: 'rv-pending', na: 'rv-na' };
 
 // ── Admin: Open "Send Task Check" modal ──────────────────────
 function openTaskCheckModal() {
@@ -6882,8 +6933,8 @@ async function openTaskCheckTracker(checkId) {
     targetMembers.forEach(m => {
       const r = responses[m.uid] || {};
       const statuses = check.items.map(item => (r.items || {})[item.id] || 'pending');
-      const allDone  = statuses.every(s => s === 'done');
-      const anyProg  = statuses.some(s => s === 'in-progress' || s === 'done');
+      const allDone  = statuses.every(rspIsDoneLike);
+      const anyProg  = statuses.some(s => s === 'in-progress' || rspIsDoneLike(s));
       if (allDone)       cDone++;
       else if (anyProg)  cProg++;
       else               cPend++;
@@ -6902,8 +6953,8 @@ async function openTaskCheckTracker(checkId) {
       const upd  = r.updatedAt ? `Updated ${new Date(r.updatedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}` : 'No response yet';
       const itemsHtml = check.items.map(item => {
         const st    = (r.items || {})[item.id] || 'pending';
-        const stLbl = { done: '✓ Done', 'in-progress': '⟳ In Progress', pending: '— Pending' }[st] || '— Pending';
-        const stCls = { done: 'rv-done', 'in-progress': 'rv-progress', pending: 'rv-pending' }[st] || 'rv-pending';
+        const stLbl = RSP_STATUS_LABEL[st] || '— Pending';
+        const stCls = RSP_STATUS_CLASS[st] || 'rv-pending';
         return `<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;padding:3px 0;border-bottom:1px solid var(--border);">
           <span style="color:var(--text);">${escHtml(item.label)}</span>
           <span class="rv-status ${stCls}" style="font-size:10px;">${stLbl}</span>
@@ -7026,6 +7077,7 @@ function renderMemberTaskCheckItems() {
       { v: 'pending',     l: '— Pending',     cls: 's-pending' },
       { v: 'in-progress', l: '⟳ In Progress', cls: 's-progress' },
       { v: 'done',        l: '✓ Done',         cls: 's-done' },
+      { v: 'na',          l: 'N/A',            cls: 's-na' },
     ];
     const selectHtml = opts.map(o => `<option value="${o.v}" ${current===o.v?'selected':''}>${o.l}</option>`).join('');
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
@@ -7143,8 +7195,8 @@ async function renderTaskChecksInDashboard(force) {
         const r = responses[m.uid];
         const stat = ensureStat(m);
         const tally = (item, status) => {
-          if (isKitItem(item)) { stat.kitTotal++; if (status === 'done') stat.kitDone++; }
-          else if (isRspItem(item)) { stat.rspTotal++; if (status === 'done') stat.rspDone++; }
+          if (isKitItem(item)) { stat.kitTotal++; if (rspIsDoneLike(status)) stat.kitDone++; }
+          else if (isRspItem(item)) { stat.rspTotal++; if (rspIsDoneLike(status)) stat.rspDone++; }
         };
 
         if (tc.campaignId) {
@@ -7504,7 +7556,7 @@ async function renderTeamLeadView() {
           });
         } else {
           tlRspTotal++;
-          const allDone = tc.items.every(item => ((r && r.items) || {})[item.id] === 'done');
+          const allDone = tc.items.every(item => rspIsDoneLike(((r && r.items) || {})[item.id]));
           if (allDone) tlRspComplete++;
         }
       });
