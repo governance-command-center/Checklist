@@ -3597,7 +3597,7 @@ async function renderUserDashboard() {
             <div style="text-align:right;">
               <div style="font-size:12px;font-weight:700;color:${campD5Color};">D-5 ${campD5Pct}%</div>
               <div style="font-size:12px;font-weight:700;color:${campD1Color};margin-top:2px;">D-1 ${campD1Pct}%</div>
-              ${campRspPct !== null ? `<div style="font-size:12px;font-weight:700;color:${campRspColor};margin-top:2px;">📦 ${campRspPct}%</div>` : ''}
+              ${campRspPct !== null ? `<div style="font-size:12px;font-weight:700;color:${campRspColor};margin-top:2px;">📦 RSP &amp; Kit ${campRspPct}%</div>` : ''}
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px;margin:8px 0 12px;">
@@ -5312,9 +5312,20 @@ async function renderReportTab() {
       const dday         = camp.dday     ? new Date(camp.dday)     : null;
       const deadlineStr  = camp.deadline ? fmtDate(camp.deadline)  : null;
       const ddayStr      = camp.dday     ? fmtDate(camp.dday)      : null;
-      const deadlinePast = deadline && deadline < today;
+      // Admin sets the deadline as a plain date (e.g. "2026-06-24"), which
+      // JS parses as UTC midnight — in any positive UTC-offset timezone
+      // that instant actually falls a few hours INTO that calendar day
+      // once converted to local time. Every other date used in this
+      // comparison (today, a checklist's completedAt day) is explicitly
+      // zeroed to local midnight, so comparing against the raw `deadline`
+      // here introduced a silent ~day's worth of drift — e.g. someone who
+      // finished exactly on the deadline showed as "+1d early" instead of
+      // "on time", and the same drift compounded into every "vs Deadline"
+      // delta on the Reports tab. Use the zeroed version everywhere we're
+      // doing date-only (not date+time) math.
       const deadlineDayOnly = deadline ? new Date(deadline) : null;
       if (deadlineDayOnly) deadlineDayOnly.setHours(0,0,0,0);
+      const deadlinePast = deadlineDayOnly && deadlineDayOnly < today;
       const daysToDeadline = deadlineDayOnly ? daysDiff(deadlineDayOnly, today) : null;
 
       const rows = [];
@@ -5355,12 +5366,12 @@ async function renderReportTab() {
         if (deadline) {
           if (isComplete && completedAt) {
             const completedDay = new Date(completedAt); completedDay.setHours(0,0,0,0);
-            deadlineDelta = daysDiff(deadline, completedDay);
+            deadlineDelta = daysDiff(deadlineDayOnly, completedDay);
             deadlineStatus = deadlineDelta >= 0 ? 'on-time' : 'late';
           } else if (!isComplete) {
             if (deadlinePast) {
               deadlineStatus = 'overdue';
-              deadlineDelta  = daysDiff(today, deadline); // positive = how many days overdue
+              deadlineDelta  = daysDiff(today, deadlineDayOnly); // positive = how many days overdue
             } else if (daysToDeadline !== null && daysToDeadline <= 3) {
               deadlineStatus = 'at-risk';
             }
@@ -5576,7 +5587,12 @@ async function exportReportToExcel() {
     'vs Deadline', 'Deadline Status', 'Brand/Platform/Region']];
 
   campList.forEach(camp => {
+    // Same normalization as the Reports tab — a date-only deadline string
+    // parses as UTC midnight, which lands a few hours into the local day
+    // in positive-UTC-offset timezones; zero it to local midnight before
+    // doing any day-diff math so it lines up with `today`/`completedDay`.
     const deadline = camp.deadline ? new Date(camp.deadline) : null;
+    if (deadline) deadline.setHours(0,0,0,0);
     (camp.assignedUids || []).forEach(uid => {
       const member = members[uid];
       if (!member) return;
