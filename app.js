@@ -126,6 +126,7 @@ async function loadAdminData() {
   await loadChecklistOverrides();
   await loadCalendarEntries();
   await loadMasterlist();
+  await checkBroadcastBadge();
   // Refresh data tab if it's currently showing
   const dataTab = document.getElementById('admin-tab-data');
   if (dataTab && dataTab.style.display !== 'none') renderDataTab();
@@ -2423,12 +2424,13 @@ function saveChecklist() {
 // Personal entry: { id, title, date, endDate, type, description, color }
 
 const CAL_ENTRY_TYPES = [
-  { id: 'teasing',   label: 'Teasing',      color: '#7C3AED' },
-  { id: 'dday',      label: 'D-Day',        color: '#DC2626' },
-  { id: 'deadline',  label: 'Deadline',     color: '#D97706' },
-  { id: 'meeting',   label: 'Meeting',      color: '#2563EB' },
-  { id: 'milestone', label: 'Milestone',    color: '#059669' },
-  { id: 'other',     label: 'Other',        color: '#64748B' },
+  { id: 'teasing',      label: 'Teasing',       color: '#7C3AED' },
+  { id: 'dday',         label: 'D-Day',         color: '#DC2626' },
+  { id: 'deadline',     label: 'Deadline',      color: '#D97706' },
+  { id: 'meeting',      label: 'Meeting',       color: '#2563EB' },
+  { id: 'payday_sale',  label: 'PayDay Sale',   color: '#059669' },
+  { id: 'midmonth_sale',label: 'Mid-Month Sale',color: '#DB2777' },
+  { id: 'other',        label: 'Other',         color: '#64748B' },
 ];
 
 let calCurrentMonth = new Date().getMonth();
@@ -2503,6 +2505,7 @@ function renderCalendarView(targetEl) {
   });
 
   const isAdmin   = currentUser?.role === 'admin';
+  const isTeamLead = currentUser?.role === 'team_lead';
   const canAddPersonal = !isAdmin;
 
   let html = `
@@ -2520,6 +2523,7 @@ function renderCalendarView(targetEl) {
           ${canAddPersonal ? `<span class="cal-legend-dot" style="background:#94A3B8;border:2px dashed #64748B;box-sizing:border-box;"></span><span style="font-size:11px;color:var(--text-muted)">My Events</span>` : ''}
         </div>
         ${isAdmin ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Add Event</button>` : ''}
+        ${isTeamLead ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Team Event</button>` : ''}
         ${canAddPersonal ? `<button class="btn-outline" style="background:#475569;border-color:#475569;font-size:12px;" onclick="openCalEntryModal(null,true)">+ My Event</button>` : ''}
       </div>
     </div>
@@ -2548,7 +2552,7 @@ function renderCalendarView(targetEl) {
       const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === entry.type) || CAL_ENTRY_TYPES[5];
       const col      = entry._type === 'personal' ? '#94A3B8' : (entry.color || typeInfo.color);
       const border   = entry._type === 'personal' ? '2px dashed #64748B' : 'none';
-      const isEditable = isAdmin || (entry._type === 'personal');
+      const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
       html += `<div class="cal-event" style="background:${col}20;border-left:3px solid ${col};border:${border};"
         onclick="${isEditable ? `openCalEntryModal('${entry.id}',${entry._type === 'personal'})` : ''}"
         title="${escHtml(entry.title)}${entry._type === 'personal' ? ' (My Event)' : ''}">
@@ -2579,7 +2583,7 @@ function renderCalendarView(targetEl) {
       const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === entry.type) || CAL_ENTRY_TYPES[5];
       const col = entry._type === 'personal' ? '#94A3B8' : (entry.color || typeInfo.color);
       const dateStr = new Date(entry.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', weekday: 'short' });
-      const isEditable = isAdmin || (entry._type === 'personal');
+      const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
       html += `<div class="cal-upcoming-item" style="border-left:3px solid ${col};"
         ${isEditable ? `onclick="openCalEntryModal('${entry.id}',${entry._type === 'personal'})" style="border-left:3px solid ${col};cursor:pointer;"` : ''}>
         <div class="cal-upcoming-date">${dateStr}</div>
@@ -2598,9 +2602,11 @@ function renderCalendarView(targetEl) {
 }
 
 function getCalTarget() {
-  // If the admin calendar tab is visible, render into its host; otherwise user view
+  // Render into whichever calendar host is actually visible: admin, team lead, or user.
   const adminHost = document.getElementById('admin-calendar-host');
   if (adminHost && adminHost.offsetParent !== null) return adminHost;
+  const tlHost = document.getElementById('tl-calendar-view');
+  if (tlHost && tlHost.offsetParent !== null) return tlHost;
   return document.getElementById('user-calendar-view');
 }
 
@@ -2649,6 +2655,7 @@ function openCalEntryModal(entryId, isPersonal) {
   calEditingEntry = null;
 
   const isAdmin = currentUser?.role === 'admin';
+  const isTeamLead = currentUser?.role === 'team_lead';
 
   if (entryId) {
     const list = isPersonal ? personalCalendarEntries : calendarEntries;
@@ -2657,17 +2664,20 @@ function openCalEntryModal(entryId, isPersonal) {
   }
 
   const entry = calEditingEntry?.entry || {};
-  const personalMode = isPersonal || (!isAdmin && !entryId);
+  const personalMode = isPersonal || (!isAdmin && !isTeamLead && !entryId);
 
-  // Populate member assign list (for admin shared entries)
+  // Populate member assign list (admin: all members; team lead: their own bucket only)
   let memberAssignHtml = '';
-  if (isAdmin && !isPersonal) {
-    const nonAdmins = Object.values(members).filter(m => m.role !== 'admin');
+  if ((isAdmin || isTeamLead) && !isPersonal) {
+    const assignable = isAdmin
+      ? Object.values(members).filter(m => m.role !== 'admin')
+      : Object.values(tlMembers || {});
+    const assignLabel = isAdmin ? 'Visible to (leave all unchecked = all members)' : 'Send to (select members in your team)';
     memberAssignHtml = `
     <div class="field">
-      <label>Visible to (leave all unchecked = all members)</label>
+      <label>${assignLabel}</label>
       <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);max-height:100px;overflow-y:auto;">
-        ${nonAdmins.map(m => {
+        ${assignable.map(m => {
           const checked = entry.assignedUids && entry.assignedUids.includes(m.uid) ? 'checked' : '';
           return `<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:3px 8px;border:1px solid var(--border);border-radius:99px;background:var(--surface);">
             <input type="checkbox" class="cal-member-cb" value="${m.uid}" ${checked} />
@@ -2675,7 +2685,7 @@ function openCalEntryModal(entryId, isPersonal) {
           </label>`;
         }).join('')}
       </div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Unchecked = visible to all tagged members</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${isAdmin ? 'Unchecked = visible to all tagged members' : 'Selected members + Admin will be notified for alignment'}</div>
     </div>`;
   }
 
@@ -2698,7 +2708,7 @@ function openCalEntryModal(entryId, isPersonal) {
   document.getElementById('cal-entry-title-input').value   = entry.title || '';
   document.getElementById('cal-entry-date').value          = entry.date || '';
   document.getElementById('cal-entry-enddate').value       = entry.endDate || '';
-  document.getElementById('cal-entry-type').value          = entry.type || 'milestone';
+  document.getElementById('cal-entry-type').value          = entry.type || 'payday_sale';
   document.getElementById('cal-entry-desc').value          = entry.description || '';
   document.getElementById('cal-entry-personal-mode').value = personalMode ? '1' : '0';
 
@@ -2738,9 +2748,9 @@ async function saveCalEntry() {
 
   const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === type) || CAL_ENTRY_TYPES[5];
 
-  // Gather assigned UIDs (admin shared only)
+  // Gather assigned UIDs (admin or team lead shared entries only)
   let assignedUids = [];
-  if (!personalMode && currentUser?.role === 'admin') {
+  if (!personalMode && (currentUser?.role === 'admin' || currentUser?.role === 'team_lead')) {
     assignedUids = [...document.querySelectorAll('.cal-member-cb:checked')].map(cb => cb.value);
   }
 
@@ -2778,6 +2788,9 @@ async function saveCalEntry() {
         calendarEntries.push({ id: `ce_${Date.now()}`, ...entryData });
       }
       await saveCalendarEntries();
+      if (currentUser?.role === 'team_lead' && assignedUids.length > 0) {
+        await notifyCalEntryAlignment(entryData, assignedUids);
+      }
     }
     document.getElementById('cal-entry-overlay').style.display = 'none';
     renderCalendarView(getCalTarget());
@@ -4022,6 +4035,33 @@ function useQuickMsg(btn) {
   document.getElementById('broadcast-message').value = btn.textContent;
 }
 
+// ── Team lead: notify selected bucket members + admin of a new/edited calendar entry ──
+async function notifyCalEntryAlignment(entryData, assignedUids) {
+  const leadName = currentUser?.name || currentUser?.username || 'Team Lead';
+  const dateStr  = entryData.date || '';
+  const msg = `📅 ${entryData.title} (${CAL_ENTRY_TYPES.find(t => t.color === entryData.color)?.label || entryData.type}) on ${dateStr}`;
+
+  const targets = [...new Set([...assignedUids, ADMIN_UID])];
+  for (const uid of targets) {
+    const targetName = uid === ADMIN_UID
+      ? 'Admin'
+      : (tlMembers[uid]?.name || tlMembers[uid]?.username || members[uid]?.name || 'member');
+    try {
+      await db.collection('broadcasts').add({
+        type: 'calendar',
+        message: uid === ADMIN_UID ? `${msg} — added by ${leadName} for alignment.` : msg,
+        targetUid: uid,
+        targetName,
+        campaignId: entryData.campaignId || null,
+        campaignName: null,
+        sentAt: new Date().toISOString(),
+        sentBy: leadName,
+        readBy: [],
+      });
+    } catch (e) { console.error('notifyCalEntryAlignment failed for', uid, e); }
+  }
+}
+
 async function sendBroadcast() {
   const msg    = document.getElementById('broadcast-message').value.trim();
   const uid    = document.getElementById('broadcast-member-sel').value;
@@ -4088,8 +4128,8 @@ async function loadBroadcastFeed() {
       const isUnread = !b.readBy?.includes(uid);
       if (isUnread) unreadIds.push(doc.id);
 
-      const typeIcon  = { shoutout: '🏆', nudge: '⏰', custom: '📢', registration: '📋', taskcheck: '📦' }[b.type] || '📣';
-      const typeColor = { shoutout: '#059669', nudge: '#D97706', custom: '#2563EB', registration: '#7C3AED', taskcheck: '#0F766E' }[b.type] || '#64748B';
+      const typeIcon  = { shoutout: '🏆', nudge: '⏰', custom: '📢', registration: '📋', taskcheck: '📦', calendar: '📅' }[b.type] || '📣';
+      const typeColor = { shoutout: '#059669', nudge: '#D97706', custom: '#2563EB', registration: '#7C3AED', taskcheck: '#0F766E', calendar: '#DB2777' }[b.type] || '#64748B';
       const timeStr   = new Date(b.sentAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
       const campTag   = b.campaignName ? `<span class="bcast-tag">${b.campaignName}</span>` : '';
       const unreadDot = isUnread ? `<span style="width:8px;height:8px;background:#EF4444;border-radius:50%;display:inline-block;margin-left:4px;"></span>` : '';
@@ -4107,7 +4147,7 @@ async function loadBroadcastFeed() {
       html += `<div class="bcast-card ${isUnread ? 'bcast-unread' : ''}">
         <div class="bcast-header">
           <span class="bcast-type-icon" style="color:${typeColor}">${typeIcon}</span>
-          <span class="bcast-from">From Admin</span>
+          <span class="bcast-from">From ${escHtml(b.sentBy || 'Admin')}</span>
           ${campTag}
           ${unreadDot}
           <span class="bcast-time">${timeStr}</span>
@@ -4170,7 +4210,7 @@ async function closeBroadcastFeedAndOpenPoll(pollId) {
 }
 
 async function checkBroadcastBadge() {
-  if (!currentUser || currentUser.role === 'admin') return;
+  if (!currentUser) return;
   try {
     const snap = await db.collection('broadcasts').orderBy('sentAt', 'desc').limit(50).get();
     let count = 0;
@@ -4193,6 +4233,11 @@ function updateBroadcastBadge(count) {
   if (tlBadge) {
     if (count > 0) { tlBadge.textContent = count; tlBadge.style.display = 'block'; }
     else { tlBadge.style.display = 'none'; }
+  }
+  const adminBadge = document.getElementById('admin-broadcast-badge');
+  if (adminBadge) {
+    if (count > 0) { adminBadge.textContent = count; adminBadge.style.display = 'block'; }
+    else { adminBadge.style.display = 'none'; }
   }
 }
 
@@ -7678,8 +7723,14 @@ function switchToTlChecklistTab(campId) {
 
 // Open the existing review modal in read-only mode for team leads
 async function openTlReviewModal(uid, campId) {
-  // Merge tl data into global maps so openReviewModal can find them
+  // Merge tl data into global maps so openReviewModal can find them.
+  // Also include the team lead's own record — rows in "My Team" can be
+  // the lead's own checklist (the "You" row), and without this, clicking
+  // Review on that row throws (members[uid] is undefined) and silently
+  // fails because the lead's own uid is never in tlMembers (tlMembers is
+  // built only from managedUids, not the lead themselves).
   Object.assign(members,   tlMembers);
+  if (!members[currentUser.uid]) members[currentUser.uid] = currentUser;
   Object.assign(campaigns, tlCampaigns);
 
   // Hide delete button — team leads are read-only

@@ -86,6 +86,11 @@
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M16 3L4 8v4l12 5V3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M4 10h-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Broadcast</span>
         </button>
+        <button class="nav-item" id="navbtn-messages" onclick="openBroadcastFeed()" title="Messages" style="position:relative;">
+          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M16 3L4 8v4l12 5V3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M4 10h-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <span class="nav-label">Messages</span>
+          <span class="nav-badge" id="admin-broadcast-badge" style="display:none;"></span>
+        </button>
         <button class="nav-item" id="navbtn-checklist" onclick="switchAdminTab('checklist')" title="Checklist Templates">
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M4 5h12M4 9h8M4 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M15 12l2 2-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="nav-label">Checklist</span>
