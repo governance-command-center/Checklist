@@ -173,7 +173,14 @@ function populateAdminCampaignFilter() {
     sel.innerHTML += `<option value="${c.id}">${c.name}</option>`;
   });
   const label = document.getElementById('dashboard-campaign-label');
-  if (label) label.textContent = sel.value ? (campaigns[sel.value]?.name || 'All campaigns') : 'All campaigns';
+  if (label) {
+    if (!sel.value) { label.textContent = 'All campaigns'; }
+    else {
+      const camp = campaigns[sel.value];
+      const meta = campDateMetaHtml(camp);
+      label.innerHTML = (camp?.name || 'All campaigns') + (meta ? ` &nbsp;·&nbsp; ${meta}` : '');
+    }
+  }
 }
 
 // ── Admin dashboard data cache ────────────────────────────────
@@ -219,7 +226,14 @@ async function renderAdminView(force) {
   await loadAdminDashboardCache(force);
   const filterCampaign = document.getElementById('admin-campaign-filter').value;
   const label = document.getElementById('dashboard-campaign-label');
-  if (label) label.textContent = filterCampaign ? (campaigns[filterCampaign]?.name || 'All campaigns') : 'All campaigns';
+  if (label) {
+    if (!filterCampaign) { label.textContent = 'All campaigns'; }
+    else {
+      const camp = campaigns[filterCampaign];
+      const meta = campDateMetaHtml(camp);
+      label.innerHTML = (camp?.name || 'All campaigns') + (meta ? ` &nbsp;·&nbsp; ${meta}` : '');
+    }
+  }
 
   const allChecklists = _dashCache.checklists;
 
@@ -1780,10 +1794,14 @@ async function loadUserChecklist() {
     if (banner) banner.style.display = 'none';
     const rspBanner = document.getElementById('user-rspkit-banner');
     if (rspBanner) rspBanner.style.display = 'none';
+    const userCampSub = document.getElementById('user-campaign-sub');
+    if (userCampSub) userCampSub.textContent = 'Select a campaign to begin';
     return;
   }
 
   document.getElementById('user-campaign-name').textContent       = campaigns[selectedCampaignId]?.name || '';
+  const userCampSub = document.getElementById('user-campaign-sub');
+  if (userCampSub) userCampSub.innerHTML = campDateMetaHtml(campaigns[selectedCampaignId]) || 'Fill out your checklist below';
   document.getElementById('user-no-campaign').style.display       = 'none';
   document.getElementById('user-checklist').style.display         = 'block';
   document.getElementById('user-progress-bar-wrap').style.display = 'block';
@@ -3572,9 +3590,7 @@ async function renderUserDashboard() {
       const campD5Color = campD5Pct === 100 ? '#059669' : campD5Pct >= 50 ? '#D97706' : '#2563EB';
       const campD1Color = campD1Pct === 100 ? '#059669' : campD1Pct >= 50 ? '#D97706' : '#2563EB';
       const campRspColor = campRspPct === null ? 'var(--text-muted)' : campRspPct === 100 ? '#059669' : campRspPct >= 50 ? '#D97706' : '#2563EB';
-      const deadlineStr = camp.dday
-        ? `<span style="font-size:11px;color:var(--text-muted);">📅 D-Day: ${new Date(camp.dday).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>`
-        : '';
+      const deadlineStr = campDateMetaHtml(camp);
 
       // Team leads see anonymous mini-bars across their team; plain members
       // see bars per entry of their OWN checklist (labelled when >1 entry).
@@ -3968,6 +3984,21 @@ async function onEntryRspItemChange(checkId, entryKey, sel) {
 
 function escHtml(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Shared D-Day / Checklist Deadline meta line ─────────────────
+// Used anywhere a campaign's key dates should be surfaced: the member
+// "My Checklist" overview cards, the actual Checklist tab header (for
+// members, team leads, and admins alike), the admin Dashboard header,
+// and the team lead "My Team" header — so the two dates always read the
+// same way everywhere instead of drifting into one-off formats.
+function campDateMetaHtml(camp) {
+  if (!camp) return '';
+  const fmt = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  const parts = [];
+  if (camp.dday)     parts.push(`<span style="font-size:11px;color:var(--text-muted);">📅 D-Day: ${fmt(camp.dday)}</span>`);
+  if (camp.deadline) parts.push(`<span style="font-size:11px;color:#D97706;font-weight:600;">⏰ Checklist Deadline: ${fmt(camp.deadline)}</span>`);
+  return parts.join(' &nbsp;·&nbsp; ');
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -7456,10 +7487,14 @@ async function loadTlChecklist() {
     if (rspBanner) rspBanner.style.display = 'none';
     const sideWrap = document.getElementById('tl-sidebar-progress');
     if (sideWrap) sideWrap.style.display = 'none';
+    const tlCampSub = document.getElementById('tl-campaign-sub');
+    if (tlCampSub) tlCampSub.textContent = 'Select a campaign to begin';
     return;
   }
 
   document.getElementById('tl-campaign-name').textContent = tlOwnCampaigns[selectedCampaignId]?.name || 'My Checklist';
+  const tlCampSub = document.getElementById('tl-campaign-sub');
+  if (tlCampSub) tlCampSub.innerHTML = campDateMetaHtml(tlOwnCampaigns[selectedCampaignId]) || 'Fill out your checklist below';
   document.getElementById('tl-no-campaign').style.display  = 'none';
   document.getElementById('tl-checklist').style.display    = 'block';
 
@@ -7506,6 +7541,16 @@ async function renderTeamLeadView() {
   if (!tbody) return;
   const filterCampId = (document.getElementById('tl-campaign-filter') || {}).value || '';
   const managedUids  = currentUser.managedUids || [];
+
+  const tlDashLabel = document.getElementById('tl-dashboard-campaign-label');
+  if (tlDashLabel) {
+    if (!filterCampId) { tlDashLabel.textContent = 'Checklist progress for your assigned members'; }
+    else {
+      const camp = tlCampaigns[filterCampId];
+      const meta = campDateMetaHtml(camp);
+      tlDashLabel.innerHTML = meta || 'Checklist progress for your assigned members';
+    }
+  }
 
   tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2rem;">Loading…</td></tr>';
 

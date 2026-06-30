@@ -492,7 +492,7 @@
         <div class="page-header">
           <div>
             <h1 class="page-title" id="user-campaign-name">Checklist</h1>
-            <p class="page-sub">Select a campaign to begin</p>
+            <p class="page-sub" id="user-campaign-sub">Select a campaign to begin</p>
           </div>
           <div class="page-header-actions">
             <select id="user-campaign-select" onchange="loadUserChecklist()" style="max-width:280px;">
@@ -1248,7 +1248,7 @@
         <div class="page-header">
           <div>
             <h1 class="page-title">My Team</h1>
-            <p class="page-sub">Checklist progress for your assigned members</p>
+            <p class="page-sub" id="tl-dashboard-campaign-label">Checklist progress for your assigned members</p>
           </div>
           <button class="btn-outline-dark" onclick="loadTeamLeadView()">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M12 7A5 5 0 112 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M12 7l-2-2M12 7l2-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1311,7 +1311,7 @@
         <div class="page-header">
           <div>
             <h1 class="page-title" id="tl-campaign-name">My Checklist</h1>
-            <p class="page-sub">Select a campaign to begin</p>
+            <p class="page-sub" id="tl-campaign-sub">Select a campaign to begin</p>
           </div>
           <div class="page-header-actions">
             <select id="tl-campaign-select" onchange="loadTlChecklist()" style="max-width:280px;">
