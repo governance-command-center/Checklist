@@ -2481,11 +2481,24 @@ async function savePersonalCalendarEntries() {
 function getVisibleSharedEntries() {
   if (!currentUser) return calendarEntries;
   if (currentUser.role === 'admin') return calendarEntries;
-  // Members: see shared entries assigned to all, or specifically to them
+  // Members/team leads: see shared entries assigned to all, specifically to them,
+  // or that they personally created (a team lead who tags only their members
+  // should still see the event they just added on their own calendar).
   return calendarEntries.filter(e => {
+    if (e.createdBy && e.createdBy === currentUser.uid) return true;
     if (!e.assignedUids || e.assignedUids.length === 0) return true;
     return e.assignedUids.includes(currentUser.uid);
   });
+}
+
+// Returns a short "added by <team lead>" label for shared entries created by a
+// team lead, so admins can spot alignment events (e.g. campaign D-days) added
+// by team leads at a glance. Returns '' for admin-created or personal entries.
+function _calCreatorLabel(entry) {
+  if (!entry || entry._type !== 'shared' || !entry.createdBy || entry.createdBy === ADMIN_UID) return '';
+  const creator = members[entry.createdBy];
+  if (!creator || creator.role !== 'team_lead') return '';
+  return creator.name || creator.username || 'Team Lead';
 }
 
 function renderCalendarView(targetEl) {
@@ -2571,10 +2584,11 @@ function renderCalendarView(targetEl) {
       const col      = entry._type === 'personal' ? '#94A3B8' : (entry.color || typeInfo.color);
       const border   = entry._type === 'personal' ? '2px dashed #64748B' : 'none';
       const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
+      const creatorLabel = isAdmin ? _calCreatorLabel(entry) : '';
       html += `<div class="cal-event" style="background:${col}20;border-left:3px solid ${col};border:${border};"
         onclick="${isEditable ? `openCalEntryModal('${entry.id}',${entry._type === 'personal'})` : ''}"
-        title="${escHtml(entry.title)}${entry._type === 'personal' ? ' (My Event)' : ''}">
-        <span style="color:${col};font-size:10px;font-weight:600;">${escHtml(entry.title)}</span>
+        title="${escHtml(entry.title)}${entry._type === 'personal' ? ' (My Event)' : ''}${creatorLabel ? ` — added by ${escHtml(creatorLabel)} (Team Lead)` : ''}">
+        <span style="color:${col};font-size:10px;font-weight:600;">${escHtml(entry.title)}${creatorLabel ? ' 👤' : ''}</span>
       </div>`;
     });
     if (dayEntries.length > 3) {
@@ -2602,12 +2616,14 @@ function renderCalendarView(targetEl) {
       const col = entry._type === 'personal' ? '#94A3B8' : (entry.color || typeInfo.color);
       const dateStr = new Date(entry.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', weekday: 'short' });
       const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
+      const creatorLabel = isAdmin ? _calCreatorLabel(entry) : '';
       html += `<div class="cal-upcoming-item" style="border-left:3px solid ${col};"
         ${isEditable ? `onclick="openCalEntryModal('${entry.id}',${entry._type === 'personal'})" style="border-left:3px solid ${col};cursor:pointer;"` : ''}>
         <div class="cal-upcoming-date">${dateStr}</div>
         <div class="cal-upcoming-title">${escHtml(entry.title)}</div>
         ${entry.description ? `<div class="cal-upcoming-desc">${escHtml(entry.description)}</div>` : ''}
         ${entry._type === 'personal' ? '<span class="cal-personal-badge">My Event</span>' : ''}
+        ${creatorLabel ? `<span class="cal-personal-badge" style="background:#EFF6FF;color:#2563EB;">Added by ${escHtml(creatorLabel)} (TL)</span>` : ''}
         <span class="cal-type-badge" style="background:${col}20;color:${col};">${typeInfo.label}</span>
       </div>`;
     });
