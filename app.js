@@ -441,7 +441,7 @@ async function renderAdminView(force) {
       : '—';
     return `<tr>
       <td><strong>${r.member.name || r.member.username}</strong>${r.member.role === 'team_lead' ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">Team Lead</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${r.member.username}</span></td>
-      <td>${r.camp.name}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}</td>
+      <td>${r.camp.name}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.camp.deadline ? `<br><span style="font-size:10px;color:#D97706;font-weight:600;">⏰ ${fmtDeadlineShort(r.camp.deadline)}</span>` : ''}</td>
       <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
       <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
       <td><span class="badge ${badge}</span></td>
@@ -683,7 +683,7 @@ function renderActiveCampaignsPanel() {
   const campMap = {};
   rows.forEach(r => {
     const id = r.camp.id;
-    if (!campMap[id]) campMap[id] = { id, name: r.camp.name, dday: r.camp.dday || null, total: 0, complete: 0, inProgress: 0, notStarted: 0 };
+    if (!campMap[id]) campMap[id] = { id, name: r.camp.name, dday: r.camp.dday || null, deadline: r.camp.deadline || null, total: 0, complete: 0, inProgress: 0, notStarted: 0 };
     campMap[id].total++;
     if (r.overallDone === 100)      campMap[id].complete++;
     else if (r.overallDone > 0)     campMap[id].inProgress++;
@@ -720,9 +720,17 @@ function renderActiveCampaignsPanel() {
       else if (diff <= 5)  { cls = 'dp-amber'; txt = `D-Day in ${diff}d`; }
       ddayTag = `<span class="deadline-pill ${cls}" style="margin-left:4px;">${txt}</span>`;
     }
+    let deadlineTag = '';
+    if (camp.deadline) {
+      const dl = new Date(camp.deadline);
+      const dlOpts = camp.deadline.includes('T')
+        ? { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }
+        : { day: 'numeric', month: 'short' };
+      deadlineTag = `<span class="deadline-pill" style="margin-left:4px;background:#FFFBEB;color:#D97706;border-color:#FDE68A;" title="Checklist Deadline">⏰ ${dl.toLocaleString('en-GB', dlOpts)}</span>`;
+    }
     return `<div class="ac-camp-row${isActive ? ' ac-camp-row-active' : ''}" onclick="selectDashboardCampaign('${camp.id}')" title="Click to view this campaign only">
       <div class="ac-camp-top">
-        <div class="ac-camp-name">${escHtml(camp.name)}${ddayTag}${isActive ? ' <span style="font-size:10px;color:#2563EB;font-weight:700;">● selected</span>' : ''}</div>
+        <div class="ac-camp-name">${escHtml(camp.name)}${ddayTag}${deadlineTag}${isActive ? ' <span style="font-size:10px;color:#2563EB;font-weight:700;">● selected</span>' : ''}</div>
         <div class="ac-camp-rate" style="color:${rateColor};font-family:var(--mono);font-size:13px;font-weight:700;">${rate}%</div>
       </div>
       <div class="ac-rate-bar"><div style="width:${rate}%;background:${rateColor};height:100%;border-radius:4px;transition:width .4s;"></div></div>
@@ -2921,6 +2929,9 @@ async function deleteCalEntry() {
 
 // Admin calendar view (inside admin screen)
 function switchAdminTab(tab) {
+  const managerRestricted = ['data', 'members', 'alerts', 'checklist'];
+  if (currentUser?.role === 'manager' && managerRestricted.includes(tab)) tab = 'dashboard';
+
   const tabs = ['dashboard', 'calendar', 'data', 'members', 'reports', 'alerts', 'checklist'];
   tabs.forEach(t => {
     const el = document.getElementById('admin-tab-' + t);
@@ -4165,11 +4176,29 @@ function escHtml(str) {
 // same way everywhere instead of drifting into one-off formats.
 function campDateMetaHtml(camp) {
   if (!camp) return '';
-  const fmt = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  const fmt = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const opts = iso.includes('T')
+      ? { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }
+      : { day: 'numeric', month: 'short', year: 'numeric' };
+    return d.toLocaleString('en-GB', opts);
+  };
   const parts = [];
   if (camp.dday)     parts.push(`<span style="font-size:11px;color:var(--text-muted);">📅 D-Day: ${fmt(camp.dday)}</span>`);
   if (camp.deadline) parts.push(`<span style="font-size:11px;color:#D97706;font-weight:600;">⏰ Checklist Deadline: ${fmt(camp.deadline)}</span>`);
   return parts.join(' &nbsp;·&nbsp; ');
+}
+
+// Compact "12 Jul, 15:30" style formatter for the checklist deadline —
+// used in table cells where campDateMetaHtml's full label is too long.
+function fmtDeadlineShort(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const opts = iso.includes('T')
+    ? { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }
+    : { day: 'numeric', month: 'short' };
+  return d.toLocaleString('en-GB', opts);
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -7887,7 +7916,7 @@ async function renderTeamLeadView() {
     const isSelf = r.member.uid === currentUser.uid;
     return `<tr>
       <td><strong>${escHtml(r.member.name || r.member.username)}</strong>${isSelf ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">You</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${escHtml(r.member.username)}</span></td>
-      <td>${escHtml(r.camp.name)}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}</td>
+      <td>${escHtml(r.camp.name)}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.camp.deadline ? `<br><span style="font-size:10px;color:#D97706;font-weight:600;">⏰ ${fmtDeadlineShort(r.camp.deadline)}</span>` : ''}</td>
       <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
       <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
       <td><span class="badge ${badge}</span></td>

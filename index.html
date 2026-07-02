@@ -71,11 +71,11 @@
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 7h8M6 10h5M6 13h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Reports</span>
         </button>
-        <button class="nav-item" id="navbtn-data" onclick="switchAdminTab('data')" title="Data">
+        <button class="nav-item admin-only" id="navbtn-data" onclick="switchAdminTab('data')" title="Data">
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><ellipse cx="10" cy="5" rx="7" ry="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 5v5c0 1.38 3.13 2.5 7 2.5s7-1.12 7-2.5V5" stroke="currentColor" stroke-width="1.5"/><path d="M3 10v5c0 1.38 3.13 2.5 7 2.5s7-1.12 7-2.5v-5" stroke="currentColor" stroke-width="1.5"/></svg>
           <span class="nav-label">Data</span>
         </button>
-        <button class="nav-item" id="navbtn-members" onclick="switchAdminTab('members')" title="Members">
+        <button class="nav-item admin-only" id="navbtn-members" onclick="switchAdminTab('members')" title="Members">
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><circle cx="7" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M2 17c0-3 2.5-5 5-5s5 2 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="15" cy="7" r="2.3" stroke="currentColor" stroke-width="1.5"/><path d="M12.5 17c.2-2.4 1.8-4 3.7-4 2 0 3.6 1.5 3.8 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Members</span>
         </button>
@@ -96,8 +96,8 @@
           <span class="nav-label">Checklist</span>
         </button>
 
-        <div class="nav-divider" id="nav-alerts-divider"></div>
-        <button class="nav-item nav-item-danger" id="navbtn-alerts" onclick="switchAdminTab('alerts')" title="Alerts" style="display:none;">
+        <div class="nav-divider admin-only" id="nav-alerts-divider"></div>
+        <button class="nav-item nav-item-danger admin-only" id="navbtn-alerts" onclick="switchAdminTab('alerts')" title="Alerts" style="display:none;">
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M10 2a6 6 0 016 6v3l1.5 2.5H2.5L4 11V8a6 6 0 016-6z" stroke="currentColor" stroke-width="1.5"/><path d="M8 16a2 2 0 004 0" stroke="currentColor" stroke-width="1.5"/></svg>
           <span class="nav-label">Alerts</span>
           <span class="nav-badge" id="nav-alert-badge" style="display:none;"></span>
