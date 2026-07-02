@@ -42,7 +42,7 @@
         <span class="logo-mark sm">TR</span>
         <div class="sidebar-brand" id="sidebar-brand-text">
           <div class="sidebar-title">Trackory</div>
-          <div class="sidebar-sub">Admin Dashboard</div>
+          <div class="sidebar-sub" id="admin-sidebar-sub">Admin Dashboard</div>
         </div>
         <button class="sidebar-toggle" id="sidebar-toggle-btn" onclick="toggleSidebar()" title="Collapse sidebar">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -91,7 +91,7 @@
           <span class="nav-label">Messages</span>
           <span class="nav-badge" id="admin-broadcast-badge" style="display:none;"></span>
         </button>
-        <button class="nav-item" id="navbtn-checklist" onclick="switchAdminTab('checklist')" title="Checklist Templates">
+        <button class="nav-item admin-only" id="navbtn-checklist" onclick="switchAdminTab('checklist')" title="Checklist Templates">
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M4 5h12M4 9h8M4 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M15 12l2 2-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="nav-label">Checklist</span>
         </button>
@@ -110,7 +110,7 @@
             <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M13 15l4-4-4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 11H7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M7 4H4a1 1 0 00-1 1v10a1 1 0 001 1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
             <span class="nav-label">Sign out</span>
           </button>
-          <span class="sidebar-username">Admin</span>
+          <span class="sidebar-username" id="admin-sidebar-username">Admin</span>
         </div>
       </div>
     </aside>
@@ -262,7 +262,7 @@
                 <div class="data-card-title">Campaigns</div>
                 <div class="data-card-sub">Create and manage campaigns</div>
               </div>
-              <button class="btn-primary" style="width:auto;font-size:12px;padding:6px 14px;" onclick="openNewCampaignModal()">+ New Campaign</button>
+              <button class="btn-primary admin-only" style="width:auto;font-size:12px;padding:6px 14px;" onclick="openNewCampaignModal()">+ New Campaign</button>
             </div>
             <div id="data-campaigns-list" class="data-inner-list"></div>
           </div>
@@ -309,7 +309,7 @@
             <div id="data-checklists-list" class="data-inner-list"></div>
           </div>
 
-          <div class="data-card data-card-danger">
+          <div class="data-card data-card-danger admin-only">
             <div class="data-card-header">
               <span class="data-card-icon">⚠️</span>
               <div>
@@ -352,13 +352,15 @@
                 <div class="data-card-sub">Add and remove team members and team leads</div>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-                <button class="btn-outline-dark" style="font-size:12px;padding:6px 14px;" onclick="openTeamLeadModal()">👥 Team Leads</button>
-                <button class="btn-primary" style="width:auto;font-size:12px;padding:6px 14px;" onclick="openMemberModal()">+ Add Member</button>
-                <button class="btn-outline" style="font-size:12px;padding:6px 14px;" onclick="openImportMembersModal()">Bulk Add</button>
+                <button class="btn-outline-dark admin-only" style="font-size:12px;padding:6px 14px;" onclick="openTeamLeadModal()">👥 Team Leads</button>
+                <button class="btn-outline-dark admin-only" style="font-size:12px;padding:6px 14px;" onclick="openManagerModal()">🧭 Managers</button>
+                <button class="btn-primary admin-only" style="width:auto;font-size:12px;padding:6px 14px;" onclick="openMemberModal()">+ Add Member</button>
+                <button class="btn-outline admin-only" style="font-size:12px;padding:6px 14px;" onclick="openImportMembersModal()">Bulk Add</button>
                 <button class="btn-outline" style="font-size:12px;padding:6px 14px;" onclick="exportMembersToExcel()">📤 Export Usernames</button>
-                <button id="remove-selected-members-btn" class="btn-ghost-light" style="font-size:12px;padding:6px 14px;color:#DC2626;border-color:#FCA5A5;display:none;" onclick="removeSelectedMembers()">🗑 Remove Selected</button>
+                <button id="remove-selected-members-btn" class="btn-ghost-light admin-only" style="font-size:12px;padding:6px 14px;color:#DC2626;border-color:#FCA5A5;display:none;" onclick="removeSelectedMembers()">🗑 Remove Selected</button>
               </div>
             </div>
+            <div id="data-managers-list" class="data-inner-list"></div>
             <div id="data-members-list" class="data-inner-list"></div>
           </div>
 
@@ -1380,6 +1382,60 @@
       <div class="modal-actions">
         <button class="btn-ghost-light" onclick="closeEditTlModal()">Cancel</button>
         <button class="btn-primary" style="width:auto;" onclick="saveEditTlMembers()">💾 Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ ADD MANAGER MODAL ═══════════ -->
+  <div id="manager-modal-overlay" style="display:none;" onclick="closeManagerModal(event)">
+    <div class="modal" style="max-width:480px;">
+      <h3>🧭 Add Manager</h3>
+      <div class="field">
+        <label>Username</label>
+        <input type="text" id="new-mgr-username" placeholder="e.g. mgr_diana" />
+      </div>
+      <div class="field">
+        <label>Display Name</label>
+        <input type="text" id="new-mgr-name" placeholder="e.g. Diana Reyes" />
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="new-mgr-password" placeholder="Set a password" />
+      </div>
+      <div class="field">
+        <label>Assign Team Leads to Manage</label>
+        <input type="text" id="mgr-tl-search" placeholder="Search team leads…"
+          oninput="filterMgrTlList(this.value)"
+          style="width:100%;box-sizing:border-box;font-size:12px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--surface);color:var(--text);" />
+        <div id="mgr-tl-assign-list" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface2);"></div>
+      </div>
+      <div id="manager-modal-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeManagerModal()">Cancel</button>
+        <button class="btn-primary" style="width:auto;" onclick="addManager()">Add Manager</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ EDIT MANAGER MODAL ═══════════ -->
+  <div id="edit-mgr-modal-overlay" style="display:none;" onclick="closeEditMgrModal(event)">
+    <div class="modal" style="max-width:520px;">
+      <div class="modal-header">
+        <h3>✏️ Edit Manager</h3>
+        <button class="btn-ghost-light" onclick="closeEditMgrModal()">✕</button>
+      </div>
+      <div id="edit-mgr-info" style="font-size:13px;color:var(--text-muted);margin-bottom:14px;padding:10px 12px;background:var(--surface2);border-radius:8px;"></div>
+      <div class="field">
+        <label>Assigned Team Leads <span style="font-size:11px;font-weight:400;color:var(--text-muted);">— check/uncheck to update</span></label>
+        <input type="text" id="edit-mgr-tl-search" placeholder="Search team leads…"
+          oninput="filterEditMgrTlList(this.value)"
+          style="width:100%;box-sizing:border-box;font-size:12px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--surface);color:var(--text);" />
+        <div id="edit-mgr-tl-assign-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface2);"></div>
+      </div>
+      <div id="edit-mgr-modal-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeEditMgrModal()">Cancel</button>
+        <button class="btn-primary" style="width:auto;" onclick="saveEditMgrTeamLeads()">💾 Save Changes</button>
       </div>
     </div>
   </div>

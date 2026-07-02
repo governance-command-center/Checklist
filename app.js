@@ -58,7 +58,10 @@ async function handleLogin() {
     currentUser = { uid: doc.id, username: data.username, name: data.name, role: data.role || 'member', managedUids: data.managedUids || [] };
     sessionStorage.setItem('mcSession', JSON.stringify(currentUser));
 
-    if (currentUser.role === 'team_lead') {
+    if (currentUser.role === 'manager') {
+      await loadManagerData();
+      showScreen('admin-screen');
+    } else if (currentUser.role === 'team_lead') {
       await loadTeamLeadData();
       document.getElementById('tl-name-display').textContent = currentUser.name || currentUser.username;
       showScreen('teamlead-screen');
@@ -91,6 +94,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       currentUser = JSON.parse(saved);
       if (currentUser.role === 'admin') {
         await loadAdminData(); showScreen('admin-screen');
+      } else if (currentUser.role === 'manager') {
+        await loadManagerData(); showScreen('admin-screen');
       } else if (currentUser.role === 'team_lead') {
         await loadTeamLeadData();
         document.getElementById('tl-name-display').textContent = currentUser.name || currentUser.username;
@@ -121,6 +126,7 @@ async function loadAdminData() {
     else campaigns[doc.id] = camp;
   });
 
+  applyRoleUI();
   populateAdminCampaignFilter();
   renderAdminView(true);
   await loadChecklistOverrides();
@@ -135,6 +141,72 @@ async function loadAdminData() {
   if (regTab && regTab.style.display !== 'none') loadAndRenderRegPollAdmin();
   // Refresh members tab if it's currently showing
   refreshMembersTabIfOpen();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  MANAGER — reuses the admin-screen UI, scoped to the manager's own
+//  team leads + the members inside those team leads' groups. Campaigns
+//  stay unscoped (managers see all campaigns, same as admin); only the
+//  shared `members` map is filtered. Almost every admin-screen render
+//  function (dashboard, reports, data tab, members tab, kit/RSP progress
+//  panels) reads from that shared `members` object, so filtering it here
+//  scopes the whole screen without touching each render function.
+// ─────────────────────────────────────────────────────────────
+function computeManagerScopedUids(managerUser, sourceMembers) {
+  const uids = new Set();
+  (managerUser.managedUids || []).forEach(tlUid => {
+    uids.add(tlUid);
+    const tl = sourceMembers[tlUid];
+    if (tl) (tl.managedUids || []).forEach(mUid => uids.add(mUid));
+  });
+  return uids;
+}
+
+async function loadManagerData() {
+  const usersSnap = await db.collection('users').get();
+  const allMembers = {};
+  usersSnap.forEach(doc => { allMembers[doc.id] = { ...doc.data(), uid: doc.id }; });
+
+  const scopedUids = computeManagerScopedUids(currentUser, allMembers);
+  members = {};
+  scopedUids.forEach(uid => { if (allMembers[uid]) members[uid] = allMembers[uid]; });
+
+  // Campaigns: managers see ALL campaigns, same as admin.
+  const campsSnap = await db.collection('campaigns').orderBy('createdAt', 'desc').get();
+  campaigns = {};
+  archivedCampaigns = {};
+  campsSnap.forEach(doc => {
+    const camp = { ...doc.data(), id: doc.id };
+    if (camp.archived) archivedCampaigns[doc.id] = camp;
+    else campaigns[doc.id] = camp;
+  });
+
+  applyRoleUI();
+  populateAdminCampaignFilter();
+  renderAdminView(true);
+  await loadChecklistOverrides();
+  await loadCalendarEntries();
+  await loadMasterlist();
+  await checkBroadcastBadge();
+  const dataTab = document.getElementById('admin-tab-data');
+  if (dataTab && dataTab.style.display !== 'none') renderDataTab();
+  const regTab = document.getElementById('admin-tab-registration');
+  if (regTab && regTab.style.display !== 'none') loadAndRenderRegPollAdmin();
+  refreshMembersTabIfOpen();
+}
+
+// Toggles the admin screen between full-admin and manager (scoped,
+// org-structure-actions-hidden) presentation. Elements tagged
+// class="admin-only" in the HTML are hidden in manager mode via the
+// .manager-mode CSS rule in style.css.
+function applyRoleUI() {
+  const isManager = currentUser?.role === 'manager';
+  const screen = document.getElementById('admin-screen');
+  if (screen) screen.classList.toggle('manager-mode', isManager);
+  const subEl  = document.getElementById('admin-sidebar-sub');
+  const nameEl = document.getElementById('admin-sidebar-username');
+  if (subEl)  subEl.textContent  = isManager ? 'Manager Dashboard' : 'Admin Dashboard';
+  if (nameEl) nameEl.textContent = isManager ? (currentUser.name || currentUser.username) : 'Admin';
 }
 
 async function loadMemberData(uid) {
@@ -2480,7 +2552,7 @@ async function savePersonalCalendarEntries() {
 
 function getVisibleSharedEntries() {
   if (!currentUser) return calendarEntries;
-  if (currentUser.role === 'admin') return calendarEntries;
+  if (currentUser.role === 'admin' || currentUser.role === 'manager') return calendarEntries;
   // Members/team leads: see shared entries assigned to all, specifically to them,
   // or that they personally created (a team lead who tags only their members
   // should still see the event they just added on their own calendar).
@@ -2535,7 +2607,7 @@ function renderCalendarView(targetEl) {
     }
   });
 
-  const isAdmin   = currentUser?.role === 'admin';
+  const isAdmin   = currentUser?.role === 'admin' || currentUser?.role === 'manager';
   const isTeamLead = currentUser?.role === 'team_lead';
   const canAddPersonal = !isAdmin;
 
@@ -2688,7 +2760,7 @@ function _getCalTimeField(prefix) {
 function openCalEntryModal(entryId, isPersonal) {
   calEditingEntry = null;
 
-  const isAdmin = currentUser?.role === 'admin';
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
   const isTeamLead = currentUser?.role === 'team_lead';
 
   if (entryId) {
@@ -2784,7 +2856,7 @@ async function saveCalEntry() {
 
   // Gather assigned UIDs (admin or team lead shared entries only)
   let assignedUids = [];
-  if (!personalMode && (currentUser?.role === 'admin' || currentUser?.role === 'team_lead')) {
+  if (!personalMode && (currentUser?.role === 'admin' || currentUser?.role === 'manager' || currentUser?.role === 'team_lead')) {
     assignedUids = [...document.querySelectorAll('.cal-member-cb:checked')].map(cb => cb.value);
   }
 
@@ -2903,8 +2975,9 @@ async function renderMembersTab() {
     const nonAdmins = Object.values(members).filter(m => m.role !== 'admin')
       .sort((a, b) => (a.name || a.username || '').localeCompare(b.name || b.username || ''));
 
+    const managers = nonAdmins.filter(m => m.role === 'manager');
     const teamLeads = nonAdmins.filter(m => m.role === 'team_lead');
-    const regularMembers = nonAdmins.filter(m => m.role !== 'team_lead');
+    const regularMembers = nonAdmins.filter(m => m.role !== 'team_lead' && m.role !== 'manager');
 
     // Fetch checklist data for TL compliance dashboard
     let allChecklists = {};
@@ -2918,6 +2991,7 @@ async function renderMembersTab() {
     const dataTabTotalItemsMap = await resolveCampaignTotalItems(Object.values(campaigns));
 
     let tlHtml = '';
+    let mgrHtml = '';
 
   // ── Filter input (filters rows in BOTH cards at once) ──
   tlHtml += `
@@ -2926,6 +3000,80 @@ async function renderMembersTab() {
         oninput="filterDataMemberList(this.value)"
         style="width:100%;box-sizing:border-box;font-size:13px;padding:7px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);" />
     </div>`;
+
+  // ── Managers section (admin only — a manager viewing this screen is
+  // already scoped to their own team leads via `members`, so they'd never
+  // see other managers here anyway; skip building it to save the work) ──
+  if (currentUser?.role === 'admin' && managers.length > 0) {
+    mgrHtml += `<div class="data-member-section-label" style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;padding:4px 0 6px;">Managers</div>`;
+    mgrHtml += managers.map(mgr => {
+      const managedTlUids = mgr.managedUids || [];
+      const managedTls = managedTlUids.map(uid => members[uid]).filter(Boolean);
+
+      // Aggregate scope: the manager's team leads + every member each of
+      // those team leads manages (mirrors computeManagerScopedUids).
+      let scopedUids = [];
+      managedTls.forEach(tl => {
+        scopedUids.push(tl.uid);
+        (tl.managedUids || []).forEach(u => scopedUids.push(u));
+      });
+      scopedUids = [...new Set(scopedUids)];
+
+      let mgrComplete = 0, mgrInProgress = 0, mgrNotStarted = 0;
+      scopedUids.forEach(uid => {
+        const m = members[uid];
+        if (!m) return;
+        let bestPct = 0;
+        Object.values(campaigns).forEach(camp => {
+          if (!(camp.assignedUids || []).includes(uid)) return;
+          const cl = (allChecklists[uid] || {})[camp.id] || {};
+          getEntryBreakdown(cl, dataTabTotalItemsMap[camp.id]?.total, dataTabTotalItemsMap[camp.id]?.validIds, dataTabTotalItemsMap[camp.id]?.hasD5).forEach(eb => {
+            if (eb.overallPct > bestPct) bestPct = eb.overallPct;
+          });
+        });
+        if (bestPct === 100) mgrComplete++;
+        else if (bestPct > 0) mgrInProgress++;
+        else mgrNotStarted++;
+      });
+      const mgrTeamCount = scopedUids.length;
+      const mgrRate = mgrTeamCount > 0 ? Math.round((mgrComplete / mgrTeamCount) * 100) : 0;
+      const mgrRateColor = mgrRate === 100 ? '#059669' : mgrRate >= 50 ? '#D97706' : '#2563EB';
+      const dashId = `mgr-dash-${mgr.uid}`;
+
+      const tlListRows = managedTls.map(tl => {
+        const cnt = (tl.managedUids || []).length;
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">
+          <span>${escHtml(tl.name || tl.username)} <span style="color:var(--text-muted);">(${cnt} member${cnt !== 1 ? 's' : ''})</span></span>
+        </div>`;
+      }).join('') || '<div style="color:var(--text-muted);font-size:12px;">No team leads assigned.</div>';
+
+      return `
+      <div class="data-list-row data-mgr-row" data-name="${escHtml((mgr.name || mgr.username || '').toLowerCase())}" data-username="${escHtml((mgr.username || '').toLowerCase())}" style="flex-direction:column;align-items:stretch;gap:0;padding:0;">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;">
+          <div style="flex:1;min-width:0;">
+            <div class="data-row-title" style="display:flex;align-items:center;gap:6px;">
+              ${escHtml(mgr.name || mgr.username)}
+              <span class="manager-badge">Manager</span>
+            </div>
+            <div class="data-row-sub">@${escHtml(mgr.username)} · ${managedTlUids.length} team lead${managedTlUids.length !== 1 ? 's' : ''} · ${mgrTeamCount} people total · Compliance: <span style="color:${mgrRateColor};font-weight:600;">${mgrRate}%</span></div>
+          </div>
+          <button class="btn-ghost-light btn-sm" style="color:#7C3AED;border-color:#DDD6FE;" onclick="openEditMgrModal('${mgr.uid}')">✏️ Team Leads</button>
+          <button class="btn-ghost-light btn-sm" style="font-size:11px;color:#7C3AED;border-color:#C4B5FD;" onclick="openAdminResetPassword('${mgr.uid}', '${(mgr.name || mgr.username).replace(/'/g,"\\'")}')">Reset Pwd</button>
+          <button class="btn-ghost-light btn-sm" style="color:#DC2626;border-color:#FCA5A5;" onclick="deleteMember('${mgr.uid}','${(mgr.name||mgr.username).replace(/'/g,"\\'")}')">Remove</button>
+          ${mgrTeamCount > 0 ? `<button class="btn-ghost-light btn-sm" style="font-size:11px;" onclick="toggleTlDash('${dashId}')">📊 View</button>` : ''}
+        </div>
+        ${mgrTeamCount > 0 ? `
+        <div id="${dashId}" style="display:none;border-top:1px solid var(--border);padding:10px 14px;background:var(--surface2);">
+          <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+            <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:#f0fdf4;color:#059669;border:1px solid #bbf7d0;">✓ ${mgrComplete} Complete</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:#fffbeb;color:#D97706;border:1px solid #fde68a;">⟳ ${mgrInProgress} In Progress</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:#fef2f2;color:#DC2626;border:1px solid #fecaca;">— ${mgrNotStarted} Not Started</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:0;">${tlListRows}</div>
+        </div>` : ''}
+      </div>`;
+    }).join('');
+  }
 
   // ── Team Leads section (each with the list of members in their group) ──
   if (teamLeads.length === 0) {
@@ -3005,6 +3153,8 @@ async function renderMembersTab() {
   }
 
   membEl.innerHTML = tlHtml;
+  const mgrEl = document.getElementById('data-managers-list');
+  if (mgrEl) mgrEl.innerHTML = mgrHtml;
 
   // ── Regular members — rendered into their own card/container ──
   let regHtml = '';
@@ -3144,6 +3294,11 @@ function toggleTlDash(dashId) {
 // ── Data tab: filter members list by name / username ─────────
 function filterDataMemberList(query) {
   const q = query.trim().toLowerCase();
+  document.querySelectorAll('.data-mgr-row').forEach(row => {
+    const name = row.dataset.name || '';
+    const user = row.dataset.username || '';
+    row.style.display = (!q || name.includes(q) || user.includes(q)) ? '' : 'none';
+  });
   document.querySelectorAll('.data-tl-row').forEach(row => {
     const name = row.dataset.name || '';
     const user = row.dataset.username || '';
@@ -4131,7 +4286,7 @@ async function sendBroadcast() {
     campaignId: campId || null,
     campaignName: campName || null,
     sentAt:     new Date().toISOString(),
-    sentBy:     'Admin',
+    sentBy:     currentUser?.role === 'manager' ? (currentUser.name || currentUser.username) : 'Admin',
     readBy:     [],
   };
 
@@ -4182,12 +4337,12 @@ async function loadBroadcastFeed() {
       const unreadDot = isUnread ? `<span style="width:8px;height:8px;background:#EF4444;border-radius:50%;display:inline-block;margin-left:4px;"></span>` : '';
 
       // Registration poll card — show a "Register Now" action button
-      const regPollBtn = (b.isRegPoll && b.pollId && currentUser?.role !== 'admin')
+      const regPollBtn = (b.isRegPoll && b.pollId && currentUser?.role !== 'admin' && currentUser?.role !== 'manager')
         ? `<button onclick="closeBroadcastFeedAndOpenPoll('${b.pollId}')" style="margin-top:10px;padding:7px 16px;font-size:12px;font-weight:600;background:rgba(124,58,237,0.18);border:1px solid rgba(124,58,237,0.5);color:#C4B5FD;border-radius:8px;cursor:pointer;">📋 Register Now</button>`
         : '';
 
       // Task check card — show "Update Status" button for members
-      const taskCheckBtn = (b.type === 'taskcheck' && b.taskCheckId && currentUser?.role !== 'admin')
+      const taskCheckBtn = (b.type === 'taskcheck' && b.taskCheckId && currentUser?.role !== 'admin' && currentUser?.role !== 'manager')
         ? `<button onclick="closeBroadcastFeed();goToTaskCheck('${b.taskCheckId}')" style="margin-top:10px;padding:7px 16px;font-size:12px;font-weight:600;background:rgba(15,118,110,0.18);border:1px solid rgba(15,118,110,0.5);color:#5EEAD4;border-radius:8px;cursor:pointer;">📦 Update My Status</button>`
         : '';
 
@@ -7971,6 +8126,185 @@ async function saveEditTlMembers() {
     document.getElementById('edit-tl-modal-overlay').style.display = 'none';
     const lead = members[_editTlUid];
     showToast(`✅ Members updated for "${lead.name || lead.username}"!`, 'success');
+    renderDataTab();
+    refreshMembersTabIfOpen();
+  } catch(e) {
+    showError(errEl, 'Failed to save changes. Try again.');
+    console.error(e);
+  } finally {
+    btn.textContent = '💾 Save Changes'; btn.disabled = false;
+  }
+}
+
+// ── Admin: open Add Manager modal ──────────────────────────────
+function openManagerModal() {
+  const teamLeadOptions = Object.values(members)
+    .filter(m => m.role === 'team_lead')
+    .sort((a, b) => (a.name || a.username).localeCompare(b.name || b.username));
+
+  window._mgrTlsSorted = teamLeadOptions; // cache for filtering
+  window._mgrSelectedUids = new Set(); // reset selections
+
+  renderMgrTlList(teamLeadOptions);
+
+  const searchEl = document.getElementById('mgr-tl-search');
+  if (searchEl) searchEl.value = '';
+
+  document.getElementById('new-mgr-username').value = '';
+  document.getElementById('new-mgr-name').value     = '';
+  document.getElementById('new-mgr-password').value = '';
+  document.getElementById('manager-modal-error').style.display = 'none';
+  document.getElementById('manager-modal-overlay').style.display = 'flex';
+}
+
+// Track selected team-lead UIDs for Add Manager modal
+window._mgrSelectedUids = new Set();
+
+function renderMgrTlList(tlList) {
+  const list = document.getElementById('mgr-tl-assign-list');
+  list.innerHTML = tlList.length === 0
+    ? '<div style="color:var(--text-muted);font-size:13px;">No team leads yet — add one first.</div>'
+    : tlList.map(tl => {
+        const checked = window._mgrSelectedUids.has(tl.uid) ? 'checked' : '';
+        const cnt = (tl.managedUids || []).length;
+        return `
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;padding:4px 0;border-radius:6px;">
+          <input type="checkbox" value="${tl.uid}" ${checked}
+            onchange="toggleMgrTlSelection('${tl.uid}', this.checked)"
+            style="accent-color:var(--blue);width:15px;height:15px;" />
+          <span>${escHtml(tl.name || tl.username)}</span>
+          <span style="color:var(--text-muted);font-size:11px;">@${escHtml(tl.username)} · ${cnt} member${cnt !== 1 ? 's' : ''}</span>
+        </label>`;
+      }).join('');
+}
+
+function toggleMgrTlSelection(uid, checked) {
+  if (checked) window._mgrSelectedUids.add(uid);
+  else window._mgrSelectedUids.delete(uid);
+}
+
+function filterMgrTlList(query) {
+  const q = query.trim().toLowerCase();
+  const filtered = (window._mgrTlsSorted || []).filter(tl =>
+    !q || (tl.name || '').toLowerCase().includes(q) || tl.username.toLowerCase().includes(q)
+  );
+  renderMgrTlList(filtered);
+}
+
+function closeManagerModal(e) {
+  if (e && e.target !== document.getElementById('manager-modal-overlay')) return;
+  document.getElementById('manager-modal-overlay').style.display = 'none';
+}
+
+async function addManager() {
+  const username = document.getElementById('new-mgr-username').value.trim().toLowerCase();
+  const name     = document.getElementById('new-mgr-name').value.trim();
+  const password = document.getElementById('new-mgr-password').value.trim();
+  const errEl    = document.getElementById('manager-modal-error');
+  errEl.style.display = 'none';
+
+  if (!username || !name || !password) { showError(errEl, 'All fields are required.'); return; }
+  if (username === ADMIN_USERNAME)      { showError(errEl, 'That username is reserved.'); return; }
+
+  const managedUids = [...(window._mgrSelectedUids || new Set())];
+
+  const existing = await db.collection('users').where('username', '==', username).limit(1).get();
+  if (!existing.empty) { showError(errEl, 'Username already taken.'); return; }
+
+  try {
+    const ref = await db.collection('users').add({ username, name, password, role: 'manager', managedUids });
+    members[ref.id] = { uid: ref.id, username, name, password, role: 'manager', managedUids };
+    document.getElementById('manager-modal-overlay').style.display = 'none';
+    showToast(`Manager "${name}" added!`, 'success');
+    refreshMembersTabIfOpen();
+  } catch (e) {
+    showError(errEl, 'Failed to add manager. Try again.');
+    console.error(e);
+  }
+}
+
+// ── Admin: Edit Manager's assigned team leads ──────────────────
+let _editMgrUid = null;
+window._editMgrSelectedUids = new Set();
+
+function openEditMgrModal(uid) {
+  const mgr = members[uid];
+  if (!mgr) return;
+  _editMgrUid = uid;
+
+  window._editMgrSelectedUids = new Set(mgr.managedUids || []);
+
+  document.getElementById('edit-mgr-info').textContent =
+    `${mgr.name || mgr.username} (@${mgr.username})`;
+
+  const eligible = Object.values(members)
+    .filter(m => m.role === 'team_lead')
+    .sort((a, b) => (a.name || a.username).localeCompare(b.name || b.username));
+
+  window._editMgrTlsSorted = eligible;
+
+  const searchEl = document.getElementById('edit-mgr-tl-search');
+  if (searchEl) searchEl.value = '';
+
+  renderEditMgrTlList(eligible);
+  document.getElementById('edit-mgr-modal-error').style.display = 'none';
+  document.getElementById('edit-mgr-modal-overlay').style.display = 'flex';
+}
+
+function renderEditMgrTlList(tlList) {
+  const list = document.getElementById('edit-mgr-tl-assign-list');
+  if (!list) return;
+  if (tlList.length === 0) {
+    list.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">No team leads found.</div>';
+    return;
+  }
+  list.innerHTML = tlList.map(tl => {
+    const checked = window._editMgrSelectedUids.has(tl.uid) ? 'checked' : '';
+    const cnt = (tl.managedUids || []).length;
+    return `
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;padding:4px 0;border-radius:6px;">
+        <input type="checkbox" value="${tl.uid}" ${checked}
+          onchange="toggleEditMgrTl('${tl.uid}', this.checked)"
+          style="accent-color:var(--blue);width:15px;height:15px;" />
+        <span>${escHtml(tl.name || tl.username)}</span>
+        <span style="color:var(--text-muted);font-size:11px;">@${escHtml(tl.username)} · ${cnt} member${cnt !== 1 ? 's' : ''}</span>
+      </label>`;
+  }).join('');
+}
+
+function toggleEditMgrTl(uid, checked) {
+  if (checked) window._editMgrSelectedUids.add(uid);
+  else window._editMgrSelectedUids.delete(uid);
+}
+
+function filterEditMgrTlList(query) {
+  const q = query.trim().toLowerCase();
+  const filtered = (window._editMgrTlsSorted || []).filter(tl =>
+    !q || (tl.name || '').toLowerCase().includes(q) || tl.username.toLowerCase().includes(q)
+  );
+  renderEditMgrTlList(filtered);
+}
+
+function closeEditMgrModal(e) {
+  if (e && e.target !== document.getElementById('edit-mgr-modal-overlay')) return;
+  document.getElementById('edit-mgr-modal-overlay').style.display = 'none';
+}
+
+async function saveEditMgrTeamLeads() {
+  const errEl = document.getElementById('edit-mgr-modal-error');
+  errEl.style.display = 'none';
+  if (!_editMgrUid) return;
+
+  const managedUids = [...window._editMgrSelectedUids];
+  const btn = document.querySelector('#edit-mgr-modal-overlay .btn-primary');
+  btn.textContent = 'Saving…'; btn.disabled = true;
+
+  try {
+    await db.collection('users').doc(_editMgrUid).update({ managedUids });
+    members[_editMgrUid].managedUids = managedUids;
+    document.getElementById('edit-mgr-modal-overlay').style.display = 'none';
+    const mgr = members[_editMgrUid];
+    showToast(`✅ Team leads updated for "${mgr.name || mgr.username}"!`, 'success');
     renderDataTab();
     refreshMembersTabIfOpen();
   } catch(e) {
