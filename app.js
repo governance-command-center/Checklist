@@ -2728,26 +2728,39 @@ function renderCalendarView(targetEl) {
 
   html += `</div></div>`; // cal-grid, cal-grid-wrap
 
-  // Upcoming events list (expand recurring entries into their next occurrences)
-  const upcomingCutoff = new Date(); upcomingCutoff.setHours(0,0,0,0);
-  const upcomingRangeEnd = new Date(upcomingCutoff); upcomingRangeEnd.setDate(upcomingRangeEnd.getDate() + 365);
+  // Upcoming events list (expand recurring entries into their next occurrences).
+  // Regular members ("All User" view) see events scoped to whichever month is
+  // currently shown in the grid above, so the list moves in lockstep with the
+  // month nav arrows. Admin/team lead keep the rolling "next 365 days" view
+  // since they need a running overview regardless of which month they're browsing.
+  const isMemberView = !isAdmin && !isTeamLead;
+  const todayCutoff = new Date(); todayCutoff.setHours(0,0,0,0);
+  const upcomingCutoff   = isMemberView ? _monthRangeStart : todayCutoff;
+  const upcomingRangeEndBase = isMemberView ? _monthRangeEnd : (() => { const d = new Date(todayCutoff); d.setDate(d.getDate() + 365); return d; })();
   let upcoming = [];
   allVisible.forEach(entry => {
-    const occurrences = _calRecurrenceOccurrences(entry, upcomingCutoff, upcomingRangeEnd);
+    const occurrences = _calRecurrenceOccurrences(entry, upcomingCutoff, upcomingRangeEndBase);
     occurrences.forEach(occ => {
-      if (occ.end >= upcomingCutoff) upcoming.push({ ...entry, _occStart: occ.start });
+      // For the member/month-scoped view, only keep occurrences that overlap
+      // the selected month. For the rolling view, keep anything not fully ended.
+      const cutoffForFilter = isMemberView ? upcomingCutoff : todayCutoff;
+      if (occ.end >= cutoffForFilter) upcoming.push({ ...entry, _occStart: occ.start, _occEnd: occ.end });
     });
   });
-  upcoming = upcoming.sort((a,b) => a._occStart - b._occStart).slice(0, 8);
+  upcoming = upcoming.sort((a,b) => a._occStart - b._occStart);
+  if (!isMemberView) upcoming = upcoming.slice(0, 8);
 
   if (upcoming.length > 0) {
     html += `<div class="cal-upcoming">
-      <div class="section-label" style="margin-bottom:10px;">Upcoming</div>
+      <div class="section-label" style="margin-bottom:10px;">Upcoming${isMemberView ? ` — ${monthName}` : ''}</div>
       <div class="cal-upcoming-list">`;
     upcoming.forEach(entry => {
       const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === entry.type) || CAL_ENTRY_TYPES[5];
       const col = entry._type === 'personal' ? '#94A3B8' : (entry.color || typeInfo.color);
-      const dateStr = entry._occStart.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', weekday: 'short' });
+      const isMultiDay = entry._occEnd && entry._occEnd.getTime() !== entry._occStart.getTime();
+      const dateStr = isMultiDay
+        ? `${entry._occStart.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${entry._occEnd.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`
+        : entry._occStart.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', weekday: 'short' });
       const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
       const creatorLabel = isAdmin ? _calCreatorLabel(entry) : '';
       const recurLabel = _calRecurrenceLabel(entry);
@@ -2844,7 +2857,13 @@ function openCalEntryModal(entryId, isPersonal) {
     const assignLabel = isAdmin ? 'Visible to (leave all unchecked = all members)' : 'Send to (select members in your team)';
     memberAssignHtml = `
     <div class="field">
-      <label>${assignLabel}</label>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <label style="margin:0;">${assignLabel}</label>
+        <div style="display:flex;gap:6px;">
+          <button type="button" class="btn-outline" style="font-size:11px;padding:2px 8px;" onclick="_calToggleAllMembers(true)">Select All</button>
+          <button type="button" class="btn-outline" style="font-size:11px;padding:2px 8px;" onclick="_calToggleAllMembers(false)">Clear</button>
+        </div>
+      </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);max-height:100px;overflow-y:auto;">
         ${assignable.map(m => {
           const checked = entry.assignedUids && entry.assignedUids.includes(m.uid) ? 'checked' : '';
@@ -2899,6 +2918,12 @@ function openCalEntryModal(entryId, isPersonal) {
   deleteBtn.style.display = entryId ? 'inline-flex' : 'none';
 
   document.getElementById('cal-entry-overlay').style.display = 'flex';
+}
+
+// Select All / Clear on the "Visible to" member checklist in the calendar
+// entry modal, so admins don't have to click every member one by one.
+function _calToggleAllMembers(checkedState) {
+  document.querySelectorAll('.cal-member-cb').forEach(cb => { cb.checked = checkedState; });
 }
 
 function toggleCalRecurrenceUntil() {
