@@ -2535,6 +2535,49 @@ let calCurrentMonth = new Date().getMonth();
 let calCurrentYear  = new Date().getFullYear();
 let calEditingEntry = null; // { entry, isPersonal }
 
+// entry.recurrence: null | { freq: 'daily'|'weekly'|'monthly', until: 'YYYY-MM-DD'|null }
+// Expands a (possibly recurring) entry into concrete { start, end } Date occurrences
+// that overlap the given [rangeStart, rangeEnd] window. Non-recurring entries just
+// return their single occurrence if it overlaps.
+function _calRecurrenceOccurrences(entry, rangeStart, rangeEnd) {
+  const results = [];
+  if (!entry.date) return results;
+  const baseStart = new Date(`${entry.date}T00:00:00`);
+  const baseEnd   = new Date(`${entry.endDate || entry.date}T00:00:00`);
+  if (isNaN(baseStart) || isNaN(baseEnd)) return results;
+  const durationDays = Math.round((baseEnd - baseStart) / 86400000);
+  const freq  = entry.recurrence && entry.recurrence.freq;
+
+  if (!freq || freq === 'none') {
+    if (baseEnd >= rangeStart && baseStart <= rangeEnd) results.push({ start: baseStart, end: baseEnd });
+    return results;
+  }
+
+  const until = entry.recurrence.until ? new Date(`${entry.recurrence.until}T00:00:00`) : null;
+  let cursor = new Date(baseStart);
+  const maxOccurrences = 3660; // generous cap (~10yrs daily) to avoid runaway loops
+  let n = 0;
+
+  while (n < maxOccurrences) {
+    n++;
+    if (until && cursor > until) break;
+    if (cursor > rangeEnd) break;
+    const occEnd = new Date(cursor.getTime() + durationDays * 86400000);
+    if (occEnd >= rangeStart) results.push({ start: new Date(cursor), end: occEnd });
+    if (freq === 'daily')        cursor.setDate(cursor.getDate() + 1);
+    else if (freq === 'weekly')  cursor.setDate(cursor.getDate() + 7);
+    else if (freq === 'monthly') cursor.setMonth(cursor.getMonth() + 1);
+    else break;
+  }
+  return results;
+}
+
+function _calRecurrenceLabel(entry) {
+  const freq = entry.recurrence && entry.recurrence.freq;
+  if (!freq || freq === 'none') return '';
+  return { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }[freq] || '';
+}
+
 async function loadCalendarEntries() {
   try {
     const doc = await db.collection('settings').doc('calendar').get();
@@ -2603,16 +2646,20 @@ function renderCalendarView(targetEl) {
     ...personalVisible.map(e => ({ ...e, _type: 'personal' })),
   ];
 
+  const _monthRangeStart = new Date(year, month, 1);
+  const _monthRangeEnd   = new Date(year, month, daysInMonth);
+
   allVisible.forEach(entry => {
-    const start = entry.date ? new Date(entry.date) : null;
-    const end   = entry.endDate ? new Date(entry.endDate) : start;
-    if (!start) return;
-    // Enumerate each day in range
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      if (!dayMap[key]) dayMap[key] = [];
-      dayMap[key].push(entry);
-    }
+    const occurrences = _calRecurrenceOccurrences(entry, _monthRangeStart, _monthRangeEnd);
+    occurrences.forEach(occ => {
+      // Enumerate each day in this occurrence's range
+      for (let d = new Date(occ.start); d <= occ.end; d.setDate(d.getDate() + 1)) {
+        if (d.getFullYear() !== year || d.getMonth() !== month) continue;
+        const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+        if (!dayMap[key]) dayMap[key] = [];
+        dayMap[key].push(entry);
+      }
+    });
   });
 
   const isAdmin   = currentUser?.role === 'admin' || currentUser?.role === 'manager';
@@ -2665,10 +2712,11 @@ function renderCalendarView(targetEl) {
       const border   = entry._type === 'personal' ? '2px dashed #64748B' : 'none';
       const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
       const creatorLabel = isAdmin ? _calCreatorLabel(entry) : '';
+      const recurLabel = _calRecurrenceLabel(entry);
       html += `<div class="cal-event" style="background:${col}20;border-left:3px solid ${col};border:${border};"
         onclick="${isEditable ? `openCalEntryModal('${entry.id}',${entry._type === 'personal'})` : ''}"
-        title="${escHtml(entry.title)}${entry._type === 'personal' ? ' (My Event)' : ''}${creatorLabel ? ` — added by ${escHtml(creatorLabel)} (Team Lead)` : ''}">
-        <span style="color:${col};font-size:10px;font-weight:600;">${escHtml(entry.title)}${creatorLabel ? ' 👤' : ''}</span>
+        title="${escHtml(entry.title)}${entry._type === 'personal' ? ' (My Event)' : ''}${creatorLabel ? ` — added by ${escHtml(creatorLabel)} (Team Lead)` : ''}${recurLabel ? ` — Repeats ${recurLabel}` : ''}">
+        <span style="color:${col};font-size:10px;font-weight:600;">${recurLabel ? '🔁 ' : ''}${escHtml(entry.title)}${creatorLabel ? ' 👤' : ''}</span>
       </div>`;
     });
     if (dayEntries.length > 3) {
@@ -2680,12 +2728,17 @@ function renderCalendarView(targetEl) {
 
   html += `</div></div>`; // cal-grid, cal-grid-wrap
 
-  // Upcoming events list
+  // Upcoming events list (expand recurring entries into their next occurrences)
   const upcomingCutoff = new Date(); upcomingCutoff.setHours(0,0,0,0);
-  const upcoming = [...allVisible]
-    .filter(e => e.date && new Date(e.date) >= upcomingCutoff)
-    .sort((a,b) => new Date(a.date) - new Date(b.date))
-    .slice(0, 8);
+  const upcomingRangeEnd = new Date(upcomingCutoff); upcomingRangeEnd.setDate(upcomingRangeEnd.getDate() + 365);
+  let upcoming = [];
+  allVisible.forEach(entry => {
+    const occurrences = _calRecurrenceOccurrences(entry, upcomingCutoff, upcomingRangeEnd);
+    occurrences.forEach(occ => {
+      if (occ.end >= upcomingCutoff) upcoming.push({ ...entry, _occStart: occ.start });
+    });
+  });
+  upcoming = upcoming.sort((a,b) => a._occStart - b._occStart).slice(0, 8);
 
   if (upcoming.length > 0) {
     html += `<div class="cal-upcoming">
@@ -2694,16 +2747,18 @@ function renderCalendarView(targetEl) {
     upcoming.forEach(entry => {
       const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === entry.type) || CAL_ENTRY_TYPES[5];
       const col = entry._type === 'personal' ? '#94A3B8' : (entry.color || typeInfo.color);
-      const dateStr = new Date(entry.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', weekday: 'short' });
+      const dateStr = entry._occStart.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', weekday: 'short' });
       const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
       const creatorLabel = isAdmin ? _calCreatorLabel(entry) : '';
+      const recurLabel = _calRecurrenceLabel(entry);
       html += `<div class="cal-upcoming-item" style="border-left:3px solid ${col};"
         ${isEditable ? `onclick="openCalEntryModal('${entry.id}',${entry._type === 'personal'})" style="border-left:3px solid ${col};cursor:pointer;"` : ''}>
         <div class="cal-upcoming-date">${dateStr}</div>
-        <div class="cal-upcoming-title">${escHtml(entry.title)}</div>
+        <div class="cal-upcoming-title">${recurLabel ? '🔁 ' : ''}${escHtml(entry.title)}</div>
         ${entry.description ? `<div class="cal-upcoming-desc">${escHtml(entry.description)}</div>` : ''}
         ${entry._type === 'personal' ? '<span class="cal-personal-badge">My Event</span>' : ''}
         ${creatorLabel ? `<span class="cal-personal-badge" style="background:#EFF6FF;color:#2563EB;">Added by ${escHtml(creatorLabel)} (TL)</span>` : ''}
+        ${recurLabel ? `<span class="cal-personal-badge" style="background:#F5F3FF;color:#7C3AED;">Repeats ${recurLabel}</span>` : ''}
         <span class="cal-type-badge" style="background:${col}20;color:${col};">${typeInfo.label}</span>
       </div>`;
     });
@@ -2834,10 +2889,22 @@ function openCalEntryModal(entryId, isPersonal) {
   document.getElementById('cal-camp-link-wrap').innerHTML     = campLinkHtml;
   document.getElementById('cal-entry-error').style.display    = 'none';
 
+  // Populate recurrence fields
+  document.getElementById('cal-entry-recurrence').value = (entry.recurrence && entry.recurrence.freq) || 'none';
+  document.getElementById('cal-entry-recurrence-until').value = (entry.recurrence && entry.recurrence.until) || '';
+  toggleCalRecurrenceUntil();
+  document.getElementById('cal-recurrence-hint').style.display = (entryId && entry.recurrence && entry.recurrence.freq) ? 'block' : 'none';
+
   const deleteBtn = document.getElementById('cal-delete-btn');
   deleteBtn.style.display = entryId ? 'inline-flex' : 'none';
 
   document.getElementById('cal-entry-overlay').style.display = 'flex';
+}
+
+function toggleCalRecurrenceUntil() {
+  const freq = document.getElementById('cal-entry-recurrence')?.value;
+  const wrap = document.getElementById('cal-recurrence-until-wrap');
+  if (wrap) wrap.style.display = (freq && freq !== 'none') ? 'block' : 'none';
 }
 
 function closeCalEntryModal(e) {
@@ -2855,10 +2922,15 @@ async function saveCalEntry() {
   const errEl    = document.getElementById('cal-entry-error');
   const startTime = _getCalTimeField('start');
   const endTime   = _getCalTimeField('end');
+  const recurrenceFreq  = document.getElementById('cal-entry-recurrence').value || 'none';
+  const recurrenceUntil = document.getElementById('cal-entry-recurrence-until').value || '';
   errEl.style.display = 'none';
 
   if (!title) { showError(errEl, 'Title is required.'); return; }
   if (!date)  { showError(errEl, 'Start date is required.'); return; }
+  if (recurrenceFreq !== 'none' && recurrenceUntil && recurrenceUntil < date) {
+    showError(errEl, '"Repeat Until" must be on or after the start date.'); return;
+  }
 
   const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === type) || CAL_ENTRY_TYPES[5];
 
@@ -2879,6 +2951,7 @@ async function saveCalEntry() {
     startTime: startTime || null,
     endTime: endTime || null,
     color: typeInfo.color,
+    recurrence: recurrenceFreq !== 'none' ? { freq: recurrenceFreq, until: recurrenceUntil || null } : null,
     assignedUids,
     campaignId: campaignId || null,
     createdBy: currentUser?.uid || '',
@@ -2913,7 +2986,8 @@ async function saveCalEntry() {
 
 async function deleteCalEntry() {
   if (!calEditingEntry) return;
-  if (!confirm('Delete this event?')) return;
+  const isRecurring = calEditingEntry.entry?.recurrence && calEditingEntry.entry.recurrence.freq;
+  if (!confirm(isRecurring ? 'Delete this entire repeating event series?' : 'Delete this event?')) return;
   try {
     if (calEditingEntry.isPersonal) {
       personalCalendarEntries = personalCalendarEntries.filter(e => e.id !== calEditingEntry.entry.id);

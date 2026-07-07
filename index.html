@@ -601,6 +601,24 @@
           <option value="other">Other</option>
         </select>
       </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Repeats</label>
+          <select id="cal-entry-recurrence" onchange="toggleCalRecurrenceUntil()">
+            <option value="none">Does not repeat</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
+        </div>
+        <div class="field" id="cal-recurrence-until-wrap" style="margin-bottom:0;display:none;">
+          <label>Repeat Until (optional)</label>
+          <input type="date" id="cal-entry-recurrence-until" />
+        </div>
+      </div>
+      <div id="cal-recurrence-hint" style="font-size:11px;color:var(--text-muted);margin:-6px 0 10px;display:none;">
+        This is a repeating event — editing or deleting it applies to the whole series.
+      </div>
       <div class="field">
         <label>Description (optional)</label>
         <textarea id="cal-entry-desc" rows="2" placeholder="Add details…" style="resize:vertical;"></textarea>
