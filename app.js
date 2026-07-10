@@ -131,6 +131,7 @@ async function loadAdminData() {
   renderAdminView(true);
   await loadChecklistOverrides();
   await loadCalendarEntries();
+  await loadCampaignRoster();
   await loadMasterlist();
   await checkBroadcastBadge();
   // Refresh data tab if it's currently showing
@@ -186,6 +187,7 @@ async function loadManagerData() {
   renderAdminView(true);
   await loadChecklistOverrides();
   await loadCalendarEntries();
+  await loadCampaignRoster();
   await loadMasterlist();
   await checkBroadcastBadge();
   const dataTab = document.getElementById('admin-tab-data');
@@ -2664,6 +2666,162 @@ async function saveCalendarEntries() {
   await db.collection('settings').doc('calendar').set({ entries: calendarEntries });
 }
 
+// ── Region roster (Option 2 full-auto): a persisted copy of the last
+// bulk-assign upload, kept as flat rows so any region filter can slice it.
+// Row shape mirrors bulkAssignMatched entries: { uid, brand, platform, region }.
+let campaignRoster = []; // [{ uid, brand, platform, region }]
+async function loadCampaignRoster() {
+  try {
+    const doc = await db.collection('settings').doc('roster').get();
+    campaignRoster = doc.exists ? (doc.data().rows || []) : [];
+  } catch(e) { campaignRoster = []; }
+}
+async function saveCampaignRoster() {
+  await db.collection('settings').doc('roster').set({
+    rows: campaignRoster,
+    updatedAt: new Date().toISOString(),
+  });
+}
+// Flatten a { uid: [entries] } match map into roster rows and persist, merging
+// with any existing rows (last upload wins per uid+brand+platform+region).
+async function _persistRosterFromMatched(matched) {
+  const rows = [];
+  Object.entries(matched || {}).forEach(([uid, entries]) => {
+    (entries || []).forEach(en => rows.push({
+      uid, brand: en.brand || '', platform: en.platform || '', region: en.region || '',
+    }));
+  });
+  // Merge: drop old rows for any uid present in this upload, then add fresh.
+  const touchedUids = new Set(rows.map(r => r.uid));
+  campaignRoster = [
+    ...campaignRoster.filter(r => !touchedUids.has(r.uid)),
+    ...rows,
+  ];
+  try { await saveCampaignRoster(); } catch(e) { console.error('roster save failed', e); }
+}
+// Slice the roster for one region → { uid: [{label,brand,platform,region}] },
+// matching the shape confirmBulkAssign already knows how to consume.
+function rosterForRegion(regionId) {
+  const out = {};
+  campaignRoster
+    .filter(r => !regionId || (r.region || '').toUpperCase() === regionId.toUpperCase())
+    .forEach(r => {
+      if (!out[r.uid]) out[r.uid] = [];
+      const label = [r.brand, r.platform, r.region].filter(Boolean).join('_');
+      if (!out[r.uid].some(e => e.brand === r.brand && e.platform === r.platform && e.region === r.region)) {
+        out[r.uid].push({ label, brand: r.brand, platform: r.platform, region: r.region });
+      }
+    });
+  return out;
+}
+
+// ── Generate a campaign + pre-filled checklists straight from the calendar's
+// current filter (region + campaign phase). Reuses the same checklist-merge
+// logic as confirmBulkAssign so member progress is never clobbered.
+async function generateChecklistFromCalendarView() {
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
+  if (!isAdmin) return;
+
+  const regionId   = calFilterRegion;
+  const campId     = calFilterCampaign;
+  const regionInfo = regionId ? CAL_REGION_MAP[regionId] : null;
+  const campInfo   = campId ? CAL_CAMPAIGN_TYPES.find(c => c.id === campId) : null;
+
+  // No saved roster yet → route to the existing Bulk Assign flow instead of
+  // failing, so the admin can upload a sheet first.
+  if (!campaignRoster || campaignRoster.length === 0) {
+    showToast('No brand roster saved yet — upload a Bulk Assign sheet first.', 'warn');
+    if (typeof openBulkAssignModal === 'function') openBulkAssignModal();
+    return;
+  }
+
+  const matched = rosterForRegion(regionId);
+  const uids = Object.keys(matched);
+  if (uids.length === 0) {
+    showToast(regionId
+      ? `No roster members found for ${regionInfo?.label || regionId}. Upload/adjust the Bulk Assign sheet.`
+      : 'Pick a region filter first so I know who to assign.', 'warn');
+    return;
+  }
+
+  // Derive D-Day / deadline from the calendar events that match this filter in
+  // the month currently on screen (earliest matching date = D-Day).
+  const monthStart = new Date(calCurrentYear, calCurrentMonth, 1);
+  const monthEnd   = new Date(calCurrentYear, calCurrentMonth + 1, 0);
+  const matchingDates = calendarEntries
+    .filter(e => {
+      if (regionId) { const r = _calRegionOf(e); if (!r || r.id !== regionId) return false; }
+      if (campId && _calCampaignType(e).id !== campId) return false;
+      return true;
+    })
+    .map(e => e.date).filter(Boolean)
+    .map(d => new Date(d)).filter(d => d >= monthStart && d <= monthEnd)
+    .sort((a, b) => a - b);
+  const toISO = d => d.toISOString().slice(0, 10);
+  const dday = matchingDates.length ? toISO(matchingDates[0]) : null;
+
+  const monthLabel = monthStart.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
+  const parts = [regionInfo?.label, campInfo?.label].filter(Boolean).join(' ');
+  const suggestedName = `${parts || 'Campaign'} — ${monthLabel}`;
+
+  const entryCount = uids.reduce((s, u) => s + matched[u].length, 0);
+  const proceed = confirm(
+    `Generate a campaign from this view?\n\n` +
+    `Name: ${suggestedName}\n` +
+    `Members: ${uids.length}\n` +
+    `Entries to pre-fill: ${entryCount}\n` +
+    (dday ? `D-Day: ${dday}\n` : '') +
+    `\nExisting checklist progress will be preserved.`
+  );
+  if (!proceed) return;
+
+  try {
+    const ref = await db.collection('campaigns').add({
+      name: suggestedName,
+      assignedUids: uids,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      createdBy: ADMIN_UID,
+      fromPollId: null,
+      checklistTemplateId: null,
+      region: regionId || null,
+      campaignType: campId || null,
+      dday: dday || null,
+      deadline: null,
+    });
+    const campaignId = ref.id;
+
+    // Merge entries into each member's checklist — same non-destructive logic
+    // confirmBulkAssign uses (append new brand/platform/region, keep progress).
+    await Promise.all(uids.map(async uid => {
+      const docRef = db.collection('checklists').doc(uid);
+      const snap = await docRef.get();
+      const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
+      const existingEntries = existingCampData.entries || [];
+      const newOnes = matched[uid].filter(en =>
+        !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+      );
+      const mergedEntries = [...existingEntries, ...newOnes];
+      await docRef.set({
+        [campaignId]: { ...existingCampData, entries: mergedEntries, lastActive: new Date().toISOString() }
+      }, { merge: true });
+    }));
+
+    await db.collection('broadcasts').add({
+      type: 'custom',
+      message: `🚀 Campaign "${suggestedName}" is ready — your brand assignments are pre-filled. Open the Checklist tab to start.`,
+      targetUid: null, targetName: 'everyone',
+      campaignId, campaignName: suggestedName,
+      sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
+    });
+
+    await loadAdminData();
+    showToast(`✅ Created "${suggestedName}" with entries for ${uids.length} member(s).`, 'success');
+  } catch (e) {
+    console.error(e);
+    showToast('Failed to generate campaign from view. Try again.', 'warn');
+  }
+}
+
 async function savePersonalCalendarEntries() {
   if (!currentUser) return;
   await db.collection('calendarPersonal').doc(currentUser.uid).set({ entries: personalCalendarEntries });
@@ -2773,6 +2931,7 @@ function renderCalendarView(targetEl) {
           ${canAddPersonal ? `<span class="cal-legend-dot" style="background:#94A3B8;border:2px dashed #64748B;box-sizing:border-box;"></span><span style="font-size:11px;color:var(--text-muted)">My Events</span>` : ''}
         </div>
         ${isAdmin ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Add Event</button>` : ''}
+        ${isAdmin ? `<button class="btn-outline" style="font-size:12px;" onclick="generateChecklistFromCalendarView()" title="Create a campaign + pre-filled checklists from the current region/campaign filter">⚡ Generate Checklist</button>` : ''}
         ${isTeamLead ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Team Event</button>` : ''}
         ${canAddPersonal ? `<button class="btn-outline" style="background:#475569;border-color:#475569;font-size:12px;" onclick="openCalEntryModal(null,true)">+ My Event</button>` : ''}
       </div>
@@ -6516,6 +6675,9 @@ function _parseBulkAssignRows(rows, errEl) {
   });
 
   bulkAssignUnmatched = [...unmatchedSet, ...[...ambiguousSet].map(n => `${n} (multiple members share this first name — use full name or username instead)`)];
+  // Keep a reusable roster so the calendar's per-region generator can slice it
+  // later without re-uploading the sheet.
+  _persistRosterFromMatched(bulkAssignMatched);
   _renderBulkAssignPreview();
 }
 
@@ -6735,6 +6897,7 @@ function handleNewCampBulkFileChange(e) {
     const { matched, unmatched, error } = parseBrandAssignmentRows(rows);
     if (error) { previewEl.innerHTML = `<div class="error-msg" style="display:block;">${escHtml(error)}</div>`; return; }
     newCampBulkMatched = matched;
+    _persistRosterFromMatched(matched);
     renderBrandAssignmentPreview(previewEl, matched, unmatched, true);
     // Auto-check matched members in the assign list above
     Object.keys(matched).forEach(uid => {
