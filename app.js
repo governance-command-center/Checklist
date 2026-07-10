@@ -2731,12 +2731,39 @@ async function _persistRosterFromMatched(matched) {
   ];
   try { await saveCampaignRoster(); } catch(e) { console.error('roster save failed', e); }
 }
+// Some calendar events use a COMBINED region code covering several markets
+// (e.g. "SGTH" = SG + TH, "SGMYTH" = SG + MY + TH), while the roster sheet
+// lists members under plain single-market codes (SG, TH, MY). Expand a
+// region id into the set of single-market codes it represents so roster
+// matching bridges the two. A plain code expands to just itself.
+const _SINGLE_MARKET_CODES = ['PH', 'MY', 'VN', 'TH', 'SG'];
+function _expandRegionCode(regionId) {
+  if (!regionId) return [];
+  const id = regionId.toUpperCase();
+  // Known single-market code → itself.
+  if (_SINGLE_MARKET_CODES.includes(id)) return [id];
+  // Combined code → every single-market code whose letters appear in it,
+  // in order, so "SGTH" → [SG, TH] and "SGMYTH" → [SG, MY, TH]. LAZ and any
+  // other non-market codes fall through to matching on the code as-is.
+  const parts = [];
+  let rest = id;
+  // Greedily peel two-letter market codes off the front.
+  while (rest.length >= 2) {
+    const head = rest.slice(0, 2);
+    if (_SINGLE_MARKET_CODES.includes(head)) { parts.push(head); rest = rest.slice(2); }
+    else break;
+  }
+  return (parts.length && rest.length === 0) ? parts : [id];
+}
+
 // Slice the roster for one region → { uid: [{label,brand,platform,region}] },
 // matching the shape confirmBulkAssign already knows how to consume.
+// A combined region (SGTH) matches roster rows for any of its markets (SG, TH).
 function rosterForRegion(regionId) {
   const out = {};
+  const wanted = new Set(_expandRegionCode(regionId));
   campaignRoster
-    .filter(r => !regionId || (r.region || '').toUpperCase() === regionId.toUpperCase())
+    .filter(r => !regionId || wanted.has((r.region || '').toUpperCase()))
     .forEach(r => {
       if (!out[r.uid]) out[r.uid] = [];
       const label = [r.brand, r.platform, r.region].filter(Boolean).join('_');
@@ -2867,9 +2894,24 @@ async function generateChecklistFromCalendarView() {
   const skipNote = skippedNoRoster.length
     ? `\n\nSkipped (event but no one in sheet): ${skippedNoRoster.map(r => (CAL_REGION_MAP[r]?.label || r)).join(', ')}`
     : '';
+
+  // Warn if the same single market is covered by more than one planned
+  // campaign (e.g. a combined "SGTH" event AND a separate "SG" event),
+  // which would create overlapping checklists for the same members.
+  const marketToRegions = {};
+  plan.forEach(p => _expandRegionCode(p.regionId).forEach(mkt => {
+    (marketToRegions[mkt] = marketToRegions[mkt] || new Set()).add(p.regionInfo.label);
+  }));
+  const overlaps = Object.entries(marketToRegions)
+    .filter(([, regions]) => regions.size > 1)
+    .map(([mkt, regions]) => `  • ${mkt} appears in: ${[...regions].join(' + ')}`);
+  const overlapNote = overlaps.length
+    ? `\n\n⚠️ Overlap — these markets are covered by more than one campaign, so the same members may get duplicate checklists:\n${overlaps.join('\n')}`
+    : '';
+
   const proceed = confirm(
     `Auto-match will create ${plan.length} campaign(s) — one per region that has BOTH a calendar event this month AND members in your sheet:\n\n` +
-    summary + skipNote +
+    summary + skipNote + overlapNote +
     `\n\nExisting checklist progress will be preserved. Continue?`
   );
   if (!proceed) return;
