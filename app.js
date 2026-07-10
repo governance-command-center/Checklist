@@ -2531,6 +2531,74 @@ const CAL_ENTRY_TYPES = [
   { id: 'other',        label: 'Other',         color: '#64748B' },
 ];
 
+// ── Direction A: campaign phase drives the colour, region is a badge ──
+// Campaign phases group the many per-region sale events into the 3 buckets
+// the team actually plans around. `match` lets us auto-classify existing
+// entries whose phase lives only in the title text (e.g. "PayDay Sale").
+const CAL_CAMPAIGN_TYPES = [
+  { id: 'double_digit', label: 'Double Digit', color: '#7C3AED', match: /\b(\d{1,2})\.\1\b|double\s*digit/i },
+  { id: 'mid_month',    label: 'Mid-Month',    color: '#DB2777', match: /mid[-\s]?month|sulit/i },
+  { id: 'payday',       label: 'PayDay',       color: '#059669', match: /pay[-\s]?day|sweldo/i },
+  { id: 'other',        label: 'Other',        color: '#64748B', match: null },
+];
+
+// Regions carry their own badge colour so "which market" is scannable at a
+// glance. Keys are the bracket codes already used in event titles.
+const CAL_REGIONS = [
+  { id: 'MY',    label: 'MY',    color: '#2563EB' },
+  { id: 'PH',    label: 'PH',    color: '#D97706' },
+  { id: 'VN',    label: 'VN',    color: '#059669' },
+  { id: 'SGTH',  label: 'SG/TH', color: '#DB2777' },
+  { id: 'SGMYTH',label: 'SGMYTH',color: '#7C3AED' },
+  { id: 'TH',    label: 'TH',    color: '#0891B2' },
+  { id: 'SG',    label: 'SG',    color: '#DB2777' },
+  { id: 'LAZ',   label: 'LAZ',   color: '#EA580C' },
+];
+const CAL_REGION_MAP = Object.fromEntries(CAL_REGIONS.map(r => [r.id, r]));
+
+// Pull a leading "[MY]" / "{MY}" style bracket code out of a title, so legacy
+// entries migrate without re-entry. Returns { region, cleanTitle }.
+function _calExtractRegion(title) {
+  if (!title) return { region: '', cleanTitle: '' };
+  const m = title.match(/^\s*[\[\{]\s*([A-Za-z]{2,7})\s*[\]\}]\s*(.*)$/);
+  if (m && CAL_REGION_MAP[m[1].toUpperCase()]) {
+    return { region: m[1].toUpperCase(), cleanTitle: m[2].trim() };
+  }
+  return { region: '', cleanTitle: title };
+}
+
+// Resolve an entry's campaign phase: explicit field wins, else infer from
+// title text so existing data colours correctly with no migration step.
+function _calCampaignType(entry) {
+  if (entry.campaignType) {
+    return CAL_CAMPAIGN_TYPES.find(c => c.id === entry.campaignType) || CAL_CAMPAIGN_TYPES[3];
+  }
+  const t = entry.title || '';
+  for (const c of CAL_CAMPAIGN_TYPES) {
+    if (c.match && c.match.test(t)) return c;
+  }
+  return CAL_CAMPAIGN_TYPES[3];
+}
+
+// The region for an entry: explicit field wins, else parse the title prefix.
+function _calRegionOf(entry) {
+  if (entry.region) return CAL_REGION_MAP[entry.region] || null;
+  const { region } = _calExtractRegion(entry.title);
+  return region ? CAL_REGION_MAP[region] : null;
+}
+
+// Title with any region prefix stripped, so the badge doesn't duplicate it.
+function _calCleanTitle(entry) {
+  if (entry.region) return entry.title || '';
+  return _calExtractRegion(entry.title).cleanTitle || entry.title || '';
+}
+
+// Active filters for the calendar header (empty = show all).
+let calFilterRegion   = '';
+let calFilterCampaign = '';
+function calSetRegionFilter(v)   { calFilterRegion = v;   renderCalendarView(getCalTarget()); }
+function calSetCampaignFilter(v) { calFilterCampaign = v; renderCalendarView(getCalTarget()); }
+
 let calCurrentMonth = new Date().getMonth();
 let calCurrentYear  = new Date().getFullYear();
 let calEditingEntry = null; // { entry, isPersonal }
@@ -2641,10 +2709,24 @@ function renderCalendarView(targetEl) {
 
   // Build day → entries map
   const dayMap = {};
-  const allVisible = [
+  let allVisible = [
     ...sharedVisible.map(e => ({ ...e, _type: 'shared' })),
     ...personalVisible.map(e => ({ ...e, _type: 'personal' })),
   ];
+
+  // Direction A filters: narrow by region and/or campaign phase. Personal
+  // events are always kept (they're the user's own notes, not campaign data).
+  if (calFilterRegion || calFilterCampaign) {
+    allVisible = allVisible.filter(e => {
+      if (e._type === 'personal') return true;
+      if (calFilterRegion) {
+        const r = _calRegionOf(e);
+        if (!r || r.id !== calFilterRegion) return false;
+      }
+      if (calFilterCampaign && _calCampaignType(e).id !== calFilterCampaign) return false;
+      return true;
+    });
+  }
 
   const _monthRangeStart = new Date(year, month, 1);
   const _monthRangeEnd   = new Date(year, month, daysInMonth);
@@ -2675,9 +2757,19 @@ function renderCalendarView(targetEl) {
         <button class="cal-nav-btn" onclick="calNav(1)">&#8594;</button>
         <button class="cal-nav-btn" onclick="calGoToday()" style="font-size:11px;padding:4px 10px;">Today</button>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <select class="cal-filter-select" onchange="calSetCampaignFilter(this.value)" title="Filter by campaign">
+          <option value="">All campaigns</option>
+          ${CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other').map(c =>
+            `<option value="${c.id}" ${calFilterCampaign === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}
+        </select>
+        <select class="cal-filter-select" onchange="calSetRegionFilter(this.value)" title="Filter by region">
+          <option value="">All regions</option>
+          ${CAL_REGIONS.map(r =>
+            `<option value="${r.id}" ${calFilterRegion === r.id ? 'selected' : ''}>${r.label}</option>`).join('')}
+        </select>
         <div class="cal-legend">
-          ${CAL_ENTRY_TYPES.map(t => `<span class="cal-legend-dot" style="background:${t.color}"></span><span style="font-size:11px;color:var(--text-muted)">${t.label}</span>`).join('')}
+          ${CAL_CAMPAIGN_TYPES.map(t => `<span class="cal-legend-dot" style="background:${t.color}"></span><span style="font-size:11px;color:var(--text-muted)">${t.label}</span>`).join('')}
           ${canAddPersonal ? `<span class="cal-legend-dot" style="background:#94A3B8;border:2px dashed #64748B;box-sizing:border-box;"></span><span style="font-size:11px;color:var(--text-muted)">My Events</span>` : ''}
         </div>
         ${isAdmin ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Add Event</button>` : ''}
@@ -2706,21 +2798,26 @@ function renderCalendarView(targetEl) {
       <div class="cal-day-num ${isToday ? 'cal-today-num' : ''}">${d}</div>
       <div class="cal-day-events">`;
 
-    dayEntries.slice(0, 3).forEach(entry => {
-      const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === entry.type) || CAL_ENTRY_TYPES[5];
-      const col      = entry._type === 'personal' ? '#94A3B8' : (entry.color || typeInfo.color);
+    dayEntries.slice(0, 4).forEach(entry => {
+      const camp     = _calCampaignType(entry);
+      const col      = entry._type === 'personal' ? '#94A3B8' : camp.color;
       const border   = entry._type === 'personal' ? '2px dashed #64748B' : 'none';
+      const region   = entry._type === 'personal' ? null : _calRegionOf(entry);
+      const shown     = _calCleanTitle(entry);
       const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
       const creatorLabel = isAdmin ? _calCreatorLabel(entry) : '';
       const recurLabel = _calRecurrenceLabel(entry);
-      html += `<div class="cal-event" style="background:${col}20;border-left:3px solid ${col};border:${border};"
+      const regionBadge = region
+        ? `<span class="cal-region-badge" style="background:${region.color};">${escHtml(region.label)}</span>`
+        : '';
+      html += `<div class="cal-event" style="background:${col}1f;border-left:3px solid ${col};border:${border};"
         onclick="${isEditable ? `openCalEntryModal('${entry.id}',${entry._type === 'personal'})` : ''}"
         title="${escHtml(entry.title)}${entry._type === 'personal' ? ' (My Event)' : ''}${creatorLabel ? ` — added by ${escHtml(creatorLabel)} (Team Lead)` : ''}${recurLabel ? ` — Repeats ${recurLabel}` : ''}">
-        <span style="color:${col};font-size:10px;font-weight:600;">${recurLabel ? '🔁 ' : ''}${escHtml(entry.title)}${creatorLabel ? ' 👤' : ''}</span>
+        ${regionBadge}<span style="color:${col};font-size:10px;font-weight:600;">${recurLabel ? '🔁 ' : ''}${escHtml(shown)}${creatorLabel ? ' 👤' : ''}</span>
       </div>`;
     });
-    if (dayEntries.length > 3) {
-      html += `<div class="cal-event-more" onclick="openCalDayModal('${year}-${month+1}-${String(d).padStart(2,'0')}')">+${dayEntries.length - 3} more</div>`;
+    if (dayEntries.length > 4) {
+      html += `<div class="cal-event-more" onclick="openCalDayModal('${year}-${month+1}-${String(d).padStart(2,'0')}')">+${dayEntries.length - 4} more</div>`;
     }
 
     html += `</div></div>`;
@@ -2755,8 +2852,13 @@ function renderCalendarView(targetEl) {
       <div class="section-label" style="margin-bottom:10px;">Upcoming${isMemberView ? ` — ${monthName}` : ''}</div>
       <div class="cal-upcoming-list">`;
     upcoming.forEach(entry => {
-      const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === entry.type) || CAL_ENTRY_TYPES[5];
-      const col = entry._type === 'personal' ? '#94A3B8' : (entry.color || typeInfo.color);
+      const camp = _calCampaignType(entry);
+      const col = entry._type === 'personal' ? '#94A3B8' : camp.color;
+      const region = entry._type === 'personal' ? null : _calRegionOf(entry);
+      const shown = _calCleanTitle(entry);
+      const regionBadge = region
+        ? `<span class="cal-region-badge" style="background:${region.color};margin-right:4px;">${escHtml(region.label)}</span>`
+        : '';
       const isMultiDay = entry._occEnd && entry._occEnd.getTime() !== entry._occStart.getTime();
       const dateStr = isMultiDay
         ? `${entry._occStart.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${entry._occEnd.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`
@@ -2767,12 +2869,12 @@ function renderCalendarView(targetEl) {
       html += `<div class="cal-upcoming-item" style="border-left:3px solid ${col};"
         ${isEditable ? `onclick="openCalEntryModal('${entry.id}',${entry._type === 'personal'})" style="border-left:3px solid ${col};cursor:pointer;"` : ''}>
         <div class="cal-upcoming-date">${dateStr}</div>
-        <div class="cal-upcoming-title">${recurLabel ? '🔁 ' : ''}${escHtml(entry.title)}</div>
+        <div class="cal-upcoming-title">${regionBadge}${recurLabel ? '🔁 ' : ''}${escHtml(shown)}</div>
         ${entry.description ? `<div class="cal-upcoming-desc">${escHtml(entry.description)}</div>` : ''}
         ${entry._type === 'personal' ? '<span class="cal-personal-badge">My Event</span>' : ''}
         ${creatorLabel ? `<span class="cal-personal-badge" style="background:#EFF6FF;color:#2563EB;">Added by ${escHtml(creatorLabel)} (TL)</span>` : ''}
         ${recurLabel ? `<span class="cal-personal-badge" style="background:#F5F3FF;color:#7C3AED;">Repeats ${recurLabel}</span>` : ''}
-        <span class="cal-type-badge" style="background:${col}20;color:${col};">${typeInfo.label}</span>
+        <span class="cal-type-badge" style="background:${col}20;color:${col};">${camp.label}</span>
       </div>`;
     });
     html += `</div></div>`;
@@ -2893,7 +2995,16 @@ function openCalEntryModal(entryId, isPersonal) {
   }
 
   document.getElementById('cal-modal-title').textContent = entryId ? (personalMode ? 'Edit My Event' : 'Edit Event') : (personalMode ? 'Add My Event' : 'Add Event');
-  document.getElementById('cal-entry-title-input').value   = entry.title || '';
+  // Region + campaign phase: fall back to inference so legacy events (region
+  // in the title, phase implied by wording) open with the right values, and
+  // show the title without the "[MY]" prefix once it's captured as a field.
+  const _inferredRegion = entry.region || _calRegionOf(entry)?.id || '';
+  const _inferredCampaign = entry.campaignType || _calCampaignType(entry).id;
+  const _regionSel = document.getElementById('cal-entry-region');
+  const _campSel   = document.getElementById('cal-entry-campaign-type');
+  if (_regionSel) _regionSel.value = _inferredRegion;
+  if (_campSel)   _campSel.value   = _inferredCampaign;
+  document.getElementById('cal-entry-title-input').value   = entryId ? _calCleanTitle(entry) : (entry.title || '');
   document.getElementById('cal-entry-date').value          = entry.date || '';
   document.getElementById('cal-entry-enddate').value       = entry.endDate || '';
   document.getElementById('cal-entry-type').value          = entry.type || 'payday_sale';
@@ -2942,6 +3053,8 @@ async function saveCalEntry() {
   const date     = document.getElementById('cal-entry-date').value;
   const endDate  = document.getElementById('cal-entry-enddate').value;
   const type     = document.getElementById('cal-entry-type').value;
+  const region       = document.getElementById('cal-entry-region')?.value || '';
+  const campaignType = document.getElementById('cal-entry-campaign-type')?.value || 'other';
   const desc     = document.getElementById('cal-entry-desc').value.trim();
   const personalMode = document.getElementById('cal-entry-personal-mode').value === '1';
   const errEl    = document.getElementById('cal-entry-error');
@@ -2957,7 +3070,7 @@ async function saveCalEntry() {
     showError(errEl, '"Repeat Until" must be on or after the start date.'); return;
   }
 
-  const typeInfo = CAL_ENTRY_TYPES.find(t => t.id === type) || CAL_ENTRY_TYPES[5];
+  const campInfo = CAL_CAMPAIGN_TYPES.find(c => c.id === campaignType) || CAL_CAMPAIGN_TYPES[3];
 
   // Gather assigned UIDs (admin or team lead shared entries only)
   let assignedUids = [];
@@ -2972,10 +3085,12 @@ async function saveCalEntry() {
     title, date,
     endDate: endDate || date,
     type,
+    region: region || null,
+    campaignType,
     description: desc,
     startTime: startTime || null,
     endTime: endTime || null,
-    color: typeInfo.color,
+    color: campInfo.color,
     recurrence: recurrenceFreq !== 'none' ? { freq: recurrenceFreq, until: recurrenceUntil || null } : null,
     assignedUids,
     campaignId: campaignId || null,
@@ -4369,7 +4484,9 @@ function useQuickMsg(btn) {
 async function notifyCalEntryAlignment(entryData, assignedUids) {
   const leadName = currentUser?.name || currentUser?.username || 'Team Lead';
   const dateStr  = entryData.date || '';
-  const msg = `📅 ${entryData.title} (${CAL_ENTRY_TYPES.find(t => t.color === entryData.color)?.label || entryData.type}) on ${dateStr}`;
+  const _campLabel = (CAL_CAMPAIGN_TYPES.find(c => c.id === entryData.campaignType) || {}).label || entryData.type;
+  const _regLabel  = entryData.region ? `[${entryData.region}] ` : '';
+  const msg = `📅 ${_regLabel}${entryData.title} (${_campLabel}) on ${dateStr}`;
 
   const targets = [...new Set([...assignedUids, ADMIN_UID])];
   for (const uid of targets) {

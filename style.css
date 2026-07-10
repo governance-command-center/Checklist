@@ -1211,8 +1211,12 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 .cal-day-num { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-bottom: 3px; text-align: right; padding-right: 2px; }
 .cal-today-num { background: var(--blue); color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; margin-left: auto; }
 .cal-day-events { display: flex; flex-direction: column; gap: 2px; }
-.cal-event { border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: opacity 0.1s; border-left-width: 3px !important; border-left-style: solid !important; }
+.cal-event { display: flex; align-items: center; gap: 4px; border-radius: 4px; padding: 2px 5px; font-size: 10px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: opacity 0.1s; border-left-width: 3px !important; border-left-style: solid !important; }
+.cal-event > span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .cal-event:hover { opacity: 0.8; }
+.cal-region-badge { flex-shrink: 0; display: inline-block; padding: 1px 5px; border-radius: 6px; font-size: 8.5px; font-weight: 600; line-height: 1.4; color: #fff; letter-spacing: 0.02em; }
+.cal-filter-select { font-size: 11px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
+.cal-filter-select:hover { border-color: var(--border-strong); }
 .cal-event-more { font-size: 10px; color: var(--text-muted); cursor: pointer; padding: 1px 4px; border-radius: 3px; text-align: right; }
 .cal-event-more:hover { background: var(--surface3); }
 .cal-upcoming { border-top: 1px solid var(--border); padding: 14px 18px; background: var(--surface2); }

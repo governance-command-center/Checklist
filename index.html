@@ -590,6 +590,31 @@
           </div>
         </div>
       </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="field">
+          <label>Campaign</label>
+          <select id="cal-entry-campaign-type">
+            <option value="double_digit">Double Digit</option>
+            <option value="mid_month">Mid-Month</option>
+            <option value="payday">PayDay</option>
+            <option value="other" selected>Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Region</label>
+          <select id="cal-entry-region">
+            <option value="">— None —</option>
+            <option value="MY">MY</option>
+            <option value="PH">PH</option>
+            <option value="VN">VN</option>
+            <option value="SGTH">SG/TH</option>
+            <option value="SGMYTH">SGMYTH</option>
+            <option value="TH">TH</option>
+            <option value="SG">SG</option>
+            <option value="LAZ">LAZ</option>
+          </select>
+        </div>
+      </div>
       <div class="field">
         <label>Type</label>
         <select id="cal-entry-type">
@@ -597,8 +622,9 @@
           <option value="dday">D-Day</option>
           <option value="deadline">Deadline</option>
           <option value="meeting">Meeting</option>
-          <option value="milestone" selected>Milestone</option>
-          <option value="other">Other</option>
+          <option value="payday_sale">PayDay Sale</option>
+          <option value="midmonth_sale">Mid-Month Sale</option>
+          <option value="other" selected>Other</option>
         </select>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
