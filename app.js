@@ -609,14 +609,25 @@ function renderCompletionChart(rows) {
     });
   }
 
-  leadGroups.sort((a, b) => b.avgPct - a.avgPct);
+  // Keep the main list clean: leads with no members assigned (for the
+  // selected campaign scope) and no checklist of their own are pulled out
+  // into a collapsed bucket rather than shown as empty rows. They stay
+  // visible as a staffing signal without cluttering the progress view.
+  // The "Unassigned" catch-all group is never bucketed.
+  const emptyLeads = leadGroups.filter(g =>
+    g.uid !== '_unassigned' && g.memberCount === 0 && !g.hasOwnChecklist
+  );
+  const emptyLeadUids = new Set(emptyLeads.map(g => g.uid));
+  const activeGroups = leadGroups.filter(g => !emptyLeadUids.has(g.uid));
+
+  activeGroups.sort((a, b) => b.avgPct - a.avgPct);
 
   const badge = document.getElementById('dash-completion-badge');
-  if (badge) badge.textContent = `${leadGroups.length} team${leadGroups.length !== 1 ? 's' : ''}`;
-  if (leadGroups.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No data yet.</div>'; return; }
+  if (badge) badge.textContent = `${activeGroups.length} team${activeGroups.length !== 1 ? 's' : ''}`;
+  if (activeGroups.length === 0 && emptyLeads.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No data yet.</div>'; return; }
   const barColor = pct => pct === 100 ? '#059669' : pct >= 50 ? '#D97706' : pct > 0 ? '#3B82F6' : '#D1D5DB';
 
-  el.innerHTML = leadGroups.map((g, idx) => {
+  el.innerHTML = activeGroups.map((g, idx) => {
     const panelId = `lead-completion-panel-${idx}`;
     const memberRowsHtml = g.memberList.map(m => `
       <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);">
@@ -652,6 +663,27 @@ function renderCompletionChart(rows) {
       </div>
     </div>`;
   }).join('');
+
+  // Collapsed bucket for leads with no members assigned in this scope.
+  if (emptyLeads.length > 0) {
+    const bucketPanelId = 'lead-completion-empty-bucket';
+    const namesHtml = emptyLeads
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(g => `<div style="font-size:12px;color:var(--text);padding:4px 0;border-bottom:1px solid var(--border);">${escHtml(g.name)}</div>`)
+      .join('');
+    el.innerHTML += `<div class="completion-member-block" style="margin-bottom:14px;border:1px dashed var(--border);border-radius:10px;padding:10px 12px;background:var(--bg-subtle,transparent);">
+      <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="toggleLeadCompletionPanel('${bucketPanelId}', this)" title="Team leads with no members assigned for this campaign">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+          <span class="lead-completion-caret" data-panel="${bucketPanelId}" style="display:inline-block;font-size:10px;color:var(--text-muted);transition:transform .15s;">▶</span>
+          <span class="completion-name" style="width:auto;font-weight:600;color:var(--text-muted);">${emptyLeads.length} lead${emptyLeads.length !== 1 ? 's' : ''} with no members assigned</span>
+        </div>
+      </div>
+      <div id="${bucketPanelId}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
+        ${namesHtml}
+      </div>
+    </div>`;
+  }
 }
 
 function toggleLeadCompletionPanel(panelId, headerEl) {
@@ -2715,6 +2747,26 @@ function rosterForRegion(regionId) {
   return out;
 }
 
+// Derive a checklist deadline from a D-Day datetime string: D-Day minus 4
+// hours, in the SAME local clock as the D-Day (no timezone conversion, so
+// deadlines stay fair across markets). Returns a "YYYY-MM-DDTHH:mm" string,
+// or null when the D-Day has no time component (date-only) or is missing.
+// The 4-hour offset is the default; the campaign's `deadline` field remains
+// editable afterward.
+const DEADLINE_OFFSET_HOURS = 4;
+function _deadlineFromDday(ddayStr) {
+  if (!ddayStr || !ddayStr.includes('T')) return null; // need a time to subtract from
+  const [datePart, timePart] = ddayStr.split('T');
+  const [y, mo, d] = datePart.split('-').map(Number);
+  const [h, mi]    = timePart.slice(0, 5).split(':').map(Number);
+  // Build in local time and subtract the offset; Date handles day/month
+  // rollover (e.g. 02:00 − 4h → previous day 22:00) automatically.
+  const dt = new Date(y, mo - 1, d, h, mi);
+  dt.setHours(dt.getHours() - DEADLINE_OFFSET_HOURS);
+  const pad = n => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
 // ── Generate a campaign + pre-filled checklists straight from the calendar's
 // current filter (region + campaign phase). Reuses the same checklist-merge
 // logic as confirmBulkAssign so member progress is never clobbered.
@@ -2740,9 +2792,13 @@ async function generateChecklistFromCalendarView() {
   //    dropdown filters), grouped by the region each event belongs to.
   const monthStart = new Date(calCurrentYear, calCurrentMonth, 1);
   const monthEnd   = new Date(calCurrentYear, calCurrentMonth + 1, 0);
-  const toISO = d => d.toISOString().slice(0, 10);
 
-  const datesByRegion = {}; // { regionId: [Date, …] }
+  // Combine an entry's date + its local start time into a "YYYY-MM-DDTHH:mm"
+  // string. Deadlines are always computed and stored in the region's LOCAL
+  // clock (no timezone conversion) so D-Days stay fair across markets.
+  const _ddayDateTime = e => e.startTime ? `${e.date}T${e.startTime}` : e.date;
+
+  const eventsByRegion = {}; // { regionId: [{ date, dateTime, isDday }] }
   calendarEntries.forEach(e => {
     if (!e.date) return;
     const d = new Date(e.date);
@@ -2751,10 +2807,14 @@ async function generateChecklistFromCalendarView() {
     if (!r) return; // events with no region can't be auto-matched
     if (filterRegion && r.id !== filterRegion) return;
     if (filterCamp && _calCampaignType(e).id !== filterCamp) return;
-    (datesByRegion[r.id] = datesByRegion[r.id] || []).push(d);
+    (eventsByRegion[r.id] = eventsByRegion[r.id] || []).push({
+      date: d,
+      dateTime: _ddayDateTime(e),
+      isDday: e.type === 'dday',
+    });
   });
 
-  const calendarRegions = Object.keys(datesByRegion);
+  const calendarRegions = Object.keys(eventsByRegion);
   if (calendarRegions.length === 0) {
     showToast('No region-tagged events in this month to match against. Add region tags to events, or upload a matching Bulk Assign sheet.', 'warn');
     return;
@@ -2763,19 +2823,27 @@ async function generateChecklistFromCalendarView() {
   // 2) Keep only regions that ALSO have roster members. Regions on the
   //    calendar with nobody in the sheet, and sheet regions with no calendar
   //    event, are both skipped — the checklist is generated on the overlap.
-  const plan = []; // [{ regionId, regionInfo, matched, uids, entryCount, dday }]
+  const plan = []; // [{ regionId, regionInfo, matched, uids, entryCount, dday, deadline }]
   const skippedNoRoster = [];
   calendarRegions.forEach(regionId => {
     const matched = rosterForRegion(regionId);
     const uids = Object.keys(matched);
     if (uids.length === 0) { skippedNoRoster.push(regionId); return; }
-    const dates = datesByRegion[regionId].sort((a, b) => a - b);
+    // Pick this region's D-Day: prefer an explicit D-Day-type event, else the
+    // earliest event of the month. Keep the datetime string (with local time)
+    // so the deadline can be derived from it.
+    const events = eventsByRegion[regionId].slice().sort((a, b) => a.date - b.date);
+    const ddayEvent = events.find(ev => ev.isDday) || events[0] || null;
+    const dday = ddayEvent ? ddayEvent.dateTime : null;
     plan.push({
       regionId,
       regionInfo: CAL_REGION_MAP[regionId] || { id: regionId, label: regionId },
       matched, uids,
       entryCount: uids.reduce((s, u) => s + matched[u].length, 0),
-      dday: dates.length ? toISO(dates[0]) : null,
+      dday,
+      // Deadline = D-Day − 4h, in the region's LOCAL clock. Stored as an
+      // editable default; admin does manual chasing after generation.
+      deadline: _deadlineFromDday(dday),
     });
   });
 
@@ -2790,7 +2858,11 @@ async function generateChecklistFromCalendarView() {
 
   // 3) One confirmation summarising every region that will be generated.
   const summary = plan
-    .map(p => `  • ${p.regionInfo.label}: ${p.uids.length} member(s), ${p.entryCount} entrie(s)${p.dday ? `, D-Day ${p.dday}` : ''}`)
+    .map(p => {
+      const dd  = p.dday ? `, D-Day ${fmtDeadlineShort(p.dday)}` : '';
+      const dl  = p.deadline ? `, deadline ${fmtDeadlineShort(p.deadline)}` : '';
+      return `  • ${p.regionInfo.label}: ${p.uids.length} member(s), ${p.entryCount} entrie(s)${dd}${dl}`;
+    })
     .join('\n');
   const skipNote = skippedNoRoster.length
     ? `\n\nSkipped (event but no one in sheet): ${skippedNoRoster.map(r => (CAL_REGION_MAP[r]?.label || r)).join(', ')}`
@@ -2817,7 +2889,7 @@ async function generateChecklistFromCalendarView() {
         region: p.regionId,
         campaignType: filterCamp || null,
         dday: p.dday || null,
-        deadline: null,
+        deadline: p.deadline || null, // D-Day − 4h (local), editable default
       });
       const campaignId = ref.id;
 
