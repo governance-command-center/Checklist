@@ -2722,10 +2722,11 @@ async function generateChecklistFromCalendarView() {
   const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
   if (!isAdmin) return;
 
-  const regionId   = calFilterRegion;
-  const campId     = calFilterCampaign;
-  const regionInfo = regionId ? CAL_REGION_MAP[regionId] : null;
-  const campInfo   = campId ? CAL_CAMPAIGN_TYPES.find(c => c.id === campId) : null;
+  // Optional narrowers: if the dropdowns are set they trim which calendar
+  // events we consider, but they no longer decide who gets a checklist —
+  // the calendar events themselves do (auto-match).
+  const filterRegion = calFilterRegion;
+  const filterCamp   = calFilterCampaign;
 
   // No saved roster yet → route to the existing Bulk Assign flow instead of
   // failing, so the admin can upload a sheet first.
@@ -2735,90 +2736,124 @@ async function generateChecklistFromCalendarView() {
     return;
   }
 
-  const matched = rosterForRegion(regionId);
-  const uids = Object.keys(matched);
-  if (uids.length === 0) {
-    showToast(regionId
-      ? `No roster members found for ${regionInfo?.label || regionId}. Upload/adjust the Bulk Assign sheet.`
-      : 'Pick a region filter first so I know who to assign.', 'warn');
+  // 1) Collect this month's calendar events (optionally narrowed by the
+  //    dropdown filters), grouped by the region each event belongs to.
+  const monthStart = new Date(calCurrentYear, calCurrentMonth, 1);
+  const monthEnd   = new Date(calCurrentYear, calCurrentMonth + 1, 0);
+  const toISO = d => d.toISOString().slice(0, 10);
+
+  const datesByRegion = {}; // { regionId: [Date, …] }
+  calendarEntries.forEach(e => {
+    if (!e.date) return;
+    const d = new Date(e.date);
+    if (d < monthStart || d > monthEnd) return;
+    const r = _calRegionOf(e);
+    if (!r) return; // events with no region can't be auto-matched
+    if (filterRegion && r.id !== filterRegion) return;
+    if (filterCamp && _calCampaignType(e).id !== filterCamp) return;
+    (datesByRegion[r.id] = datesByRegion[r.id] || []).push(d);
+  });
+
+  const calendarRegions = Object.keys(datesByRegion);
+  if (calendarRegions.length === 0) {
+    showToast('No region-tagged events in this month to match against. Add region tags to events, or upload a matching Bulk Assign sheet.', 'warn');
     return;
   }
 
-  // Derive D-Day / deadline from the calendar events that match this filter in
-  // the month currently on screen (earliest matching date = D-Day).
-  const monthStart = new Date(calCurrentYear, calCurrentMonth, 1);
-  const monthEnd   = new Date(calCurrentYear, calCurrentMonth + 1, 0);
-  const matchingDates = calendarEntries
-    .filter(e => {
-      if (regionId) { const r = _calRegionOf(e); if (!r || r.id !== regionId) return false; }
-      if (campId && _calCampaignType(e).id !== campId) return false;
-      return true;
-    })
-    .map(e => e.date).filter(Boolean)
-    .map(d => new Date(d)).filter(d => d >= monthStart && d <= monthEnd)
-    .sort((a, b) => a - b);
-  const toISO = d => d.toISOString().slice(0, 10);
-  const dday = matchingDates.length ? toISO(matchingDates[0]) : null;
+  // 2) Keep only regions that ALSO have roster members. Regions on the
+  //    calendar with nobody in the sheet, and sheet regions with no calendar
+  //    event, are both skipped — the checklist is generated on the overlap.
+  const plan = []; // [{ regionId, regionInfo, matched, uids, entryCount, dday }]
+  const skippedNoRoster = [];
+  calendarRegions.forEach(regionId => {
+    const matched = rosterForRegion(regionId);
+    const uids = Object.keys(matched);
+    if (uids.length === 0) { skippedNoRoster.push(regionId); return; }
+    const dates = datesByRegion[regionId].sort((a, b) => a - b);
+    plan.push({
+      regionId,
+      regionInfo: CAL_REGION_MAP[regionId] || { id: regionId, label: regionId },
+      matched, uids,
+      entryCount: uids.reduce((s, u) => s + matched[u].length, 0),
+      dday: dates.length ? toISO(dates[0]) : null,
+    });
+  });
+
+  if (plan.length === 0) {
+    showToast('Found calendar regions but none of them have members in the uploaded sheet.', 'warn');
+    return;
+  }
 
   const monthLabel = monthStart.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
-  const parts = [regionInfo?.label, campInfo?.label].filter(Boolean).join(' ');
-  const suggestedName = `${parts || 'Campaign'} — ${monthLabel}`;
+  const campInfo = filterCamp ? CAL_CAMPAIGN_TYPES.find(c => c.id === filterCamp) : null;
+  const campSuffix = campInfo ? ` ${campInfo.label}` : '';
 
-  const entryCount = uids.reduce((s, u) => s + matched[u].length, 0);
+  // 3) One confirmation summarising every region that will be generated.
+  const summary = plan
+    .map(p => `  • ${p.regionInfo.label}: ${p.uids.length} member(s), ${p.entryCount} entrie(s)${p.dday ? `, D-Day ${p.dday}` : ''}`)
+    .join('\n');
+  const skipNote = skippedNoRoster.length
+    ? `\n\nSkipped (event but no one in sheet): ${skippedNoRoster.map(r => (CAL_REGION_MAP[r]?.label || r)).join(', ')}`
+    : '';
   const proceed = confirm(
-    `Generate a campaign from this view?\n\n` +
-    `Name: ${suggestedName}\n` +
-    `Members: ${uids.length}\n` +
-    `Entries to pre-fill: ${entryCount}\n` +
-    (dday ? `D-Day: ${dday}\n` : '') +
-    `\nExisting checklist progress will be preserved.`
+    `Auto-match will create ${plan.length} campaign(s) — one per region that has BOTH a calendar event this month AND members in your sheet:\n\n` +
+    summary + skipNote +
+    `\n\nExisting checklist progress will be preserved. Continue?`
   );
   if (!proceed) return;
 
-  try {
-    const ref = await db.collection('campaigns').add({
-      name: suggestedName,
-      assignedUids: uids,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      createdBy: ADMIN_UID,
-      fromPollId: null,
-      checklistTemplateId: null,
-      region: regionId || null,
-      campaignType: campId || null,
-      dday: dday || null,
-      deadline: null,
-    });
-    const campaignId = ref.id;
+  // 4) Generate one region-scoped campaign per plan item.
+  let okCount = 0;
+  for (const p of plan) {
+    const suggestedName = `${p.regionInfo.label}${campSuffix} — ${monthLabel}`;
+    try {
+      const ref = await db.collection('campaigns').add({
+        name: suggestedName,
+        assignedUids: p.uids,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdBy: ADMIN_UID,
+        fromPollId: null,
+        checklistTemplateId: null,
+        region: p.regionId,
+        campaignType: filterCamp || null,
+        dday: p.dday || null,
+        deadline: null,
+      });
+      const campaignId = ref.id;
 
-    // Merge entries into each member's checklist — same non-destructive logic
-    // confirmBulkAssign uses (append new brand/platform/region, keep progress).
-    await Promise.all(uids.map(async uid => {
-      const docRef = db.collection('checklists').doc(uid);
-      const snap = await docRef.get();
-      const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
-      const existingEntries = existingCampData.entries || [];
-      const newOnes = matched[uid].filter(en =>
-        !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
-      );
-      const mergedEntries = [...existingEntries, ...newOnes];
-      await docRef.set({
-        [campaignId]: { ...existingCampData, entries: mergedEntries, lastActive: new Date().toISOString() }
-      }, { merge: true });
-    }));
+      // Same non-destructive merge confirmBulkAssign uses.
+      await Promise.all(p.uids.map(async uid => {
+        const docRef = db.collection('checklists').doc(uid);
+        const snap = await docRef.get();
+        const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
+        const existingEntries = existingCampData.entries || [];
+        const newOnes = p.matched[uid].filter(en =>
+          !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+        );
+        const mergedEntries = [...existingEntries, ...newOnes];
+        await docRef.set({
+          [campaignId]: { ...existingCampData, entries: mergedEntries, lastActive: new Date().toISOString() }
+        }, { merge: true });
+      }));
 
-    await db.collection('broadcasts').add({
-      type: 'custom',
-      message: `🚀 Campaign "${suggestedName}" is ready — your brand assignments are pre-filled. Open the Checklist tab to start.`,
-      targetUid: null, targetName: 'everyone',
-      campaignId, campaignName: suggestedName,
-      sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
-    });
+      await db.collection('broadcasts').add({
+        type: 'custom',
+        message: `🚀 Campaign "${suggestedName}" is ready — your brand assignments are pre-filled. Open the Checklist tab to start.`,
+        targetUid: null, targetName: 'everyone',
+        campaignId, campaignName: suggestedName,
+        sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
+      });
+      okCount++;
+    } catch (e) {
+      console.error(`Failed generating for region ${p.regionId}`, e);
+    }
+  }
 
-    await loadAdminData();
-    showToast(`✅ Created "${suggestedName}" with entries for ${uids.length} member(s).`, 'success');
-  } catch (e) {
-    console.error(e);
-    showToast('Failed to generate campaign from view. Try again.', 'warn');
+  await loadAdminData();
+  if (okCount === plan.length) {
+    showToast(`✅ Generated ${okCount} region campaign(s) from this view.`, 'success');
+  } else {
+    showToast(`Generated ${okCount} of ${plan.length} campaigns — some failed, check the console.`, 'warn');
   }
 }
 
@@ -2931,7 +2966,7 @@ function renderCalendarView(targetEl) {
           ${canAddPersonal ? `<span class="cal-legend-dot" style="background:#94A3B8;border:2px dashed #64748B;box-sizing:border-box;"></span><span style="font-size:11px;color:var(--text-muted)">My Events</span>` : ''}
         </div>
         ${isAdmin ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Add Event</button>` : ''}
-        ${isAdmin ? `<button class="btn-outline" style="font-size:12px;" onclick="generateChecklistFromCalendarView()" title="Create a campaign + pre-filled checklists from the current region/campaign filter">⚡ Generate Checklist</button>` : ''}
+        ${isAdmin ? `<button class="btn-outline" style="font-size:12px;" onclick="generateChecklistFromCalendarView()" title="Auto-match: generate checklists for regions that have both a calendar event this month and members in your uploaded sheet">⚡ Generate Checklist</button>` : ''}
         ${isTeamLead ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Team Event</button>` : ''}
         ${canAddPersonal ? `<button class="btn-outline" style="background:#475569;border-color:#475569;font-size:12px;" onclick="openCalEntryModal(null,true)">+ My Event</button>` : ''}
       </div>
