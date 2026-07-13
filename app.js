@@ -3051,6 +3051,20 @@ function renderCalendarView(targetEl) {
     });
   });
 
+  // Stable, predictable ordering within each day: campaign events first
+  // (grouped by region, then title), personal events last. Without this the
+  // order was whatever Firestore happened to return, which made entries
+  // appear to jump around between days.
+  Object.keys(dayMap).forEach(k => {
+    dayMap[k].sort((a, b) => {
+      if (a._type !== b._type) return a._type === 'personal' ? 1 : -1;
+      const ra = (_calRegionOf(a)?.label || '~');
+      const rb = (_calRegionOf(b)?.label || '~');
+      if (ra !== rb) return ra.localeCompare(rb);
+      return (a.title || '').localeCompare(b.title || '');
+    });
+  });
+
   const isAdmin   = currentUser?.role === 'admin' || currentUser?.role === 'manager';
   const isTeamLead = currentUser?.role === 'team_lead';
   const canAddPersonal = !isAdmin;
@@ -3106,7 +3120,11 @@ function renderCalendarView(targetEl) {
       <div class="cal-day-num ${isToday ? 'cal-today-num' : ''}">${d}</div>
       <div class="cal-day-events">`;
 
-    dayEntries.slice(0, 4).forEach(entry => {
+    // Render EVERY entry for the day. Previously this capped at 4 with a
+    // "+N more" link, which silently hid entries on busy days (Mid-Month can
+    // easily exceed 4 across PH/SG/MY/VN/TH × Lazada/Shopee) and made it look
+    // like new events hadn't saved. The day cell scrolls if it overflows.
+    dayEntries.forEach(entry => {
       const camp     = _calCampaignType(entry);
       const col      = entry._type === 'personal' ? '#94A3B8' : camp.color;
       const border   = entry._type === 'personal' ? '2px dashed #64748B' : 'none';
@@ -3124,11 +3142,15 @@ function renderCalendarView(targetEl) {
         ${regionBadge}<span style="color:${col};font-size:10px;font-weight:600;">${recurLabel ? '🔁 ' : ''}${escHtml(shown)}${creatorLabel ? ' 👤' : ''}</span>
       </div>`;
     });
+    html += `</div>`; // close .cal-day-events (scrolling list)
+
+    // Busy-day indicator. Purely informational — every entry is rendered and
+    // the list scrolls, so there is nothing hidden to "expand" into.
     if (dayEntries.length > 4) {
-      html += `<div class="cal-event-more" onclick="openCalDayModal('${year}-${month+1}-${String(d).padStart(2,'0')}')">+${dayEntries.length - 4} more</div>`;
+      html += `<div class="cal-event-count" title="${dayEntries.length} events this day — scroll the cell to see them all">${dayEntries.length} events ⌄</div>`;
     }
 
-    html += `</div></div>`;
+    html += `</div>`; // close .cal-day
   }
 
   html += `</div></div>`; // cal-grid, cal-grid-wrap
@@ -3388,6 +3410,30 @@ async function saveCalEntry() {
 
   const campaignEl = document.getElementById('cal-entry-campaign');
   const campaignId = campaignEl ? campaignEl.value : '';
+
+  // Duplicate guard: if an identical entry already exists (same title, dates,
+  // region and campaign type), warn before adding a second one. This catches
+  // the common case of re-entering an event that looked "missing" but was
+  // actually just scrolled out of view on a busy day.
+  if (!personalMode && !calEditingEntry) {
+    const _norm = s => (s || '').trim().toLowerCase();
+    const dup = calendarEntries.find(e =>
+      _norm(e.title) === _norm(title) &&
+      e.date === date &&
+      (e.endDate || e.date) === (endDate || date) &&
+      _norm(e.region) === _norm(region) &&
+      (e.campaignType || 'other') === campaignType
+    );
+    if (dup) {
+      const go = confirm(
+        `An identical event already exists:\n\n` +
+        `  ${title}\n  ${date}${(endDate && endDate !== date) ? ` – ${endDate}` : ''}` +
+        `${region ? `\n  Region: ${region}` : ''}\n\n` +
+        `Add it again anyway? (Cancel is usually what you want.)`
+      );
+      if (!go) return;
+    }
+  }
 
   const entryData = {
     title, date,
