@@ -2745,6 +2745,33 @@ const CAL_REGIONS = [
 ];
 const CAL_REGION_MAP = Object.fromEntries(CAL_REGIONS.map(r => [r.id, r]));
 
+// ── Platforms ────────────────────────────────────────────────────────────
+// Platform is its own dimension, separate from region. Existing entries
+// encode it in the title ("LAZ Mid-Month Sale", "SHP PayDay Sale"), and
+// "LAZ" was historically even offered as a *region* — so `match` lets us
+// infer the platform from legacy titles with no migration step. New entries
+// set `platform` explicitly via the entry form.
+const CAL_PLATFORMS = [
+  { id: 'lazada',  label: 'Lazada',  short: 'LAZ', color: '#EA580C', match: /\b(laz(ada)?)\b/i },
+  { id: 'shopee',  label: 'Shopee',  short: 'SHP', color: '#EF4444', match: /\b(shp|shopee)\b/i },
+  { id: 'tiktok',  label: 'TikTok',  short: 'TT',  color: '#0F172A', match: /\b(tt|tik(\s*tok)?|tiktok)\b/i },
+];
+const CAL_PLATFORM_MAP = Object.fromEntries(CAL_PLATFORMS.map(p => [p.id, p]));
+
+// Resolve an entry's platform: explicit field wins, else infer from the
+// title so pre-existing events light up correctly straight away. Legacy
+// entries that used region="LAZ" are also caught here.
+function _calPlatformOf(entry) {
+  if (!entry) return null;
+  if (entry.platform) return CAL_PLATFORM_MAP[entry.platform] || null;
+  // Legacy: platform smuggled into the region field (region === 'LAZ').
+  const legacyRegion = (entry.region || '').toUpperCase();
+  const byRegion = CAL_PLATFORMS.find(p => p.short === legacyRegion);
+  if (byRegion) return byRegion;
+  const t = entry.title || '';
+  return CAL_PLATFORMS.find(p => p.match.test(t)) || null;
+}
+
 // Pull a leading "[MY]" / "{MY}" style bracket code out of a title, so legacy
 // entries migrate without re-entry. Returns { region, cleanTitle }.
 function _calExtractRegion(title) {
@@ -2785,8 +2812,10 @@ function _calCleanTitle(entry) {
 // Active filters for the calendar header (empty = show all).
 let calFilterRegion   = '';
 let calFilterCampaign = '';
+let calFilterPlatform = '';
 function calSetRegionFilter(v)   { calFilterRegion = v;   renderCalendarView(getCalTarget()); }
 function calSetCampaignFilter(v) { calFilterCampaign = v; renderCalendarView(getCalTarget()); }
+function calSetPlatformFilter(v) { calFilterPlatform = v; renderCalendarView(getCalTarget()); }
 
 let calCurrentMonth = new Date().getMonth();
 let calCurrentYear  = new Date().getFullYear();
@@ -2911,14 +2940,26 @@ function _expandRegionCode(regionId) {
   return (parts.length && rest.length === 0) ? parts : [id];
 }
 
-// Slice the roster for one region → { uid: [{label,brand,platform,region}] },
-// matching the shape confirmBulkAssign already knows how to consume.
+// Slice the roster for one region (and optionally one platform) →
+// { uid: [{label,brand,platform,region}] }, matching the shape
+// confirmBulkAssign already knows how to consume.
 // A combined region (SGTH) matches roster rows for any of its markets (SG, TH).
-function rosterForRegion(regionId) {
+// When platformId is given, only that platform's rows are included, so a
+// Lazada checklist doesn't pull in Shopee brands.
+function rosterForRegion(regionId, platformId) {
   const out = {};
   const wanted = new Set(_expandRegionCode(regionId));
+  const plat   = platformId ? CAL_PLATFORM_MAP[platformId] : null;
   campaignRoster
     .filter(r => !regionId || wanted.has((r.region || '').toUpperCase()))
+    .filter(r => {
+      if (!plat) return true; // no platform scope → all platforms
+      const rp = (r.platform || '').trim();
+      if (!rp) return false;
+      // Roster platform strings vary ("LAZ", "Lazada", "lazada") — match on
+      // the platform's own pattern so all spellings land correctly.
+      return plat.match.test(rp) || rp.toUpperCase() === plat.short;
+    })
     .forEach(r => {
       if (!out[r.uid]) out[r.uid] = [];
       const label = [r.brand, r.platform, r.region].filter(Boolean).join('_');
@@ -2959,8 +3000,9 @@ async function generateChecklistFromCalendarView() {
   // Optional narrowers: if the dropdowns are set they trim which calendar
   // events we consider, but they no longer decide who gets a checklist —
   // the calendar events themselves do (auto-match).
-  const filterRegion = calFilterRegion;
-  const filterCamp   = calFilterCampaign;
+  const filterRegion   = calFilterRegion;
+  const filterCamp     = calFilterCampaign;
+  const filterPlatform = calFilterPlatform;
 
   // No saved roster yet → route to the existing Bulk Assign flow instead of
   // failing, so the admin can upload a sheet first.
@@ -2980,7 +3022,12 @@ async function generateChecklistFromCalendarView() {
   // clock (no timezone conversion) so D-Days stay fair across markets.
   const _ddayDateTime = e => e.startTime ? `${e.date}T${e.startTime}` : e.date;
 
-  const eventsByRegion = {}; // { regionId: [{ date, dateTime, isDday }] }
+  // Events are grouped by region × PLATFORM. Platform is a real dimension
+  // now (Lazada / Shopee / TikTok often run the same campaign on different
+  // D-Days), so each region+platform pair becomes its own checklist with its
+  // own D-Day and its own deadline. Events with no platform fall back to a
+  // region-only group, so older data still generates.
+  const eventsByKey = {}; // { "REGION|platform": { regionId, platformId, events: [...] } }
   calendarEntries.forEach(e => {
     if (!e.date) return;
     const d = new Date(e.date);
@@ -2989,37 +3036,46 @@ async function generateChecklistFromCalendarView() {
     if (!r) return; // events with no region can't be auto-matched
     if (filterRegion && r.id !== filterRegion) return;
     if (filterCamp && _calCampaignType(e).id !== filterCamp) return;
-    (eventsByRegion[r.id] = eventsByRegion[r.id] || []).push({
+    const p = _calPlatformOf(e);
+    if (filterPlatform && (!p || p.id !== filterPlatform)) return;
+    const platformId = p ? p.id : '';
+    const key = `${r.id}|${platformId}`;
+    if (!eventsByKey[key]) eventsByKey[key] = { regionId: r.id, platformId, events: [] };
+    eventsByKey[key].events.push({
       date: d,
       dateTime: _ddayDateTime(e),
       isDday: e.type === 'dday',
     });
   });
 
-  const calendarRegions = Object.keys(eventsByRegion);
-  if (calendarRegions.length === 0) {
+  const calendarKeys = Object.keys(eventsByKey);
+  if (calendarKeys.length === 0) {
     showToast('No region-tagged events in this month to match against. Add region tags to events, or upload a matching Bulk Assign sheet.', 'warn');
     return;
   }
 
-  // 2) Keep only regions that ALSO have roster members. Regions on the
-  //    calendar with nobody in the sheet, and sheet regions with no calendar
-  //    event, are both skipped — the checklist is generated on the overlap.
-  const plan = []; // [{ regionId, regionInfo, matched, uids, entryCount, dday, deadline }]
+  // 2) Keep only region+platform pairs that ALSO have roster members. Pairs
+  //    on the calendar with nobody in the sheet, and sheet rows with no
+  //    calendar event, are both skipped — we generate on the overlap.
+  const plan = []; // [{ key, regionId, platformId, regionInfo, platformInfo, matched, uids, entryCount, dday, deadline }]
   const skippedNoRoster = [];
-  calendarRegions.forEach(regionId => {
-    const matched = rosterForRegion(regionId);
+  calendarKeys.forEach(key => {
+    const { regionId, platformId, events: evs } = eventsByKey[key];
+    const matched = rosterForRegion(regionId, platformId);
     const uids = Object.keys(matched);
-    if (uids.length === 0) { skippedNoRoster.push(regionId); return; }
-    // Pick this region's D-Day: prefer an explicit D-Day-type event, else the
+    const platformInfo = platformId ? CAL_PLATFORM_MAP[platformId] : null;
+    const regionInfo   = CAL_REGION_MAP[regionId] || { id: regionId, label: regionId };
+    const scopeLabel   = `${regionInfo.label}${platformInfo ? ` · ${platformInfo.label}` : ''}`;
+    if (uids.length === 0) { skippedNoRoster.push(scopeLabel); return; }
+    // Pick this pair's D-Day: prefer an explicit D-Day-type event, else the
     // earliest event of the month. Keep the datetime string (with local time)
     // so the deadline can be derived from it.
-    const events = eventsByRegion[regionId].slice().sort((a, b) => a.date - b.date);
+    const events = evs.slice().sort((a, b) => a.date - b.date);
     const ddayEvent = events.find(ev => ev.isDday) || events[0] || null;
     const dday = ddayEvent ? ddayEvent.dateTime : null;
     plan.push({
-      regionId,
-      regionInfo: CAL_REGION_MAP[regionId] || { id: regionId, label: regionId },
+      key, regionId, platformId,
+      regionInfo, platformInfo, scopeLabel,
       matched, uids,
       entryCount: uids.reduce((s, u) => s + matched[u].length, 0),
       dday,
@@ -3030,7 +3086,7 @@ async function generateChecklistFromCalendarView() {
   });
 
   if (plan.length === 0) {
-    showToast('Found calendar regions but none of them have members in the uploaded sheet.', 'warn');
+    showToast('Found calendar events but none of those region/platform pairs have members in the uploaded sheet.', 'warn');
     return;
   }
 
@@ -3038,43 +3094,47 @@ async function generateChecklistFromCalendarView() {
   const campInfo = filterCamp ? CAL_CAMPAIGN_TYPES.find(c => c.id === filterCamp) : null;
   const campSuffix = campInfo ? ` ${campInfo.label}` : '';
 
-  // 3) One confirmation summarising every region that will be generated.
+  // 3) One confirmation summarising every region+platform that will be generated.
   const summary = plan
     .map(p => {
       const dd  = p.dday ? `, D-Day ${fmtDeadlineShort(p.dday)}` : '';
       const dl  = p.deadline ? `, deadline ${fmtDeadlineShort(p.deadline)}` : '';
-      return `  • ${p.regionInfo.label}: ${p.uids.length} member(s), ${p.entryCount} entrie(s)${dd}${dl}`;
+      return `  • ${p.scopeLabel}: ${p.uids.length} member(s), ${p.entryCount} entrie(s)${dd}${dl}`;
     })
     .join('\n');
   const skipNote = skippedNoRoster.length
-    ? `\n\nSkipped (event but no one in sheet): ${skippedNoRoster.map(r => (CAL_REGION_MAP[r]?.label || r)).join(', ')}`
+    ? `\n\nSkipped (event but no one in sheet): ${skippedNoRoster.join(', ')}`
     : '';
 
-  // Warn if the same single market is covered by more than one planned
-  // campaign (e.g. a combined "SGTH" event AND a separate "SG" event),
-  // which would create overlapping checklists for the same members.
-  const marketToRegions = {};
+  // Warn if the same market+platform is covered by more than one planned
+  // campaign (e.g. a combined "SGTH" event AND a separate "SG" event on the
+  // same platform), which would create overlapping checklists for the same
+  // members. Different platforms in one market are NOT an overlap — that's
+  // the whole point of the platform dimension.
+  const cellToScopes = {};
   plan.forEach(p => _expandRegionCode(p.regionId).forEach(mkt => {
-    (marketToRegions[mkt] = marketToRegions[mkt] || new Set()).add(p.regionInfo.label);
+    const cell = `${mkt}${p.platformInfo ? ` · ${p.platformInfo.label}` : ''}`;
+    (cellToScopes[cell] = cellToScopes[cell] || new Set()).add(p.scopeLabel);
   }));
-  const overlaps = Object.entries(marketToRegions)
-    .filter(([, regions]) => regions.size > 1)
-    .map(([mkt, regions]) => `  • ${mkt} appears in: ${[...regions].join(' + ')}`);
+  const overlaps = Object.entries(cellToScopes)
+    .filter(([, scopes]) => scopes.size > 1)
+    .map(([cell, scopes]) => `  • ${cell} appears in: ${[...scopes].join(' + ')}`);
   const overlapNote = overlaps.length
-    ? `\n\n⚠️ Overlap — these markets are covered by more than one campaign, so the same members may get duplicate checklists:\n${overlaps.join('\n')}`
+    ? `\n\n⚠️ Overlap — these market/platform cells are covered by more than one campaign, so the same members may get duplicate checklists:\n${overlaps.join('\n')}`
     : '';
 
   const proceed = confirm(
-    `Auto-match will create ${plan.length} campaign(s) — one per region that has BOTH a calendar event this month AND members in your sheet:\n\n` +
+    `Auto-match will create ${plan.length} campaign(s) — one per region+platform that has BOTH a calendar event this month AND members in your sheet:\n\n` +
     summary + skipNote + overlapNote +
     `\n\nExisting checklist progress will be preserved. Continue?`
   );
   if (!proceed) return;
 
-  // 4) Generate one region-scoped campaign per plan item.
+  // 4) Generate one region+platform-scoped campaign per plan item.
   let okCount = 0;
   for (const p of plan) {
-    const suggestedName = `${p.regionInfo.label}${campSuffix} — ${monthLabel}`;
+    const platSuffix = p.platformInfo ? ` ${p.platformInfo.short}` : '';
+    const suggestedName = `${p.regionInfo.label}${platSuffix}${campSuffix} — ${monthLabel}`;
     try {
       const ref = await db.collection('campaigns').add({
         name: suggestedName,
@@ -3084,6 +3144,7 @@ async function generateChecklistFromCalendarView() {
         fromPollId: null,
         checklistTemplateId: null,
         region: p.regionId,
+        platform: p.platformId || null,
         campaignType: filterCamp || null,
         dday: p.dday || null,
         deadline: p.deadline || null, // D-Day − 4h (local), editable default
@@ -3178,7 +3239,7 @@ function renderCalendarView(targetEl) {
 
   // Direction A filters: narrow by region and/or campaign phase. Personal
   // events are always kept (they're the user's own notes, not campaign data).
-  if (calFilterRegion || calFilterCampaign) {
+  if (calFilterRegion || calFilterCampaign || calFilterPlatform) {
     allVisible = allVisible.filter(e => {
       if (e._type === 'personal') return true;
       if (calFilterRegion) {
@@ -3186,6 +3247,10 @@ function renderCalendarView(targetEl) {
         if (!r || r.id !== calFilterRegion) return false;
       }
       if (calFilterCampaign && _calCampaignType(e).id !== calFilterCampaign) return false;
+      if (calFilterPlatform) {
+        const p = _calPlatformOf(e);
+        if (!p || p.id !== calFilterPlatform) return false;
+      }
       return true;
     });
   }
@@ -3244,6 +3309,11 @@ function renderCalendarView(targetEl) {
           ${CAL_REGIONS.map(r =>
             `<option value="${r.id}" ${calFilterRegion === r.id ? 'selected' : ''}>${r.label}</option>`).join('')}
         </select>
+        <select class="cal-filter-select" onchange="calSetPlatformFilter(this.value)" title="Filter by platform">
+          <option value="">All platforms</option>
+          ${CAL_PLATFORMS.map(p =>
+            `<option value="${p.id}" ${calFilterPlatform === p.id ? 'selected' : ''}>${p.label}</option>`).join('')}
+        </select>
         <div class="cal-legend">
           ${CAL_CAMPAIGN_TYPES.map(t => `<span class="cal-legend-dot" style="background:${t.color}"></span><span style="font-size:11px;color:var(--text-muted)">${t.label}</span>`).join('')}
           ${canAddPersonal ? `<span class="cal-legend-dot" style="background:#94A3B8;border:2px dashed #64748B;box-sizing:border-box;"></span><span style="font-size:11px;color:var(--text-muted)">My Events</span>` : ''}
@@ -3291,10 +3361,14 @@ function renderCalendarView(targetEl) {
       const regionBadge = region
         ? `<span class="cal-region-badge" style="background:${region.color};">${escHtml(region.label)}</span>`
         : '';
+      const plat = entry._type === 'personal' ? null : _calPlatformOf(entry);
+      const platformBadge = plat
+        ? `<span class="cal-platform-badge" style="background:${plat.color};" title="${escHtml(plat.label)}">${escHtml(plat.short)}</span>`
+        : '';
       html += `<div class="cal-event" style="background:${col}1f;border-left:3px solid ${col};border:${border};"
         onclick="${isEditable ? `openCalEntryModal('${entry.id}',${entry._type === 'personal'})` : ''}"
-        title="${escHtml(entry.title)}${entry._type === 'personal' ? ' (My Event)' : ''}${creatorLabel ? ` — added by ${escHtml(creatorLabel)} (Team Lead)` : ''}${recurLabel ? ` — Repeats ${recurLabel}` : ''}">
-        ${regionBadge}<span style="color:${col};font-size:10px;font-weight:600;">${recurLabel ? '🔁 ' : ''}${escHtml(shown)}${creatorLabel ? ' 👤' : ''}</span>
+        title="${escHtml(entry.title)}${plat ? ` — ${escHtml(plat.label)}` : ''}${entry._type === 'personal' ? ' (My Event)' : ''}${creatorLabel ? ` — added by ${escHtml(creatorLabel)} (Team Lead)` : ''}${recurLabel ? ` — Repeats ${recurLabel}` : ''}">
+        ${regionBadge}${platformBadge}<span style="color:${col};font-size:10px;font-weight:600;">${recurLabel ? '🔁 ' : ''}${escHtml(shown)}${creatorLabel ? ' 👤' : ''}</span>
       </div>`;
     });
     html += `</div>`; // close .cal-day-events (scrolling list)
@@ -3483,12 +3557,21 @@ function openCalEntryModal(entryId, isPersonal) {
   // Region + campaign phase: fall back to inference so legacy events (region
   // in the title, phase implied by wording) open with the right values, and
   // show the title without the "[MY]" prefix once it's captured as a field.
-  const _inferredRegion = entry.region || _calRegionOf(entry)?.id || '';
+  // A legacy entry may have region="LAZ" — that was a platform smuggled into
+  // the region field, so don't carry it over as a region.
+  const _rawRegion = entry.region || _calRegionOf(entry)?.id || '';
+  const _inferredRegion = CAL_PLATFORMS.some(p => p.short === _rawRegion.toUpperCase())
+    ? '' : _rawRegion;
   const _inferredCampaign = entry.campaignType || _calCampaignType(entry).id;
+  // Platform is inferred from the title (or a legacy region="LAZ") when the
+  // entry predates the platform field, so opening an old event pre-fills it.
+  const _inferredPlatform = entry.platform || _calPlatformOf(entry)?.id || '';
   const _regionSel = document.getElementById('cal-entry-region');
   const _campSel   = document.getElementById('cal-entry-campaign-type');
+  const _platSel   = document.getElementById('cal-entry-platform');
   if (_regionSel) _regionSel.value = _inferredRegion;
   if (_campSel)   _campSel.value   = _inferredCampaign;
+  if (_platSel)   _platSel.value   = _inferredPlatform;
   document.getElementById('cal-entry-title-input').value   = entryId ? _calCleanTitle(entry) : (entry.title || '');
   document.getElementById('cal-entry-date').value          = entry.date || '';
   document.getElementById('cal-entry-enddate').value       = entry.endDate || '';
@@ -3539,6 +3622,7 @@ async function saveCalEntry() {
   const endDate  = document.getElementById('cal-entry-enddate').value;
   const type     = document.getElementById('cal-entry-type').value;
   const region       = document.getElementById('cal-entry-region')?.value || '';
+  const platform     = document.getElementById('cal-entry-platform')?.value || '';
   const campaignType = document.getElementById('cal-entry-campaign-type')?.value || 'other';
   const desc     = document.getElementById('cal-entry-desc').value.trim();
   const personalMode = document.getElementById('cal-entry-personal-mode').value === '1';
@@ -3577,6 +3661,7 @@ async function saveCalEntry() {
       e.date === date &&
       (e.endDate || e.date) === (endDate || date) &&
       _norm(e.region) === _norm(region) &&
+      _norm(e.platform) === _norm(platform) &&
       (e.campaignType || 'other') === campaignType
     );
     if (dup) {
@@ -3595,6 +3680,7 @@ async function saveCalEntry() {
     endDate: endDate || date,
     type,
     region: region || null,
+    platform: platform || null,
     campaignType,
     description: desc,
     startTime: startTime || null,
