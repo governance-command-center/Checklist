@@ -703,7 +703,27 @@ function renderDeadlinePanel() {
   renderActiveCampaignsPanel();
 }
 
-// ── Active Checklists Breakdown (replaces Upcoming Deadlines widget) ──
+// Which campaign rollups are expanded. Persists across re-renders so the
+// panel doesn't snap shut every time the dashboard refreshes.
+const calAcOpenGroups = {};
+function toggleAcGroup(key) {
+  calAcOpenGroups[key] = !calAcOpenGroups[key];
+  renderActiveCampaignsPanel();
+}
+
+// ── Active Checklists Breakdown ──────────────────────────────────────────
+// Campaigns are ROLLED UP by campaign type + month (e.g. "Mid-Month —
+// Jul 2026"), with the per-region campaigns nested underneath. Each region
+// keeps its OWN true D-Day and its own deadline (D-Day − 4h local) — we
+// never flatten them to a single shared deadline, because a deadline that
+// doesn't match a region's real go-live stops meaning anything.
+//
+// Instead the noise is handled in the VIEW:
+//   • one rollup number per campaign (complete only when the LAST region is)
+//   • regions sorted by urgency — whatever is closest to its own deadline
+//     floats to the top, so the panel tells you what to chase today
+//   • regions whose deadline is still far out are de-emphasised as
+//     "not due yet" rather than shown as if they were late
 // Always built from EVERY campaign (window._allAdminRows), regardless of
 // the current dashboard filter, so every campaign stays clickable even
 // while one of them is selected — see selectDashboardCampaign().
@@ -717,7 +737,14 @@ function renderActiveCampaignsPanel() {
   const campMap = {};
   rows.forEach(r => {
     const id = r.camp.id;
-    if (!campMap[id]) campMap[id] = { id, name: r.camp.name, dday: r.camp.dday || null, deadline: r.camp.deadline || null, total: 0, complete: 0, inProgress: 0, notStarted: 0 };
+    if (!campMap[id]) campMap[id] = {
+      id, name: r.camp.name,
+      dday: r.camp.dday || null,
+      deadline: r.camp.deadline || null,
+      campaignType: r.camp.campaignType || null,
+      region: r.camp.region || null,
+      total: 0, complete: 0, inProgress: 0, notStarted: 0,
+    };
     campMap[id].total++;
     if (r.overallDone === 100)      campMap[id].complete++;
     else if (r.overallDone > 0)     campMap[id].inProgress++;
@@ -726,54 +753,182 @@ function renderActiveCampaignsPanel() {
 
   const campList = Object.values(campMap);
   const activeCampId = document.getElementById('admin-campaign-filter')?.value || '';
-  if (badge) badge.textContent = `${campList.length} campaign${campList.length !== 1 ? 's' : ''}`;
 
   if (campList.length === 0) {
+    if (badge) badge.textContent = '0 campaigns';
     el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No campaigns yet.</div>';
     return;
   }
 
-  const now = new Date(); now.setHours(0,0,0,0);
+  const nowTs   = Date.now();
+  const nowDay  = new Date(); nowDay.setHours(0,0,0,0);
+  const DAY_MS  = 86400000;
+  // A region is "due soon" (worth chasing) once its own deadline is within
+  // this window; beyond it, it's simply not due yet — not late.
+  const DUE_SOON_DAYS = 2;
+
+  // ── Roll campaigns up by campaign type + month of D-Day ─────────────────
+  const _campKey = c => {
+    const typeId = c.campaignType || 'other';
+    const when   = c.dday || c.deadline;
+    const d      = when ? new Date(when) : null;
+    const period = d && !isNaN(d) ? `${d.getFullYear()}-${String(d.getMonth()).padStart(2,'0')}` : 'undated';
+    return `${typeId}|${period}`;
+  };
+  const _campLabel = c => {
+    const t = CAL_CAMPAIGN_TYPES.find(x => x.id === (c.campaignType || 'other')) || CAL_CAMPAIGN_TYPES[3];
+    const when = c.dday || c.deadline;
+    const d    = when ? new Date(when) : null;
+    const per  = d && !isNaN(d) ? d.toLocaleDateString('en-GB',{month:'short',year:'numeric'}) : 'Undated';
+    return { label: `${t.label} — ${per}`, color: t.color };
+  };
+
+  const groupMap = {};
+  campList.forEach(c => {
+    const k = _campKey(c);
+    if (!groupMap[k]) {
+      const meta = _campLabel(c);
+      groupMap[k] = { key: k, label: meta.label, color: meta.color, camps: [],
+                      total: 0, complete: 0, inProgress: 0, notStarted: 0 };
+    }
+    const g = groupMap[k];
+    g.camps.push(c);
+    g.total      += c.total;
+    g.complete   += c.complete;
+    g.inProgress += c.inProgress;
+    g.notStarted += c.notStarted;
+  });
+
+  const groups = Object.values(groupMap);
+  if (badge) badge.textContent = `${groups.length} campaign${groups.length !== 1 ? 's' : ''}`;
+
+  // Urgency = ms until this region's own deadline (fallback D-Day). Regions
+  // already complete sink to the bottom; undated regions sort last.
+  const _urgency = c => {
+    if (c.total > 0 && c.complete === c.total) return Number.MAX_SAFE_INTEGER - 1; // done
+    const when = c.deadline || c.dday;
+    const t = when ? new Date(when).getTime() : NaN;
+    return isNaN(t) ? Number.MAX_SAFE_INTEGER : t;
+  };
+
+  groups.forEach(g => {
+    g.camps.sort((a, b) => _urgency(a) - _urgency(b));
+    // The group's own urgency is its most urgent unfinished region.
+    g.urgency = g.camps.length ? _urgency(g.camps[0]) : Number.MAX_SAFE_INTEGER;
+    // Rollup is complete only when the LAST region finishes.
+    g.rate     = g.total > 0 ? Math.round((g.complete / g.total) * 100) : 0;
+    g.allDone  = g.total > 0 && g.complete === g.total;
+    // The campaign's overall D-Day window: earliest start → last to finish.
+    const ddays = g.camps.map(c => c.dday).filter(Boolean).map(d => new Date(d)).filter(d => !isNaN(d));
+    g.firstDday = ddays.length ? new Date(Math.min(...ddays)) : null;
+    g.lastDday  = ddays.length ? new Date(Math.max(...ddays)) : null;
+  });
+  groups.sort((a, b) => a.urgency - b.urgency);
+
+  // A group is auto-expanded if it contains the selected campaign, or if
+  // anything inside it is due soon / overdue and still unfinished.
+  const _dueState = c => {
+    if (c.total > 0 && c.complete === c.total) return 'done';
+    const when = c.deadline || c.dday;
+    const t = when ? new Date(when).getTime() : NaN;
+    if (isNaN(t)) return 'undated';
+    if (t < nowTs) return 'overdue';
+    if (t - nowTs <= DUE_SOON_DAYS * DAY_MS) return 'soon';
+    return 'later';
+  };
 
   let html = activeCampId
     ? `<div class="ac-clear-filter" onclick="selectDashboardCampaign('')">← Show all campaigns</div>`
     : '';
 
-  html += campList.map(camp => {
-    const rate       = camp.total > 0 ? Math.round((camp.complete / camp.total) * 100) : 0;
-    const rateColor  = rate === 100 ? '#059669' : rate >= 50 ? '#D97706' : '#2563EB';
-    const isActive   = camp.id === activeCampId;
-    let ddayTag = '';
-    if (camp.dday) {
-      const dd   = new Date(camp.dday);
-      const ddDayOnly = new Date(dd); ddDayOnly.setHours(0,0,0,0);
-      const diff = Math.round((ddDayOnly - now) / 86400000);
-      let cls = 'dp-green', txt = dd.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
-      if (diff === 0)      { cls = 'dp-red';   txt = 'D-Day Today'; }
-      else if (diff === 1) { cls = 'dp-red';   txt = 'D-Day Tomorrow'; }
-      else if (diff <= 5)  { cls = 'dp-amber'; txt = `D-Day in ${diff}d`; }
-      ddayTag = `<span class="deadline-pill ${cls}" style="margin-left:4px;">${txt}</span>`;
+  html += groups.map((g, gi) => {
+    const hasSelected = g.camps.some(c => c.id === activeCampId);
+    const needsAction = g.camps.some(c => ['overdue','soon'].includes(_dueState(c)));
+    const open        = calAcOpenGroups[g.key] !== undefined
+      ? calAcOpenGroups[g.key]
+      : (hasSelected || needsAction);
+    calAcOpenGroups[g.key] = open;
+
+    const rateColor = g.allDone ? '#059669' : g.rate >= 50 ? '#D97706' : '#2563EB';
+
+    // Window pill: earliest region to start → last to finish.
+    let windowTag = '';
+    if (g.firstDday) {
+      const fmt = d => d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+      const span = (g.lastDday && g.lastDday.getTime() !== g.firstDday.getTime())
+        ? `${fmt(g.firstDday)} → ${fmt(g.lastDday)}`
+        : fmt(g.firstDday);
+      const dOnly = new Date(g.firstDday); dOnly.setHours(0,0,0,0);
+      const diff  = Math.round((dOnly - nowDay) / DAY_MS);
+      let cls = 'dp-green';
+      if (diff <= 0)     cls = 'dp-red';
+      else if (diff <= 5) cls = 'dp-amber';
+      windowTag = `<span class="deadline-pill ${cls}" style="margin-left:6px;" title="First region's D-Day → last region's D-Day">${span}</span>`;
     }
-    let deadlineTag = '';
-    if (camp.deadline) {
-      const dl = new Date(camp.deadline);
-      const dlOpts = camp.deadline.includes('T')
-        ? { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }
-        : { day: 'numeric', month: 'short' };
-      deadlineTag = `<span class="deadline-pill" style="margin-left:4px;background:#FFFBEB;color:#D97706;border-color:#FDE68A;" title="Checklist Deadline">⏰ ${dl.toLocaleString('en-GB', dlOpts)}</span>`;
-    }
-    return `<div class="ac-camp-row${isActive ? ' ac-camp-row-active' : ''}" onclick="selectDashboardCampaign('${camp.id}')" title="Click to view this campaign only">
-      <div class="ac-camp-top">
-        <div class="ac-camp-name">${escHtml(camp.name)}${ddayTag}${deadlineTag}${isActive ? ' <span style="font-size:10px;color:#2563EB;font-weight:700;">● selected</span>' : ''}</div>
-        <div class="ac-camp-rate" style="color:${rateColor};font-family:var(--mono);font-size:13px;font-weight:700;">${rate}%</div>
+    const waitingNote = (!g.allDone && g.lastDday && g.complete > 0)
+      ? `<div class="ac-group-note">Rolls up to 100% when the last region finishes.</div>`
+      : '';
+
+    const childRows = g.camps.map(c => {
+      const state = _dueState(c);
+      const rate  = c.total > 0 ? Math.round((c.complete / c.total) * 100) : 0;
+      const rc    = rate === 100 ? '#059669' : rate >= 50 ? '#D97706' : '#2563EB';
+      const isActive = c.id === activeCampId;
+
+      let statePill = '';
+      if (state === 'overdue')      statePill = `<span class="deadline-pill dp-red" style="margin-left:4px;">Overdue</span>`;
+      else if (state === 'soon')    statePill = `<span class="deadline-pill dp-amber" style="margin-left:4px;">Due soon</span>`;
+      else if (state === 'done')    statePill = `<span class="deadline-pill dp-green" style="margin-left:4px;">Done</span>`;
+      else if (state === 'later')   statePill = `<span class="deadline-pill ac-notdue" style="margin-left:4px;" title="Deadline hasn't arrived yet — nothing to chase">Not due yet</span>`;
+
+      let ddayTag = '';
+      if (c.dday) {
+        const dd = new Date(c.dday);
+        if (!isNaN(dd)) ddayTag = `<span class="ac-meta">D-Day ${fmtDeadlineShort(c.dday)}</span>`;
+      }
+      let deadlineTag = '';
+      if (c.deadline) {
+        deadlineTag = `<span class="ac-meta" title="Checklist deadline (D-Day − 4h, local)">⏰ ${fmtDeadlineShort(c.deadline)}</span>`;
+      }
+
+      return `<div class="ac-camp-row ac-camp-child ac-state-${state}${isActive ? ' ac-camp-row-active' : ''}"
+        onclick="selectDashboardCampaign('${c.id}')" title="Click to view this campaign only">
+        <div class="ac-camp-top">
+          <div class="ac-camp-name">${escHtml(c.name)}${statePill}${isActive ? ' <span style="font-size:10px;color:#2563EB;font-weight:700;">● selected</span>' : ''}</div>
+          <div class="ac-camp-rate" style="color:${rc};font-family:var(--mono);font-size:13px;font-weight:700;">${rate}%</div>
+        </div>
+        <div class="ac-rate-bar"><div style="width:${rate}%;background:${rc};height:100%;border-radius:4px;transition:width .4s;"></div></div>
+        <div class="ac-camp-meta-line">${ddayTag}${deadlineTag}</div>
+        <div class="ac-camp-pills">
+          <span class="ac-pill ac-green">✓ ${c.complete}</span>
+          <span class="ac-pill ac-amber">⟳ ${c.inProgress}</span>
+          <span class="ac-pill ac-red">— ${c.notStarted}</span>
+          <span class="ac-pill ac-blue">${c.total} total</span>
+        </div>
+      </div>`;
+    }).join('');
+
+    const regionCount = g.camps.length;
+    return `<div class="ac-group${g.allDone ? ' ac-group-done' : ''}">
+      <div class="ac-group-head" onclick="toggleAcGroup('${g.key.replace(/'/g,"\\'")}')" title="Show / hide the regions in this campaign">
+        <div class="ac-group-left">
+          <span class="ac-group-caret" style="transform:rotate(${open ? 90 : 0}deg);">▶</span>
+          <span class="ac-group-dot" style="background:${g.color};"></span>
+          <span class="ac-group-name">${escHtml(g.label)}</span>
+          ${windowTag}
+          <span class="ac-group-count">${regionCount} region${regionCount !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="ac-group-rate" style="color:${rateColor};">${g.rate}%</div>
       </div>
-      <div class="ac-rate-bar"><div style="width:${rate}%;background:${rateColor};height:100%;border-radius:4px;transition:width .4s;"></div></div>
-      <div class="ac-camp-pills">
-        <span class="ac-pill ac-green">✓ ${camp.complete}</span>
-        <span class="ac-pill ac-amber">⟳ ${camp.inProgress}</span>
-        <span class="ac-pill ac-red">— ${camp.notStarted}</span>
-        <span class="ac-pill ac-blue">${camp.total} total</span>
+      <div class="ac-rate-bar ac-group-bar"><div style="width:${g.rate}%;background:${rateColor};height:100%;border-radius:4px;transition:width .4s;"></div></div>
+      <div class="ac-camp-pills ac-group-pills">
+        <span class="ac-pill ac-green">✓ ${g.complete}</span>
+        <span class="ac-pill ac-amber">⟳ ${g.inProgress}</span>
+        <span class="ac-pill ac-red">— ${g.notStarted}</span>
+        <span class="ac-pill ac-blue">${g.total} total</span>
       </div>
+      ${waitingNote}
+      <div class="ac-group-body" style="display:${open ? 'block' : 'none'};">${childRows}</div>
     </div>`;
   }).join('');
 

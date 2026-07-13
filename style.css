@@ -2143,6 +2143,111 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 .ac-red   { background: var(--danger-light); color: var(--danger); }
 .ac-blue  { background: var(--blue-light);   color: var(--blue-text); }
 
+/* ── Campaign rollups ──────────────────────────────────────────────────
+   One card per campaign type + month (e.g. "Mid-Month — Jul 2026"), with
+   its per-region campaigns nested inside. Each region keeps its own real
+   deadline; the rollup gives a single number to watch. */
+.ac-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ac-group-done { opacity: 0.75; }
+.ac-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+.ac-group-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.ac-group-caret {
+  display: inline-block;
+  font-size: 9px;
+  color: var(--text-muted);
+  transition: transform .15s;
+}
+.ac-group-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.ac-group-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ac-group-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--surface3);
+  padding: 1px 7px;
+  border-radius: 20px;
+}
+.ac-group-rate {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.ac-group-bar { height: 6px; }
+.ac-group-pills { margin-top: 1px; }
+.ac-group-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.ac-group-body {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+/* Per-region rows nested inside a rollup */
+.ac-camp-child {
+  margin: 0;
+  padding: 8px 8px 8px 12px;
+  border-left: 3px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0 6px 6px 0;
+}
+.ac-camp-child:last-child { border-bottom: none; }
+.ac-camp-meta-line {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ac-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+/* Due states — urgency is carried by the left border so the eye lands on
+   what actually needs chasing today. "Not due yet" is deliberately faded:
+   its deadline hasn't arrived, so it is not late and shouldn't read as such. */
+.ac-state-overdue { border-left-color: var(--danger); }
+.ac-state-soon    { border-left-color: var(--warn); }
+.ac-state-done    { border-left-color: var(--done-text); opacity: 0.7; }
+.ac-state-later   { border-left-color: var(--border); opacity: 0.55; }
+.ac-state-later:hover { opacity: 1; }
+.ac-notdue {
+  background: var(--surface3);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
 .dp-blue { background: rgba(37,99,235,0.1); color: var(--blue-text); }
 
 /* ═══════════════════════════════════════════
