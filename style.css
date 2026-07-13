@@ -997,6 +997,7 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 #change-password-overlay,
 #reset-password-overlay,
 #bulk-assign-overlay,
+#gen-checklist-overlay,
 #map-masterlist-overlay {
   position: fixed; inset: 0;
   background: rgba(17,40,80,0.55);
@@ -2315,4 +2316,73 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
   padding: 1px 6px;
   margin-left: 2px;
   font-weight: 600;
+}
+
+
+/* ── Generate Checklist modal ───────────────────────────────── */
+.gen-scope-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 560px) { .gen-scope-grid { grid-template-columns: 1fr; } }
+
+.gen-plan-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface2);
+}
+.gen-plan-empty {
+  padding: 18px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+.gen-plan-row {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.gen-plan-row:last-child { border-bottom: none; }
+.gen-plan-scope {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.gen-plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.gen-warn {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.gen-warn ul { margin: 6px 0 0; padding-left: 18px; }
+.gen-warn li { margin-top: 2px; }
+.gen-warn-info {
+  background: rgba(245,158,11,0.10);
+  border: 1px solid rgba(245,158,11,0.35);
+  color: #B45309;
+}
+.gen-warn-danger {
+  background: rgba(220,38,38,0.08);
+  border: 1px solid rgba(220,38,38,0.30);
+  color: #B91C1C;
+}
+
+/* Calendar ⚡ shortcut — icon-only so it stops crowding the filter row */
+.cal-gen-shortcut {
+  font-size: 14px;
+  padding: 6px 10px;
+  line-height: 1;
 }

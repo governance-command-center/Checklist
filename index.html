@@ -298,6 +298,24 @@
             <div id="data-rsp-kit-list" class="data-inner-list" style="padding:12px 16px;"></div>
           </div>
 
+          <!-- Generate Checklist — auto-match calendar events to roster -->
+          <div class="data-card data-card-full admin-only" style="border-color:rgba(37,99,235,0.35);">
+            <div class="data-card-header" style="background:rgba(37,99,235,0.06);border-bottom-color:rgba(37,99,235,0.2);">
+              <span class="data-card-icon">⚡</span>
+              <div>
+                <div class="data-card-title">Generate Checklist</div>
+                <div class="data-card-sub">Create campaigns from calendar events + roster, with a template of your choice</div>
+              </div>
+              <div style="margin-left:auto;">
+                <button class="btn-primary" style="width:auto;font-size:12px;padding:6px 14px;" onclick="openGenChecklistModal()">⚡ Generate Checklist</button>
+              </div>
+            </div>
+            <div style="padding:12px 16px;font-size:12px;color:var(--text-muted);">
+              Pick a month, narrow by campaign / region / platform, choose a checklist template (Mega or default),
+              then review the plan before anything is created. Existing member progress is always preserved.
+            </div>
+          </div>
+
           <div class="data-card data-card-full">
             <div class="data-card-header">
               <span class="data-card-icon">✅</span>
@@ -519,6 +537,75 @@
   <!-- ══════════════════════════════════════
        ALL MODALS (unchanged from original)
   ══════════════════════════════════════ -->
+
+  <!-- Generate Checklist Modal -->
+  <div id="gen-checklist-overlay" style="display:none;" onclick="closeGenChecklistModal(event)">
+    <div class="modal" style="max-width:640px;">
+      <div class="modal-header">
+        <h3>⚡ Generate Checklist</h3>
+        <button class="btn-ghost-light" onclick="closeGenChecklistModal()">✕</button>
+      </div>
+
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">
+        Auto-matches calendar events against your uploaded roster. One campaign is created per
+        region + platform pair that has <strong>both</strong> an event in the selected month and members in the sheet.
+      </div>
+
+      <!-- Scope -->
+      <div class="gen-scope-grid">
+        <div>
+          <label>Month</label>
+          <input type="month" id="gen-cl-month" onchange="refreshGenChecklistPlan()" />
+        </div>
+        <div>
+          <label>Campaign</label>
+          <select id="gen-cl-campaign" onchange="refreshGenChecklistPlan()">
+            <option value="">All campaigns</option>
+          </select>
+        </div>
+        <div>
+          <label>Region</label>
+          <select id="gen-cl-region" onchange="refreshGenChecklistPlan()">
+            <option value="">All regions</option>
+          </select>
+        </div>
+        <div>
+          <label>Platform</label>
+          <select id="gen-cl-platform" onchange="refreshGenChecklistPlan()">
+            <option value="">All platforms</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Template picker: mega vs non-mega -->
+      <div style="margin-top:14px;">
+        <label>Checklist Template</label>
+        <select id="gen-cl-template" onchange="refreshGenChecklistPlan()">
+          <option value="">None (use default checklist)</option>
+        </select>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+          Applied to every campaign generated in this run — pick your Mega template for mega sales, or leave as default for non-mega.
+        </div>
+      </div>
+
+      <!-- Plan preview -->
+      <div style="margin-top:18px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <label style="margin:0;">Preview</label>
+          <span id="gen-cl-count" style="font-size:11px;color:var(--text-muted);"></span>
+        </div>
+        <div id="gen-cl-plan" class="gen-plan-box"></div>
+      </div>
+
+      <div id="gen-cl-warnings"></div>
+      <div id="gen-cl-error" class="error-msg" style="display:none;"></div>
+
+      <div class="modal-actions">
+        <button class="btn-ghost-light" onclick="closeGenChecklistModal()">Cancel</button>
+        <button class="btn-primary" id="gen-cl-submit" onclick="confirmGenerateChecklist()">Generate</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Calendar Entry Modal -->
   <div id="cal-entry-overlay" style="display:none;" onclick="closeCalEntryModal(event)">

@@ -2990,127 +2990,82 @@ function _deadlineFromDday(ddayStr) {
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
 }
 
-// ── Generate a campaign + pre-filled checklists straight from the calendar's
-// current filter (region + campaign phase). Reuses the same checklist-merge
-// logic as confirmBulkAssign so member progress is never clobbered.
-async function generateChecklistFromCalendarView() {
-  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
-  if (!isAdmin) return;
+// ══════════════════════════════════════════════════════════════════
+//  GENERATE CHECKLIST  —  shared modal used by BOTH the Data tab
+//  (primary home, full controls) and the calendar's ⚡ shortcut
+//  (pre-fills month + filters from the current calendar view).
+//
+//  Flow: openGenChecklistModal(prefill) → refreshGenChecklistPlan()
+//        (recomputes + previews on every control change)
+//        → confirmGenerateChecklist() (actually writes).
+//  Reuses the same non-destructive checklist-merge logic as
+//  confirmBulkAssign, so member progress is never clobbered.
+// ══════════════════════════════════════════════════════════════════
 
-  // Optional narrowers: if the dropdowns are set they trim which calendar
-  // events we consider, but they no longer decide who gets a checklist —
-  // the calendar events themselves do (auto-match).
-  const filterRegion   = calFilterRegion;
-  const filterCamp     = calFilterCampaign;
-  const filterPlatform = calFilterPlatform;
+// The plan computed by the last refreshGenChecklistPlan() call. This is what
+// confirmGenerateChecklist() acts on, so what you see previewed is exactly
+// what gets created.
+let genChecklistPlan = null; // { plan:[], skipped:[], overlaps:[], monthLabel, campSuffix }
 
-  // No saved roster yet → route to the existing Bulk Assign flow instead of
-  // failing, so the admin can upload a sheet first.
-  if (!campaignRoster || campaignRoster.length === 0) {
-    showToast('No brand roster saved yet — upload a Bulk Assign sheet first.', 'warn');
-    if (typeof openBulkAssignModal === 'function') openBulkAssignModal();
-    return;
-  }
+// Build the plan from an explicit scope instead of reading globals, so the
+// modal's own controls (not the calendar's) drive generation.
+function _buildChecklistPlan({ year, month, campaign, region, platform }) {
+  const monthStart = new Date(year, month, 1);
+  const monthEnd   = new Date(year, month + 1, 0);
+  const monthLabel = monthStart.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
 
-  // 1) Collect this month's calendar events (optionally narrowed by the
-  //    dropdown filters), grouped by the region each event belongs to.
-  const monthStart = new Date(calCurrentYear, calCurrentMonth, 1);
-  const monthEnd   = new Date(calCurrentYear, calCurrentMonth + 1, 0);
-
-  // Combine an entry's date + its local start time into a "YYYY-MM-DDTHH:mm"
-  // string. Deadlines are always computed and stored in the region's LOCAL
-  // clock (no timezone conversion) so D-Days stay fair across markets.
+  // Combine an entry's date + local start time into "YYYY-MM-DDTHH:mm".
+  // Deadlines stay in the region's LOCAL clock so D-Days are fair across markets.
   const _ddayDateTime = e => e.startTime ? `${e.date}T${e.startTime}` : e.date;
 
-  // Events are grouped by region × PLATFORM. Platform is a real dimension
-  // now (Lazada / Shopee / TikTok often run the same campaign on different
-  // D-Days), so each region+platform pair becomes its own checklist with its
-  // own D-Day and its own deadline. Events with no platform fall back to a
-  // region-only group, so older data still generates.
-  const eventsByKey = {}; // { "REGION|platform": { regionId, platformId, events: [...] } }
+  // Group by region × platform — the same campaign often runs on different
+  // D-Days per platform, so each pair becomes its own checklist. Events with
+  // no platform fall back to a region-only group so older data still generates.
+  const eventsByKey = {}; // { "REGION|platform": { regionId, platformId, events } }
   calendarEntries.forEach(e => {
     if (!e.date) return;
     const d = new Date(e.date);
     if (d < monthStart || d > monthEnd) return;
     const r = _calRegionOf(e);
     if (!r) return; // events with no region can't be auto-matched
-    if (filterRegion && r.id !== filterRegion) return;
-    if (filterCamp && _calCampaignType(e).id !== filterCamp) return;
+    if (region && r.id !== region) return;
+    if (campaign && _calCampaignType(e).id !== campaign) return;
     const p = _calPlatformOf(e);
-    if (filterPlatform && (!p || p.id !== filterPlatform)) return;
+    if (platform && (!p || p.id !== platform)) return;
     const platformId = p ? p.id : '';
     const key = `${r.id}|${platformId}`;
     if (!eventsByKey[key]) eventsByKey[key] = { regionId: r.id, platformId, events: [] };
-    eventsByKey[key].events.push({
-      date: d,
-      dateTime: _ddayDateTime(e),
-      isDday: e.type === 'dday',
-    });
+    eventsByKey[key].events.push({ date: d, dateTime: _ddayDateTime(e), isDday: e.type === 'dday' });
   });
 
-  const calendarKeys = Object.keys(eventsByKey);
-  if (calendarKeys.length === 0) {
-    showToast('No region-tagged events in this month to match against. Add region tags to events, or upload a matching Bulk Assign sheet.', 'warn');
-    return;
-  }
-
-  // 2) Keep only region+platform pairs that ALSO have roster members. Pairs
-  //    on the calendar with nobody in the sheet, and sheet rows with no
-  //    calendar event, are both skipped — we generate on the overlap.
-  const plan = []; // [{ key, regionId, platformId, regionInfo, platformInfo, matched, uids, entryCount, dday, deadline }]
-  const skippedNoRoster = [];
-  calendarKeys.forEach(key => {
+  // Keep only pairs that ALSO have roster members — generate on the overlap.
+  const plan = [];
+  const skipped = [];
+  Object.keys(eventsByKey).forEach(key => {
     const { regionId, platformId, events: evs } = eventsByKey[key];
     const matched = rosterForRegion(regionId, platformId);
     const uids = Object.keys(matched);
     const platformInfo = platformId ? CAL_PLATFORM_MAP[platformId] : null;
     const regionInfo   = CAL_REGION_MAP[regionId] || { id: regionId, label: regionId };
     const scopeLabel   = `${regionInfo.label}${platformInfo ? ` · ${platformInfo.label}` : ''}`;
-    if (uids.length === 0) { skippedNoRoster.push(scopeLabel); return; }
-    // Pick this pair's D-Day: prefer an explicit D-Day-type event, else the
-    // earliest event of the month. Keep the datetime string (with local time)
-    // so the deadline can be derived from it.
+    if (uids.length === 0) { skipped.push(scopeLabel); return; }
+    // Prefer an explicit D-Day event, else the month's earliest event.
     const events = evs.slice().sort((a, b) => a.date - b.date);
     const ddayEvent = events.find(ev => ev.isDday) || events[0] || null;
     const dday = ddayEvent ? ddayEvent.dateTime : null;
     plan.push({
-      key, regionId, platformId,
-      regionInfo, platformInfo, scopeLabel,
+      key, regionId, platformId, regionInfo, platformInfo, scopeLabel,
       matched, uids,
       entryCount: uids.reduce((s, u) => s + matched[u].length, 0),
       dday,
-      // Deadline = D-Day − 4h, in the region's LOCAL clock. Stored as an
-      // editable default; admin does manual chasing after generation.
-      deadline: _deadlineFromDday(dday),
+      deadline: _deadlineFromDday(dday), // D-Day − 4h (local), editable later
     });
   });
 
-  if (plan.length === 0) {
-    showToast('Found calendar events but none of those region/platform pairs have members in the uploaded sheet.', 'warn');
-    return;
-  }
-
-  const monthLabel = monthStart.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
-  const campInfo = filterCamp ? CAL_CAMPAIGN_TYPES.find(c => c.id === filterCamp) : null;
-  const campSuffix = campInfo ? ` ${campInfo.label}` : '';
-
-  // 3) One confirmation summarising every region+platform that will be generated.
-  const summary = plan
-    .map(p => {
-      const dd  = p.dday ? `, D-Day ${fmtDeadlineShort(p.dday)}` : '';
-      const dl  = p.deadline ? `, deadline ${fmtDeadlineShort(p.deadline)}` : '';
-      return `  • ${p.scopeLabel}: ${p.uids.length} member(s), ${p.entryCount} entrie(s)${dd}${dl}`;
-    })
-    .join('\n');
-  const skipNote = skippedNoRoster.length
-    ? `\n\nSkipped (event but no one in sheet): ${skippedNoRoster.join(', ')}`
-    : '';
-
-  // Warn if the same market+platform is covered by more than one planned
-  // campaign (e.g. a combined "SGTH" event AND a separate "SG" event on the
-  // same platform), which would create overlapping checklists for the same
-  // members. Different platforms in one market are NOT an overlap — that's
-  // the whole point of the platform dimension.
+  // Overlap warning: the same market+platform cell covered by more than one
+  // planned campaign (e.g. a combined "SGTH" event AND a separate "SG" event)
+  // would give those members duplicate checklists. Different platforms in one
+  // market are NOT an overlap — that's the point of the platform dimension.
   const cellToScopes = {};
   plan.forEach(p => _expandRegionCode(p.regionId).forEach(mkt => {
     const cell = `${mkt}${p.platformInfo ? ` · ${p.platformInfo.label}` : ''}`;
@@ -3118,22 +3073,154 @@ async function generateChecklistFromCalendarView() {
   }));
   const overlaps = Object.entries(cellToScopes)
     .filter(([, scopes]) => scopes.size > 1)
-    .map(([cell, scopes]) => `  • ${cell} appears in: ${[...scopes].join(' + ')}`);
-  const overlapNote = overlaps.length
-    ? `\n\n⚠️ Overlap — these market/platform cells are covered by more than one campaign, so the same members may get duplicate checklists:\n${overlaps.join('\n')}`
-    : '';
+    .map(([cell, scopes]) => `${cell} appears in: ${[...scopes].join(' + ')}`);
 
-  const proceed = confirm(
-    `Auto-match will create ${plan.length} campaign(s) — one per region+platform that has BOTH a calendar event this month AND members in your sheet:\n\n` +
-    summary + skipNote + overlapNote +
-    `\n\nExisting checklist progress will be preserved. Continue?`
-  );
-  if (!proceed) return;
+  const campInfo = campaign ? CAL_CAMPAIGN_TYPES.find(c => c.id === campaign) : null;
 
-  // 4) Generate one region+platform-scoped campaign per plan item.
+  return {
+    plan, skipped, overlaps, monthLabel,
+    campSuffix: campInfo ? ` ${campInfo.label}` : '',
+    hadEvents: Object.keys(eventsByKey).length > 0,
+  };
+}
+
+// Read the modal's controls back into a scope object.
+function _readGenChecklistScope() {
+  const mv = document.getElementById('gen-cl-month')?.value || '';
+  const [y, m] = mv.split('-').map(Number);
+  return {
+    year:     y || calCurrentYear,
+    month:    (m ? m - 1 : calCurrentMonth),
+    campaign: document.getElementById('gen-cl-campaign')?.value || '',
+    region:   document.getElementById('gen-cl-region')?.value   || '',
+    platform: document.getElementById('gen-cl-platform')?.value || '',
+    templateId: document.getElementById('gen-cl-template')?.value || '',
+  };
+}
+
+// Open the modal. `prefill` lets the calendar shortcut seed the current view.
+function openGenChecklistModal(prefill) {
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
+  if (!isAdmin) return;
+
+  // No saved roster yet → route to Bulk Assign so the admin can upload a sheet.
+  if (!campaignRoster || campaignRoster.length === 0) {
+    showToast('No brand roster saved yet — upload a Bulk Assign sheet first.', 'warn');
+    if (typeof openBulkAssignModal === 'function') openBulkAssignModal();
+    return;
+  }
+
+  const pf = prefill || {};
+  const year  = pf.year  != null ? pf.year  : calCurrentYear;
+  const month = pf.month != null ? pf.month : calCurrentMonth;
+
+  // Populate the dropdowns from the same sources the calendar filters use.
+  const campSel = document.getElementById('gen-cl-campaign');
+  campSel.innerHTML = '<option value="">All campaigns</option>' +
+    CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other')
+      .map(c => `<option value="${c.id}">${escHtml(c.label)}</option>`).join('');
+
+  const regSel = document.getElementById('gen-cl-region');
+  regSel.innerHTML = '<option value="">All regions</option>' +
+    CAL_REGIONS.map(r => `<option value="${r.id}">${escHtml(r.label)}</option>`).join('');
+
+  const platSel = document.getElementById('gen-cl-platform');
+  platSel.innerHTML = '<option value="">All platforms</option>' +
+    CAL_PLATFORMS.map(p => `<option value="${p.id}">${escHtml(p.label)}</option>`).join('');
+
+  // Template picker — this is the mega vs non-mega choice.
+  const tmplSel = document.getElementById('gen-cl-template');
+  tmplSel.innerHTML = '<option value="">None (use default checklist)</option>' +
+    (checklistTemplates || []).map(t => `<option value="${t.id}">${escHtml(t.name)}</option>`).join('');
+
+  document.getElementById('gen-cl-month').value =
+    `${year}-${String(month + 1).padStart(2, '0')}`;
+  campSel.value  = pf.campaign || '';
+  regSel.value   = pf.region   || '';
+  platSel.value  = pf.platform || '';
+  tmplSel.value  = '';
+
+  document.getElementById('gen-cl-error').style.display = 'none';
+  document.getElementById('gen-checklist-overlay').style.display = 'flex';
+  refreshGenChecklistPlan();
+}
+
+function closeGenChecklistModal(e) {
+  if (e && e.target !== e.currentTarget) return;
+  document.getElementById('gen-checklist-overlay').style.display = 'none';
+  genChecklistPlan = null;
+}
+
+// Recompute + re-render the preview whenever any control changes, so the admin
+// always sees exactly what the Generate button will create.
+function refreshGenChecklistPlan() {
+  const scope = _readGenChecklistScope();
+  const res   = _buildChecklistPlan(scope);
+  genChecklistPlan = { ...res, scope };
+
+  const box     = document.getElementById('gen-cl-plan');
+  const countEl = document.getElementById('gen-cl-count');
+  const warnEl  = document.getElementById('gen-cl-warnings');
+  const btn     = document.getElementById('gen-cl-submit');
+
+  const { plan, skipped, overlaps, hadEvents } = res;
+
+  // Empty states — say which of the two halves is missing, so it's actionable.
+  if (plan.length === 0) {
+    box.innerHTML = `<div class="gen-plan-empty">${
+      !hadEvents
+        ? 'No region-tagged events in this month for these filters. Add region tags to your calendar events, or widen the filters above.'
+        : 'Found calendar events, but none of those region/platform pairs have members in the uploaded roster sheet.'
+    }</div>`;
+    countEl.textContent = '';
+    btn.disabled = true;
+    btn.textContent = 'Generate';
+  } else {
+    box.innerHTML = plan.map(p => `
+      <div class="gen-plan-row">
+        <div class="gen-plan-scope">${escHtml(p.scopeLabel)}</div>
+        <div class="gen-plan-meta">
+          <span>👤 ${p.uids.length} member${p.uids.length === 1 ? '' : 's'}</span>
+          <span>📋 ${p.entryCount} entr${p.entryCount === 1 ? 'y' : 'ies'}</span>
+          ${p.dday ? `<span>🎯 D-Day ${escHtml(fmtDeadlineShort(p.dday))}</span>` : ''}
+          ${p.deadline ? `<span>⏰ Deadline ${escHtml(fmtDeadlineShort(p.deadline))}</span>` : ''}
+        </div>
+      </div>`).join('');
+    countEl.textContent = `${plan.length} campaign${plan.length === 1 ? '' : 's'} will be created`;
+    btn.disabled = false;
+    btn.textContent = `Generate ${plan.length} campaign${plan.length === 1 ? '' : 's'}`;
+  }
+
+  let warnHtml = '';
+  if (skipped.length) {
+    warnHtml += `<div class="gen-warn gen-warn-info">
+      <strong>Skipped —</strong> these have a calendar event but nobody in the roster sheet:
+      ${escHtml(skipped.join(', '))}
+    </div>`;
+  }
+  if (overlaps.length) {
+    warnHtml += `<div class="gen-warn gen-warn-danger">
+      <strong>⚠️ Overlap —</strong> these market/platform cells are covered by more than one campaign,
+      so the same members may get duplicate checklists:
+      <ul>${overlaps.map(o => `<li>${escHtml(o)}</li>`).join('')}</ul>
+    </div>`;
+  }
+  warnEl.innerHTML = warnHtml;
+}
+
+// Actually write the campaigns + merged checklists for the previewed plan.
+async function confirmGenerateChecklist() {
+  if (!genChecklistPlan || !genChecklistPlan.plan.length) return;
+  const { plan, monthLabel, campSuffix, scope } = genChecklistPlan;
+  const templateId = scope.templateId || null;
+
+  const btn = document.getElementById('gen-cl-submit');
+  btn.disabled = true;
+  btn.textContent = 'Generating…';
+
   let okCount = 0;
   for (const p of plan) {
-    const platSuffix = p.platformInfo ? ` ${p.platformInfo.short}` : '';
+    const platSuffix    = p.platformInfo ? ` ${p.platformInfo.short}` : '';
     const suggestedName = `${p.regionInfo.label}${platSuffix}${campSuffix} — ${monthLabel}`;
     try {
       const ref = await db.collection('campaigns').add({
@@ -3142,27 +3229,31 @@ async function generateChecklistFromCalendarView() {
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         createdBy: ADMIN_UID,
         fromPollId: null,
-        checklistTemplateId: null,
+        checklistTemplateId: templateId, // ← mega vs non-mega, chosen in the modal
         region: p.regionId,
         platform: p.platformId || null,
-        campaignType: filterCamp || null,
+        campaignType: scope.campaign || null,
         dday: p.dday || null,
         deadline: p.deadline || null, // D-Day − 4h (local), editable default
       });
       const campaignId = ref.id;
 
-      // Same non-destructive merge confirmBulkAssign uses.
+      // Same non-destructive merge confirmBulkAssign uses — existing entries
+      // (and their progress) are kept; only genuinely new ones are appended.
       await Promise.all(p.uids.map(async uid => {
         const docRef = db.collection('checklists').doc(uid);
         const snap = await docRef.get();
         const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
-        const existingEntries = existingCampData.entries || [];
+        const existingEntries  = existingCampData.entries || [];
         const newOnes = p.matched[uid].filter(en =>
           !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
         );
-        const mergedEntries = [...existingEntries, ...newOnes];
         await docRef.set({
-          [campaignId]: { ...existingCampData, entries: mergedEntries, lastActive: new Date().toISOString() }
+          [campaignId]: {
+            ...existingCampData,
+            entries: [...existingEntries, ...newOnes],
+            lastActive: new Date().toISOString(),
+          }
         }, { merge: true });
       }));
 
@@ -3179,12 +3270,24 @@ async function generateChecklistFromCalendarView() {
     }
   }
 
+  closeGenChecklistModal();
   await loadAdminData();
   if (okCount === plan.length) {
-    showToast(`✅ Generated ${okCount} region campaign(s) from this view.`, 'success');
+    showToast(`✅ Generated ${okCount} campaign(s).`, 'success');
   } else {
     showToast(`Generated ${okCount} of ${plan.length} campaigns — some failed, check the console.`, 'warn');
   }
+}
+
+// Calendar ⚡ shortcut → opens the SAME modal, pre-filled from the current view.
+function generateChecklistFromCalendarView() {
+  openGenChecklistModal({
+    year:     calCurrentYear,
+    month:    calCurrentMonth,
+    campaign: calFilterCampaign,
+    region:   calFilterRegion,
+    platform: calFilterPlatform,
+  });
 }
 
 async function savePersonalCalendarEntries() {
@@ -3319,7 +3422,7 @@ function renderCalendarView(targetEl) {
           ${canAddPersonal ? `<span class="cal-legend-dot" style="background:#94A3B8;border:2px dashed #64748B;box-sizing:border-box;"></span><span style="font-size:11px;color:var(--text-muted)">My Events</span>` : ''}
         </div>
         ${isAdmin ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Add Event</button>` : ''}
-        ${isAdmin ? `<button class="btn-outline" style="font-size:12px;" onclick="generateChecklistFromCalendarView()" title="Auto-match: generate checklists for regions that have both a calendar event this month and members in your uploaded sheet">⚡ Generate Checklist</button>` : ''}
+        ${isAdmin ? `<button class="btn-outline cal-gen-shortcut" onclick="generateChecklistFromCalendarView()" title="Generate Checklist — opens the generator pre-filled with this month and these filters">⚡</button>` : ''}
         ${isTeamLead ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Team Event</button>` : ''}
         ${canAddPersonal ? `<button class="btn-outline" style="background:#475569;border-color:#475569;font-size:12px;" onclick="openCalEntryModal(null,true)">+ My Event</button>` : ''}
       </div>
