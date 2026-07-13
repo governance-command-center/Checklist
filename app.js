@@ -1583,6 +1583,120 @@ function closeModal(e) {
   document.getElementById('modal-overlay').style.display = 'none';
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  SHARED CAMPAIGN ENGINE
+//  One writer for every path that creates a campaign (manual "+ New
+//  Campaign", "Generate from Calendar", and anything added later).
+//  Previously createCampaign() and confirmGenerateChecklist() each
+//  hand-rolled the campaign write + checklist merge + broadcast, so a
+//  fix to one silently missed the other. Now they both call this.
+//
+//  Checklist writes are NON-DESTRUCTIVE: existing entries (and the
+//  member's progress on them) are kept; only genuinely new brand/
+//  platform/region combos are appended.
+// ══════════════════════════════════════════════════════════════════
+async function createCampaignWithChecklists({
+  name,
+  uids = [],
+  entries = {},          // { uid: [{ label, brand, platform, region }] }
+  templateId = null,     // ← mega vs non-mega
+  dday = null,
+  deadline = null,
+  region = null,
+  platform = null,
+  campaignType = null,
+  fromPollId = null,
+  broadcastMessage = null, // null → no broadcast sent
+}) {
+  const ref = await db.collection('campaigns').add({
+    name,
+    assignedUids:        uids,
+    createdAt:           firebase.firestore.FieldValue.serverTimestamp(),
+    createdBy:           ADMIN_UID,
+    fromPollId:          fromPollId || null,
+    checklistTemplateId: templateId || null,
+    region:              region || null,
+    platform:            platform || null,
+    campaignType:        campaignType || null,
+    dday:                dday || null,
+    deadline:            deadline || null,
+  });
+  const campaignId = ref.id;
+
+  // Merge entries into each member's checklist doc without clobbering progress.
+  const withEntries = Object.entries(entries).filter(([uid, en]) => uids.includes(uid) && en && en.length);
+  if (withEntries.length > 0) {
+    await Promise.all(withEntries.map(async ([uid, newEntries]) => {
+      const docRef = db.collection('checklists').doc(uid);
+      const snap   = await docRef.get();
+      const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
+      const existingEntries  = existingCampData.entries || [];
+      const newOnes = newEntries.filter(en =>
+        !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+      );
+      await docRef.set({
+        [campaignId]: {
+          ...existingCampData,
+          entries: [...existingEntries, ...newOnes],
+          lastActive: new Date().toISOString(),
+        }
+      }, { merge: true });
+    }));
+  }
+
+  if (broadcastMessage) {
+    await db.collection('broadcasts').add({
+      type: 'custom',
+      message: broadcastMessage,
+      targetUid: null, targetName: 'everyone',
+      campaignId, campaignName: name,
+      sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
+    });
+  }
+
+  return campaignId;
+}
+
+// One template-dropdown filler for every modal that offers the mega/non-mega
+// choice (new campaign, edit campaign, generate). Loads templates if needed.
+async function populateTemplateSel(elId, selectedId) {
+  await loadChecklistTemplates();
+  const sel = document.getElementById(elId);
+  if (!sel) return;
+  sel.innerHTML = `<option value="">None (use default checklist)</option>` +
+    (checklistTemplates || []).map(t =>
+      `<option value="${t.id}" ${t.id === selectedId ? 'selected' : ''}>${escHtml(t.name)}</option>`
+    ).join('');
+}
+
+// ─── Campaign creation chooser ────────────────────────────────
+// "+ New Campaign" now asks HOW first, because the two flows answer different
+// questions: manual = "I know exactly who and what"; generate = "work it out
+// from the calendar + roster".
+function openCampaignChooser() {
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
+  if (!isAdmin) return;
+  const hasRoster = !!(campaignRoster && campaignRoster.length);
+  const rosterNote = document.getElementById('chooser-roster-note');
+  if (rosterNote) {
+    rosterNote.innerHTML = hasRoster
+      ? ''
+      : `<div class="chooser-warn">No roster uploaded yet — generating from the calendar needs a Bulk Assign sheet first.</div>`;
+  }
+  document.getElementById('campaign-chooser-overlay').style.display = 'flex';
+}
+
+function closeCampaignChooser(e) {
+  if (e && e.target !== e.currentTarget) return;
+  document.getElementById('campaign-chooser-overlay').style.display = 'none';
+}
+
+function chooseCampaignMode(mode) {
+  closeCampaignChooser();
+  if (mode === 'generate') openGenChecklistModal();
+  else openNewCampaignModal();
+}
+
 async function createCampaign() {
   const name  = document.getElementById('new-campaign-name').value.trim();
   const errEl = document.getElementById('modal-error');
@@ -1596,8 +1710,11 @@ async function createCampaign() {
     const pollId = document.getElementById('modal-overlay').dataset.pollId || null;
     const selectedTemplateId = document.getElementById('campaign-template-sel')?.value || null;
 
-    // Build prefill data from poll responses if this came from a poll
-    let prefillData = {};
+    // Entries can come from two optional sources — poll responses and the
+    // in-modal Excel upload. Build one { uid: [entries] } map from both; the
+    // shared engine handles the non-destructive merge from there.
+    const prefillData = {};
+
     if (pollId && Object.keys(pollResponses || {}).length > 0) {
       assignedUids.forEach(uid => {
         const resp = pollResponses[uid];
@@ -1612,12 +1729,10 @@ async function createCampaign() {
       });
     }
 
-    // Merge in any entries from the optional "Bulk Assign Brands" Excel upload
     if (newCampBulkMatched && Object.keys(newCampBulkMatched).length > 0) {
       Object.entries(newCampBulkMatched).forEach(([uid, entries]) => {
-        if (!assignedUids.includes(uid)) return; // only for members actually assigned to this campaign
-        const existing = prefillData[uid] || [];
-        const merged = [...existing];
+        if (!assignedUids.includes(uid)) return; // only members actually assigned here
+        const merged = [...(prefillData[uid] || [])];
         entries.forEach(en => {
           if (!merged.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)) merged.push(en);
         });
@@ -1625,51 +1740,39 @@ async function createCampaign() {
       });
     }
 
-    const ref = await db.collection('campaigns').add({
-      name, assignedUids,
-      createdAt:           firebase.firestore.FieldValue.serverTimestamp(),
-      createdBy:           ADMIN_UID,
-      fromPollId:          pollId || null,
-      checklistTemplateId: selectedTemplateId || null,
-      dday:                combineDatetime('new-campaign-dday', 'new-campaign-dday-time'),
-      deadline:            combineDatetime('new-campaign-deadline', 'new-campaign-deadline-time'),
+    const hasEntries = Object.keys(prefillData).length > 0;
+
+    await createCampaignWithChecklists({
+      name,
+      uids:       assignedUids,
+      entries:    prefillData,
+      templateId: selectedTemplateId,
+      dday:       combineDatetime('new-campaign-dday', 'new-campaign-dday-time'),
+      deadline:   combineDatetime('new-campaign-deadline', 'new-campaign-deadline-time'),
+      fromPollId: pollId,
+      // Only shout about it when there's actually a pre-filled checklist waiting.
+      broadcastMessage: hasEntries
+        ? `🚀 Campaign "${name}" is ready! Your checklist has been pre-filled with your registered details. Go to the Checklist tab to start.`
+        : null,
     });
 
-    // Pre-populate checklists for members who came from poll
-    if (Object.keys(prefillData).length > 0) {
-      await Promise.all(Object.entries(prefillData).map(([uid, entries]) =>
-        db.collection('checklists').doc(uid).set({
-          [ref.id]: { entries, lastActive: new Date().toISOString() }
-        }, { merge: true })
-      ));
-
-      // Notify members their checklist is ready
-      await db.collection('broadcasts').add({
-        type: 'custom',
-        message: `🚀 Campaign "${name}" is ready! Your checklist has been pre-filled with your registered details. Go to the Checklist tab to start.`,
-        targetUid: null, targetName: 'everyone',
-        campaignId: ref.id, campaignName: name,
-        sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
-      });
-    }
-
-    // Lock the poll if it came from one
+    // Lock the poll if this campaign came from one.
     if (pollId) {
       try {
         await POLL_META_REF(pollId).set({ status: 'locked', lockedAt: new Date().toISOString() }, { merge: true });
         const listDoc2 = await POLLS_LIST_REF().get();
         if (listDoc2.exists) {
-          const pls = listDoc2.data().polls || [];
+          const pls  = listDoc2.data().polls || [];
           const pidx = pls.findIndex(p => p.id === pollId);
           if (pidx >= 0) { pls[pidx].status = 'locked'; await POLLS_LIST_REF().set({ polls: pls }); }
         }
       } catch(le) { console.warn('Could not lock poll:', le); }
     }
 
-    // Reset poll linkage
     document.getElementById('modal-overlay').dataset.pollId = '';
     document.getElementById('modal-overlay').style.display = 'none';
     await loadAdminData();
+    showToast(`✅ Campaign "${name}" created.`, 'success');
   } catch (e) {
     showError(errEl, 'Failed to create campaign. Try again.');
     console.error(e);
@@ -3128,17 +3231,15 @@ function openGenChecklistModal(prefill) {
   platSel.innerHTML = '<option value="">All platforms</option>' +
     CAL_PLATFORMS.map(p => `<option value="${p.id}">${escHtml(p.label)}</option>`).join('');
 
-  // Template picker — this is the mega vs non-mega choice.
-  const tmplSel = document.getElementById('gen-cl-template');
-  tmplSel.innerHTML = '<option value="">None (use default checklist)</option>' +
-    (checklistTemplates || []).map(t => `<option value="${t.id}">${escHtml(t.name)}</option>`).join('');
+  // Template picker — this is the mega vs non-mega choice. Shared helper so
+  // all three modals (new / edit / generate) offer an identical list.
+  populateTemplateSel('gen-cl-template');
 
   document.getElementById('gen-cl-month').value =
     `${year}-${String(month + 1).padStart(2, '0')}`;
   campSel.value  = pf.campaign || '';
   regSel.value   = pf.region   || '';
   platSel.value  = pf.platform || '';
-  tmplSel.value  = '';
 
   document.getElementById('gen-cl-error').style.display = 'none';
   document.getElementById('gen-checklist-overlay').style.display = 'flex';
@@ -3208,7 +3309,9 @@ function refreshGenChecklistPlan() {
   warnEl.innerHTML = warnHtml;
 }
 
-// Actually write the campaigns + merged checklists for the previewed plan.
+// Actually write the campaigns for the previewed plan. Each region+platform
+// pair goes through the SAME shared engine the manual "+ New Campaign" flow
+// uses — only the way we decided the name/members/entries differs.
 async function confirmGenerateChecklist() {
   if (!genChecklistPlan || !genChecklistPlan.plan.length) return;
   const { plan, monthLabel, campSuffix, scope } = genChecklistPlan;
@@ -3223,46 +3326,17 @@ async function confirmGenerateChecklist() {
     const platSuffix    = p.platformInfo ? ` ${p.platformInfo.short}` : '';
     const suggestedName = `${p.regionInfo.label}${platSuffix}${campSuffix} — ${monthLabel}`;
     try {
-      const ref = await db.collection('campaigns').add({
-        name: suggestedName,
-        assignedUids: p.uids,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        createdBy: ADMIN_UID,
-        fromPollId: null,
-        checklistTemplateId: templateId, // ← mega vs non-mega, chosen in the modal
-        region: p.regionId,
-        platform: p.platformId || null,
+      await createCampaignWithChecklists({
+        name:         suggestedName,
+        uids:         p.uids,
+        entries:      p.matched,
+        templateId,                       // ← mega vs non-mega, chosen in the modal
+        dday:         p.dday,
+        deadline:     p.deadline,         // D-Day − 4h (local), editable default
+        region:       p.regionId,
+        platform:     p.platformId || null,
         campaignType: scope.campaign || null,
-        dday: p.dday || null,
-        deadline: p.deadline || null, // D-Day − 4h (local), editable default
-      });
-      const campaignId = ref.id;
-
-      // Same non-destructive merge confirmBulkAssign uses — existing entries
-      // (and their progress) are kept; only genuinely new ones are appended.
-      await Promise.all(p.uids.map(async uid => {
-        const docRef = db.collection('checklists').doc(uid);
-        const snap = await docRef.get();
-        const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
-        const existingEntries  = existingCampData.entries || [];
-        const newOnes = p.matched[uid].filter(en =>
-          !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
-        );
-        await docRef.set({
-          [campaignId]: {
-            ...existingCampData,
-            entries: [...existingEntries, ...newOnes],
-            lastActive: new Date().toISOString(),
-          }
-        }, { merge: true });
-      }));
-
-      await db.collection('broadcasts').add({
-        type: 'custom',
-        message: `🚀 Campaign "${suggestedName}" is ready — your brand assignments are pre-filled. Open the Checklist tab to start.`,
-        targetUid: null, targetName: 'everyone',
-        campaignId, campaignName: suggestedName,
-        sentAt: new Date().toISOString(), sentBy: 'Admin', readBy: [],
+        broadcastMessage: `🚀 Campaign "${suggestedName}" is ready — your brand assignments are pre-filled. Open the Checklist tab to start.`,
       });
       okCount++;
     } catch (e) {
@@ -5749,11 +5823,7 @@ async function saveTemplate() {
 
 // ── Populate the template selector in the New Campaign modal ─
 async function populateCampaignTemplateSel() {
-  await loadChecklistTemplates();
-  const sel = document.getElementById('campaign-template-sel');
-  if (!sel) return;
-  sel.innerHTML = `<option value="">None (use default checklist)</option>` +
-    checklistTemplates.map(t => `<option value="${t.id}">${escHtml(t.name)}</option>`).join('');
+  await populateTemplateSel('campaign-template-sel');
 }
 
 // ── Legacy stubs (kept so old calls don't break) ─────────────

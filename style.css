@@ -998,6 +998,7 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 #reset-password-overlay,
 #bulk-assign-overlay,
 #gen-checklist-overlay,
+#campaign-chooser-overlay,
 #map-masterlist-overlay {
   position: fixed; inset: 0;
   background: rgba(17,40,80,0.55);
@@ -2385,4 +2386,63 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
   font-size: 14px;
   padding: 6px 10px;
   line-height: 1;
+}
+
+
+/* ── Campaign creation chooser ──────────────────────────────── */
+.chooser-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 560px) { .chooser-grid { grid-template-columns: 1fr; } }
+
+.chooser-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface2);
+  cursor: pointer;
+  transition: border-color .15s, background .15s, transform .08s;
+}
+.chooser-card:hover {
+  border-color: var(--blue);
+  background: var(--surface);
+}
+.chooser-card:active { transform: translateY(1px); }
+
+.chooser-icon  { font-size: 22px; line-height: 1; }
+.chooser-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.chooser-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.chooser-tag {
+  margin-top: auto;
+  padding-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--blue);
+}
+.chooser-warn {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.5;
+  background: rgba(245,158,11,0.10);
+  border: 1px solid rgba(245,158,11,0.35);
+  color: #B45309;
 }

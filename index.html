@@ -262,7 +262,7 @@
                 <div class="data-card-title">Campaigns</div>
                 <div class="data-card-sub">Create and manage campaigns</div>
               </div>
-              <button class="btn-primary admin-only" style="width:auto;font-size:12px;padding:6px 14px;" onclick="openNewCampaignModal()">+ New Campaign</button>
+              <button class="btn-primary admin-only" style="width:auto;font-size:12px;padding:6px 14px;" onclick="openCampaignChooser()">+ New Campaign</button>
             </div>
             <div id="data-campaigns-list" class="data-inner-list"></div>
           </div>
@@ -296,24 +296,6 @@
               </div>
             </div>
             <div id="data-rsp-kit-list" class="data-inner-list" style="padding:12px 16px;"></div>
-          </div>
-
-          <!-- Generate Checklist — auto-match calendar events to roster -->
-          <div class="data-card data-card-full admin-only" style="border-color:rgba(37,99,235,0.35);">
-            <div class="data-card-header" style="background:rgba(37,99,235,0.06);border-bottom-color:rgba(37,99,235,0.2);">
-              <span class="data-card-icon">⚡</span>
-              <div>
-                <div class="data-card-title">Generate Checklist</div>
-                <div class="data-card-sub">Create campaigns from calendar events + roster, with a template of your choice</div>
-              </div>
-              <div style="margin-left:auto;">
-                <button class="btn-primary" style="width:auto;font-size:12px;padding:6px 14px;" onclick="openGenChecklistModal()">⚡ Generate Checklist</button>
-              </div>
-            </div>
-            <div style="padding:12px 16px;font-size:12px;color:var(--text-muted);">
-              Pick a month, narrow by campaign / region / platform, choose a checklist template (Mega or default),
-              then review the plan before anything is created. Existing member progress is always preserved.
-            </div>
           </div>
 
           <div class="data-card data-card-full">
@@ -537,6 +519,43 @@
   <!-- ══════════════════════════════════════
        ALL MODALS (unchanged from original)
   ══════════════════════════════════════ -->
+
+  <!-- Campaign Creation Chooser — asks HOW before it asks WHAT -->
+  <div id="campaign-chooser-overlay" style="display:none;" onclick="closeCampaignChooser(event)">
+    <div class="modal" style="max-width:560px;">
+      <div class="modal-header">
+        <h3>New Campaign</h3>
+        <button class="btn-ghost-light" onclick="closeCampaignChooser()">✕</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">
+        How would you like to set this up?
+      </div>
+
+      <div class="chooser-grid">
+        <button class="chooser-card" onclick="chooseCampaignMode('manual')">
+          <span class="chooser-icon">✍️</span>
+          <span class="chooser-title">Create manually</span>
+          <span class="chooser-desc">
+            Name it, pick the members yourself, set the D-Day and deadline.
+            Optionally upload an Excel to pre-fill brands.
+          </span>
+          <span class="chooser-tag">1 campaign</span>
+        </button>
+
+        <button class="chooser-card" onclick="chooseCampaignMode('generate')">
+          <span class="chooser-icon">⚡</span>
+          <span class="chooser-title">Generate from calendar</span>
+          <span class="chooser-desc">
+            Auto-match this month's calendar events against your saved roster.
+            Names, members, D-Days and deadlines are filled in for you.
+          </span>
+          <span class="chooser-tag">1 per region · platform</span>
+        </button>
+      </div>
+
+      <div id="chooser-roster-note"></div>
+    </div>
+  </div>
 
   <!-- Generate Checklist Modal -->
   <div id="gen-checklist-overlay" style="display:none;" onclick="closeGenChecklistModal(event)">
