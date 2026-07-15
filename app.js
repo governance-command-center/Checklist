@@ -3169,6 +3169,11 @@ function _calRecurrenceOccurrences(entry, rangeStart, rangeEnd) {
   }
 
   const until = entry.recurrence.until ? new Date(`${entry.recurrence.until}T00:00:00`) : null;
+  // Occurrence dates (YYYY-MM-DD) that have been detached from the series —
+  // either edited into their own standalone entry or deleted for that date
+  // only. Skipped during expansion so the series shows a gap there.
+  const exceptions = new Set(entry.recurrence.exceptions || []);
+  const pad = n => String(n).padStart(2, '0');
   let cursor = new Date(baseStart);
   const maxOccurrences = 3660; // generous cap (~10yrs daily) to avoid runaway loops
   let n = 0;
@@ -3177,8 +3182,11 @@ function _calRecurrenceOccurrences(entry, rangeStart, rangeEnd) {
     n++;
     if (until && cursor > until) break;
     if (cursor > rangeEnd) break;
+    const cursorISO = `${cursor.getFullYear()}-${pad(cursor.getMonth() + 1)}-${pad(cursor.getDate())}`;
     const occEnd = new Date(cursor.getTime() + durationDays * 86400000);
-    if (occEnd >= rangeStart) results.push({ start: new Date(cursor), end: occEnd });
+    if (occEnd >= rangeStart && !exceptions.has(cursorISO)) {
+      results.push({ start: new Date(cursor), end: occEnd });
+    }
     if (freq === 'daily')        cursor.setDate(cursor.getDate() + 1);
     else if (freq === 'weekly')  cursor.setDate(cursor.getDate() + 7);
     else if (freq === 'monthly') cursor.setMonth(cursor.getMonth() + 1);
@@ -3757,12 +3765,16 @@ function renderCalendarView(targetEl) {
   allVisible.forEach(entry => {
     const occurrences = _calRecurrenceOccurrences(entry, _monthRangeStart, _monthRangeEnd);
     occurrences.forEach(occ => {
+      // The occurrence's own start date (YYYY-MM-DD), so a click on this cell
+      // can tell the modal WHICH instance of a recurring series was opened.
+      const pad = n => String(n).padStart(2, '0');
+      const occStartISO = `${occ.start.getFullYear()}-${pad(occ.start.getMonth() + 1)}-${pad(occ.start.getDate())}`;
       // Enumerate each day in this occurrence's range
       for (let d = new Date(occ.start); d <= occ.end; d.setDate(d.getDate() + 1)) {
         if (d.getFullYear() !== year || d.getMonth() !== month) continue;
         const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
         if (!dayMap[key]) dayMap[key] = [];
-        dayMap[key].push(entry);
+        dayMap[key].push({ ...entry, _occStartISO: occStartISO });
       }
     });
   });
@@ -3862,7 +3874,7 @@ function renderCalendarView(targetEl) {
         ? `<span class="cal-platform-badge" style="background:${plat.color};" title="${escHtml(plat.label)}">${escHtml(plat.short)}</span>`
         : '';
       html += `<div class="cal-event" style="background:${col}1f;border-left:3px solid ${col};border:${border};"
-        onclick="${isEditable ? `openCalEntryModal('${entry.id}',${entry._type === 'personal'})` : ''}"
+        onclick="${isEditable ? `openCalEntryModal('${entry.id}',${entry._type === 'personal'},${entry._occStartISO ? `'${entry._occStartISO}'` : 'null'})` : ''}"
         title="${escHtml(entry.title)}${plat ? ` — ${escHtml(plat.label)}` : ''}${entry._type === 'personal' ? ' (My Event)' : ''}${creatorLabel ? ` — added by ${escHtml(creatorLabel)} (Team Lead)` : ''}${recurLabel ? ` — Repeats ${recurLabel}` : ''}">
         ${regionBadge}${platformBadge}<span style="color:${col};font-size:10px;font-weight:600;">${recurLabel ? '🔁 ' : ''}${escHtml(shown)}${creatorLabel ? ' 👤' : ''}</span>
       </div>`;
@@ -3921,8 +3933,9 @@ function renderCalendarView(targetEl) {
       const isEditable = isAdmin || (entry._type === 'personal') || (isTeamLead && entry.createdBy === currentUser?.uid);
       const creatorLabel = isAdmin ? _calCreatorLabel(entry) : '';
       const recurLabel = _calRecurrenceLabel(entry);
+      const _occISO = entry._occStart ? `${entry._occStart.getFullYear()}-${String(entry._occStart.getMonth()+1).padStart(2,'0')}-${String(entry._occStart.getDate()).padStart(2,'0')}` : null;
       html += `<div class="cal-upcoming-item" style="border-left:3px solid ${col};"
-        ${isEditable ? `onclick="openCalEntryModal('${entry.id}',${entry._type === 'personal'})" style="border-left:3px solid ${col};cursor:pointer;"` : ''}>
+        ${isEditable ? `onclick="openCalEntryModal('${entry.id}',${entry._type === 'personal'},${_occISO ? `'${_occISO}'` : 'null'})" style="border-left:3px solid ${col};cursor:pointer;"` : ''}>
         <div class="cal-upcoming-date">${dateStr}</div>
         <div class="cal-upcoming-title">${regionBadge}${recurLabel ? '🔁 ' : ''}${escHtml(shown)}</div>
         ${entry.description ? `<div class="cal-upcoming-desc">${escHtml(entry.description)}</div>` : ''}
@@ -3990,7 +4003,7 @@ function _getCalTimeField(prefix) {
 }
 
 // ── Calendar Entry Modal ──
-function openCalEntryModal(entryId, isPersonal) {
+function openCalEntryModal(entryId, isPersonal, occurrenceDate) {
   calEditingEntry = null;
 
   const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
@@ -3999,7 +4012,10 @@ function openCalEntryModal(entryId, isPersonal) {
   if (entryId) {
     const list = isPersonal ? personalCalendarEntries : calendarEntries;
     const found = list.find(e => e.id === entryId);
-    if (found) calEditingEntry = { entry: found, isPersonal };
+    // occurrenceDate (YYYY-MM-DD) identifies WHICH instance of a recurring
+    // series was clicked, so "edit only this one" knows which date to split
+    // out. It's null for non-recurring events and for the series base itself.
+    if (found) calEditingEntry = { entry: found, isPersonal, occurrenceDate: occurrenceDate || null };
   }
 
   const entry = calEditingEntry?.entry || {};
@@ -4034,21 +4050,6 @@ function openCalEntryModal(entryId, isPersonal) {
     </div>`;
   }
 
-  // Campaign link (admin only)
-  let campLinkHtml = '';
-  if (isAdmin) {
-    campLinkHtml = `
-    <div class="field">
-      <label>Link to Campaign (optional)</label>
-      <select id="cal-entry-campaign">
-        <option value="">No campaign</option>
-        ${Object.values(campaigns).map(c =>
-          `<option value="${c.id}" ${entry.campaignId === c.id ? 'selected' : ''}>${escHtml(c.name)}</option>`
-        ).join('')}
-      </select>
-    </div>`;
-  }
-
   document.getElementById('cal-modal-title').textContent = entryId ? (personalMode ? 'Edit My Event' : 'Edit Event') : (personalMode ? 'Add My Event' : 'Add Event');
   // Region + campaign phase: fall back to inference so legacy events (region
   // in the title, phase implied by wording) open with the right values, and
@@ -4069,18 +4070,57 @@ function openCalEntryModal(entryId, isPersonal) {
   if (_campSel)   _campSel.value   = _inferredCampaign;
   if (_platSel)   _platSel.value   = _inferredPlatform;
   document.getElementById('cal-entry-title-input').value   = entryId ? _calCleanTitle(entry) : (entry.title || '');
-  document.getElementById('cal-entry-date').value          = entry.date || '';
-  document.getElementById('cal-entry-enddate').value       = entry.endDate || '';
-  document.getElementById('cal-entry-type').value          = entry.type || 'payday_sale';
+  // For a recurring series, show the DATE OF THE CLICKED OCCURRENCE (shifting
+  // the end date by the same span) rather than the series' base date, so
+  // editing "just this one" operates on the instance the admin clicked.
+  const _occDate = calEditingEntry?.occurrenceDate || null;
+  const _isRecurringOpen = !!(entry.recurrence && entry.recurrence.freq);
+  if (_occDate && _isRecurringOpen) {
+    document.getElementById('cal-entry-date').value = _occDate;
+    if (entry.endDate && entry.date && entry.endDate !== entry.date) {
+      const span = Math.round((new Date(`${entry.endDate}T00:00:00`) - new Date(`${entry.date}T00:00:00`)) / 86400000);
+      const oe = new Date(`${_occDate}T00:00:00`); oe.setDate(oe.getDate() + span);
+      const pad = n => String(n).padStart(2, '0');
+      document.getElementById('cal-entry-enddate').value = `${oe.getFullYear()}-${pad(oe.getMonth() + 1)}-${pad(oe.getDate())}`;
+    } else {
+      document.getElementById('cal-entry-enddate').value = _occDate;
+    }
+  } else {
+    document.getElementById('cal-entry-date').value        = entry.date || '';
+    document.getElementById('cal-entry-enddate').value     = entry.endDate || '';
+  }
+  // "type" is now the milestone axis (dday/deadline/teasing/meeting/other).
+  // Legacy events typed 'payday_sale'/'midmonth_sale' carried their phase in
+  // the type field; those map to 'other' here since the phase now lives on the
+  // Campaign dropdown. Deadline-mapping still keys off dday/deadline, untouched.
+  const _legacyType = entry.type || '';
+  const _milestoneType = ['teasing','dday','deadline','meeting','other'].includes(_legacyType) ? _legacyType : 'other';
+  document.getElementById('cal-entry-type').value          = _milestoneType;
   document.getElementById('cal-entry-desc').value          = entry.description || '';
   document.getElementById('cal-entry-personal-mode').value = personalMode ? '1' : '0';
+
+  // Campaign events get an auto-composed, standardized title (Campaign · Region
+  // · Platform · Milestone); the free-text title box is hidden for them and
+  // shown only for personal notes, which stay free-typed.
+  const _titleField = document.getElementById('cal-entry-title-field');
+  const _titleAutoNote = document.getElementById('cal-entry-title-auto-note');
+  const _titleInput = document.getElementById('cal-entry-title-input');
+  if (personalMode) {
+    if (_titleField) _titleField.style.display = '';
+    if (_titleAutoNote) _titleAutoNote.style.display = 'none';
+    if (_titleInput) { _titleInput.readOnly = false; _titleInput.style.background = ''; }
+  } else {
+    // Hide the raw title box for campaign events; the auto-name note explains it.
+    if (_titleField) _titleField.style.display = 'none';
+    if (_titleAutoNote) _titleAutoNote.style.display = 'block';
+    if (_titleInput) _titleInput.readOnly = true;
+  }
 
   // Populate start time fields
   _setCalTimeFields('start', entry.startTime || '');
   // Populate end time fields
   _setCalTimeFields('end', entry.endTime || '');
   document.getElementById('cal-member-assign-wrap').innerHTML = memberAssignHtml;
-  document.getElementById('cal-camp-link-wrap').innerHTML     = campLinkHtml;
   document.getElementById('cal-entry-error').style.display    = 'none';
 
   // Populate recurrence fields
@@ -4092,7 +4132,54 @@ function openCalEntryModal(entryId, isPersonal) {
   const deleteBtn = document.getElementById('cal-delete-btn');
   deleteBtn.style.display = entryId ? 'inline-flex' : 'none';
 
+  // Build the standardized title for campaign events from the resolved
+  // Campaign/Region/Platform/Milestone selects, so every campaign event follows
+  // the same naming convention. The admin sees the resulting name in the note
+  // under the (hidden) title box and it recomposes live as they change fields.
+  // Personal events keep their free text.
+  if (!personalMode) _calComposeTitle();
+
   document.getElementById('cal-entry-overlay').style.display = 'flex';
+}
+
+// Compose a standardized, human-readable title for a campaign calendar event
+// from the Campaign · Region · Platform · Milestone selects, e.g.
+// "PayDay — TH · Lazada · D-Day". This is what the admin asked for: the
+// campaign dropdown drives the naming so events stay consistently labelled
+// instead of free-typed. Writes into the (hidden) title input, which
+// saveCalEntry then reads, so the rest of the pipeline is unchanged.
+// No-op in personal mode — personal notes keep their free text.
+function _calComposeTitle() {
+  const personalMode = document.getElementById('cal-entry-personal-mode')?.value === '1';
+  if (personalMode) return;
+
+  const campId = document.getElementById('cal-entry-campaign-type')?.value || 'other';
+  const region = document.getElementById('cal-entry-region')?.value || '';
+  const platId = document.getElementById('cal-entry-platform')?.value || '';
+  const milestone = document.getElementById('cal-entry-type')?.value || 'other';
+
+  const campLabel = (CAL_CAMPAIGN_TYPES.find(c => c.id === campId) || {}).label || 'Event';
+  const platLabel = platId ? ((CAL_PLATFORMS.find(p => p.id === platId) || {}).label || '') : '';
+  const milestoneLabel = ({
+    teasing: 'Teasing', dday: 'D-Day', deadline: 'Deadline', meeting: 'Meeting', other: '',
+  })[milestone] || '';
+
+  // Head is the campaign phase; the rest are dot-joined qualifiers that are
+  // present. "Other" campaign with nothing else falls back to a neutral label
+  // so the title is never empty (title is still required downstream).
+  const qualifiers = [region, platLabel, milestoneLabel].filter(Boolean).join(' · ');
+  let title;
+  if (campId === 'other' && !qualifiers) title = 'Event';
+  else if (campId === 'other')           title = qualifiers;
+  else                                    title = qualifiers ? `${campLabel} — ${qualifiers}` : campLabel;
+
+  const input = document.getElementById('cal-entry-title-input');
+  if (input) input.value = title;
+
+  // Mirror the composed name into the visible note (the raw input is hidden for
+  // campaign events) so the admin can see exactly what the event will be named.
+  const note = document.getElementById('cal-entry-title-auto-note');
+  if (note) note.innerHTML = `Auto-named: <strong>${escHtml(title)}</strong> <span style="opacity:0.7;">(from Campaign · Region · Platform · Milestone)</span>`;
 }
 
 // Select All / Clear on the "Visible to" member checklist in the calendar
@@ -4143,9 +4230,6 @@ async function saveCalEntry() {
     assignedUids = [...document.querySelectorAll('.cal-member-cb:checked')].map(cb => cb.value);
   }
 
-  const campaignEl = document.getElementById('cal-entry-campaign');
-  const campaignId = campaignEl ? campaignEl.value : '';
-
   // Duplicate guard: if an identical entry already exists (same title, dates,
   // region and campaign type), warn before adding a second one. This catches
   // the common case of re-entering an event that looked "missing" but was
@@ -4182,9 +4266,15 @@ async function saveCalEntry() {
     startTime: startTime || null,
     endTime: endTime || null,
     color: campInfo.color,
-    recurrence: recurrenceFreq !== 'none' ? { freq: recurrenceFreq, until: recurrenceUntil || null } : null,
+    recurrence: recurrenceFreq !== 'none'
+      ? { freq: recurrenceFreq, until: recurrenceUntil || null,
+          // Carry forward any existing per-occurrence exceptions on edit.
+          exceptions: (calEditingEntry?.entry?.recurrence?.exceptions) || [] }
+      : null,
     assignedUids,
-    campaignId: campaignId || null,
+    // Link-to-Campaign was removed from the form; preserve any value an entry
+    // already had so nothing that relied on it silently drops.
+    campaignId: (calEditingEntry?.entry?.campaignId) || null,
     createdBy: currentUser?.uid || '',
     updatedAt: new Date().toISOString(),
   };
@@ -4199,12 +4289,66 @@ async function saveCalEntry() {
       }
       await savePersonalCalendarEntries();
     } else {
-      if (calEditingEntry && !calEditingEntry.isPersonal) {
-        const idx = calendarEntries.findIndex(e => e.id === calEditingEntry.entry.id);
+      const editingExisting = calEditingEntry && !calEditingEntry.isPersonal;
+      const parent = editingExisting ? calEditingEntry.entry : null;
+      const parentIsRecurring = !!(parent && parent.recurrence && parent.recurrence.freq);
+
+      if (editingExisting && parentIsRecurring) {
+        // Recurring edit → ask scope. `_calEditScope` returns 'one', 'all',
+        // or null (cancelled). "This event" splits the clicked occurrence out
+        // as its own non-recurring entry and adds an exception on the parent
+        // for that date. "All events" updates the series in place.
+        const scope = await _calEditScope('save');
+        if (scope === null) return; // cancelled — keep modal open
+
+        if (scope === 'all') {
+          const idx = calendarEntries.findIndex(e => e.id === parent.id);
+          // Keep the series' base date/endDate; only the recurrence RULE and
+          // the shared fields (title, region, times, etc.) propagate. Editing
+          // "all" from one occurrence shouldn't move the whole series onto
+          // that occurrence's date.
+          if (idx >= 0) {
+            calendarEntries[idx] = {
+              ...calendarEntries[idx],
+              ...entryData,
+              date: parent.date,
+              endDate: parent.endDate || parent.date,
+              recurrence: entryData.recurrence
+                ? { ...entryData.recurrence, exceptions: (parent.recurrence.exceptions || []) }
+                : null,
+            };
+          }
+        } else {
+          // scope === 'one' → detach this occurrence.
+          const occISO = calEditingEntry.occurrenceDate || parent.date;
+          // 1) add the exception to the parent series so the instance vanishes
+          const idx = calendarEntries.findIndex(e => e.id === parent.id);
+          if (idx >= 0) {
+            const ex = new Set((calendarEntries[idx].recurrence?.exceptions) || []);
+            ex.add(occISO);
+            calendarEntries[idx] = {
+              ...calendarEntries[idx],
+              recurrence: { ...calendarEntries[idx].recurrence, exceptions: [...ex] },
+            };
+          }
+          // 2) add the edited occurrence as a standalone, non-recurring entry
+          //    on the date shown in the form (which defaulted to occISO).
+          calendarEntries.push({
+            id: `ce_${Date.now()}`,
+            ...entryData,
+            recurrence: null,
+            detachedFrom: parent.id,   // provenance, for possible future "re-link"
+          });
+        }
+      } else if (editingExisting) {
+        // Non-recurring existing entry → straight update.
+        const idx = calendarEntries.findIndex(e => e.id === parent.id);
         if (idx >= 0) calendarEntries[idx] = { ...calendarEntries[idx], ...entryData };
       } else {
+        // Brand-new entry.
         calendarEntries.push({ id: `ce_${Date.now()}`, ...entryData });
       }
+
       await saveCalendarEntries();
       if (currentUser?.role === 'team_lead' && assignedUids.length > 0) {
         await notifyCalEntryAlignment(entryData, assignedUids);
@@ -4215,21 +4359,85 @@ async function saveCalEntry() {
   } catch(e) { showError(errEl, 'Failed to save. Try again.'); console.error(e); }
 }
 
+// Ask whether a recurring-event change applies to just the clicked date or the
+// whole series. Returns 'one' | 'all' | null (cancelled). A lightweight
+// confirm-based chooser keeps this dependency-free and consistent with the
+// app's existing confirm() prompts; `action` tailors the wording.
+function _calEditScope(action) {
+  const verb = action === 'delete' ? 'delete' : 'save';
+  // Two-step so the user gets a genuine three-way choice (this / all / cancel)
+  // out of the browser's two-button confirm.
+  const onlyThis = confirm(
+    `This is a repeating event.\n\n` +
+    `• Click OK to ${verb} ONLY this date's event.\n` +
+    `• Click Cancel to choose "all events in the series" (or to back out).`
+  );
+  if (onlyThis) return 'one';
+  const allSeries = confirm(
+    `Apply to the WHOLE series?\n\n` +
+    `• Click OK to ${verb} EVERY event in this repeating series.\n` +
+    `• Click Cancel to back out and change nothing.`
+  );
+  return allSeries ? 'all' : null;
+}
+
 async function deleteCalEntry() {
   if (!calEditingEntry) return;
-  const isRecurring = calEditingEntry.entry?.recurrence && calEditingEntry.entry.recurrence.freq;
-  if (!confirm(isRecurring ? 'Delete this entire repeating event series?' : 'Delete this event?')) return;
+  const entry = calEditingEntry.entry;
+  const isRecurring = entry?.recurrence && entry.recurrence.freq;
+
   try {
     if (calEditingEntry.isPersonal) {
-      personalCalendarEntries = personalCalendarEntries.filter(e => e.id !== calEditingEntry.entry.id);
+      // Personal recurring events get the same this/all choice.
+      if (isRecurring) {
+        const scope = await _calEditScope('delete');
+        if (scope === null) return;
+        const idx = personalCalendarEntries.findIndex(e => e.id === entry.id);
+        if (idx < 0) return;
+        if (scope === 'one') {
+          const occISO = calEditingEntry.occurrenceDate || entry.date;
+          const ex = new Set((personalCalendarEntries[idx].recurrence?.exceptions) || []);
+          ex.add(occISO);
+          personalCalendarEntries[idx] = {
+            ...personalCalendarEntries[idx],
+            recurrence: { ...personalCalendarEntries[idx].recurrence, exceptions: [...ex] },
+          };
+        } else {
+          personalCalendarEntries = personalCalendarEntries.filter(e => e.id !== entry.id);
+        }
+      } else {
+        if (!confirm('Delete this event?')) return;
+        personalCalendarEntries = personalCalendarEntries.filter(e => e.id !== entry.id);
+      }
       await savePersonalCalendarEntries();
     } else {
-      calendarEntries = calendarEntries.filter(e => e.id !== calEditingEntry.entry.id);
+      if (isRecurring) {
+        const scope = await _calEditScope('delete');
+        if (scope === null) return;
+        const idx = calendarEntries.findIndex(e => e.id === entry.id);
+        if (idx < 0) return;
+        if (scope === 'one') {
+          // Delete just this date → add an exception so the series skips it.
+          const occISO = calEditingEntry.occurrenceDate || entry.date;
+          const ex = new Set((calendarEntries[idx].recurrence?.exceptions) || []);
+          ex.add(occISO);
+          calendarEntries[idx] = {
+            ...calendarEntries[idx],
+            recurrence: { ...calendarEntries[idx].recurrence, exceptions: [...ex] },
+          };
+        } else {
+          // Delete the whole series.
+          calendarEntries = calendarEntries.filter(e => e.id !== entry.id);
+        }
+      } else {
+        if (!confirm('Delete this event?')) return;
+        calendarEntries = calendarEntries.filter(e => e.id !== entry.id);
+      }
       await saveCalendarEntries();
     }
     document.getElementById('cal-entry-overlay').style.display = 'none';
     renderCalendarView(getCalTarget());
-  } catch(e) { showToast('Failed to delete event.', 'warn'); }
+  } catch(e) { showToast('Failed to delete event.', 'warn'); console.error(e); }
 }
 
 // Admin calendar view (inside admin screen)

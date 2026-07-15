@@ -634,9 +634,18 @@
         <button class="btn-ghost-light" onclick="closeCalEntryModal()">✕</button>
       </div>
       <input type="hidden" id="cal-entry-personal-mode" value="0" />
-      <div class="field">
+      <!-- Title is auto-composed from Campaign + Region + Platform + Milestone
+           for standardized naming. The raw input is kept (hidden for campaign
+           events, shown for personal notes) so personal events can still be
+           free-typed and the compose logic has one field to write to. The
+           auto-name note lives OUTSIDE the field so it stays visible for
+           campaign events even while the raw input is hidden. -->
+      <div class="field" id="cal-entry-title-field">
         <label>Title</label>
         <input type="text" id="cal-entry-title-input" placeholder="e.g. 11.11 D-Day" />
+      </div>
+      <div id="cal-entry-title-auto-note" style="font-size:12px;color:var(--text-muted);margin:-4px 0 12px;padding:8px 10px;background:var(--bg-soft,#F8FAFC);border-radius:8px;display:none;">
+        Auto-named from Campaign · Region · Platform · Milestone below.
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
         <div>
@@ -699,7 +708,7 @@
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
         <div class="field">
           <label>Campaign</label>
-          <select id="cal-entry-campaign-type">
+          <select id="cal-entry-campaign-type" onchange="_calComposeTitle()">
             <option value="double_digit">Double Digit</option>
             <option value="mid_month">Mid-Month</option>
             <option value="payday">PayDay</option>
@@ -708,7 +717,7 @@
         </div>
         <div class="field">
           <label>Region</label>
-          <select id="cal-entry-region">
+          <select id="cal-entry-region" onchange="_calComposeTitle()">
             <option value="">— None —</option>
             <option value="MY">MY</option>
             <option value="PH">PH</option>
@@ -719,25 +728,23 @@
         </div>
         <div class="field">
           <label>Platform</label>
-          <select id="cal-entry-platform">
+          <select id="cal-entry-platform" onchange="_calComposeTitle()">
             <option value="">— None —</option>
             <option value="lazada">Lazada</option>
             <option value="shopee">Shopee</option>
             <option value="tiktok">TikTok</option>
           </select>
         </div>
-      </div>
-      <div class="field">
-        <label>Type</label>
-        <select id="cal-entry-type">
-          <option value="teasing">Teasing</option>
-          <option value="dday">D-Day</option>
-          <option value="deadline">Deadline</option>
-          <option value="meeting">Meeting</option>
-          <option value="payday_sale">PayDay Sale</option>
-          <option value="midmonth_sale">Mid-Month Sale</option>
-          <option value="other" selected>Other</option>
-        </select>
+        <div class="field">
+          <label>Milestone</label>
+          <select id="cal-entry-type" onchange="_calComposeTitle()">
+            <option value="teasing">Teasing</option>
+            <option value="dday">D-Day</option>
+            <option value="deadline">Deadline</option>
+            <option value="meeting">Meeting</option>
+            <option value="other" selected>Other</option>
+          </select>
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
         <div class="field" style="margin-bottom:0;">
@@ -755,13 +762,12 @@
         </div>
       </div>
       <div id="cal-recurrence-hint" style="font-size:11px;color:var(--text-muted);margin:-6px 0 10px;display:none;">
-        This is a repeating event — editing or deleting it applies to the whole series.
+        🔁 This is a repeating event — saving or deleting will ask whether to apply the change to just this date or the whole series.
       </div>
       <div class="field">
         <label>Description (optional)</label>
         <textarea id="cal-entry-desc" rows="2" placeholder="Add details…" style="resize:vertical;"></textarea>
       </div>
-      <div id="cal-camp-link-wrap"></div>
       <div id="cal-member-assign-wrap"></div>
       <div id="cal-entry-error" class="error-msg" style="display:none;"></div>
       <div class="modal-actions" style="justify-content:space-between;">
