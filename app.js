@@ -333,9 +333,30 @@ async function renderAdminView(force) {
       // this campaign's total item count rather than lumped together with
       // other entries (or computed against the wrong template's size).
       getEntryBreakdown(cl, totalItemsMap[camp.id]?.total, totalItemsMap[camp.id]?.validIds, totalItemsMap[camp.id]?.hasD5).forEach(eb => {
+        // Per-region deadline: from the campaign's calendar-derived map, falling
+        // back to the campaign-wide deadline for region-less entries.
+        const entryRegion = (eb.region || '').toUpperCase();
+        const rowDeadline =
+          (camp.regionDeadlines && entryRegion && camp.regionDeadlines[entryRegion])
+          || camp.deadline || null;
+
+        // Due-state: an incomplete entry is only an ISSUE once its own region's
+        // deadline has passed. Before that it's "not due yet", never an issue.
+        const nowTs  = Date.now();
+        const dlTs   = rowDeadline ? new Date(rowDeadline).getTime() : null;
+        const isDone = eb.overallPct === 100;
+        let dueState;
+        if (isDone)                    dueState = 'done';
+        else if (dlTs && nowTs > dlTs) dueState = 'overdue';  // issue
+        else                           dueState = 'not_due';  // within grace / no deadline
+
         allRows.push({
           member, camp,
           entryLabel: eb.label,
+          entryRegion,
+          rowDeadline,
+          dueState,
+          isIssue: dueState === 'overdue',
           d5Done: eb.d5Done, d1Done: eb.d1Done, overallDone: eb.overallPct,
           d5Pct: eb.d5Pct, d1Pct: eb.d1Pct, totalItems: eb.totalItems, hasD5: eb.hasD5,
           lastActive: cl.lastActive || null,
@@ -443,10 +464,16 @@ async function renderAdminView(force) {
       : '—';
     return `<tr>
       <td><strong>${r.member.name || r.member.username}</strong>${r.member.role === 'team_lead' ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">Team Lead</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${r.member.username}</span></td>
-      <td>${r.camp.name}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.camp.deadline ? `<br><span style="font-size:10px;color:#D97706;font-weight:600;">⏰ ${fmtDeadlineShort(r.camp.deadline)}</span>` : ''}</td>
+      <td>${r.camp.name}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.rowDeadline ? `<br><span style="font-size:10px;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};font-weight:600;">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>` : ''}</td>
       <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
       <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
-      <td><span class="badge ${badge}</span></td>
+      <td><span class="badge ${badge}</span>${
+        r.overallDone < 100 && r.dueState === 'overdue'
+          ? '<br><span class="deadline-pill dp-red" style="margin-top:3px;display:inline-block;">⚠ Overdue</span>'
+          : (r.overallDone < 100 && r.dueState === 'not_due' && r.rowDeadline)
+            ? '<br><span class="deadline-pill ac-notdue" style="margin-top:3px;display:inline-block;" title="This region\u2019s deadline hasn\u2019t passed yet">Not due yet</span>'
+            : ''
+      }</td>
       <td style="font-size:12px;color:var(--text-muted)">${lastStr}</td>
       <td style="white-space:nowrap;">
         <button class="btn-link" onclick="openReviewModal('${r.member.uid}','${r.camp.id}')">Review</button>
@@ -1152,6 +1179,7 @@ function getEntryBreakdown(cl, totalItems, validIds, hasD5) {
     return {
       idx,
       label: entries.length > 1 ? buildEntryLabel(entry, idx) : null,
+      region: entry.region || '',
       d5Done, d1Done, d5Pct, d1Pct, overallPct, totalItems: ti, hasD5: d5Enabled,
     };
   });
@@ -1607,6 +1635,7 @@ async function createCampaignWithChecklists({
   campaignType = null,
   fromPollId = null,
   broadcastMessage = null, // null → no broadcast sent
+  regionDeadlines = null,  // { REGION: deadlineISO } — per-region deadlines from the calendar
 }) {
   const ref = await db.collection('campaigns').add({
     name,
@@ -1620,6 +1649,7 @@ async function createCampaignWithChecklists({
     campaignType:        campaignType || null,
     dday:                dday || null,
     deadline:            deadline || null,
+    regionDeadlines:     regionDeadlines || null,
   });
   const campaignId = ref.id;
 
@@ -3091,6 +3121,73 @@ function _deadlineFromDday(ddayStr) {
   dt.setHours(dt.getHours() - DEADLINE_OFFSET_HOURS);
   const pad = n => String(n).padStart(2, '0');
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
+// ── Per-region deadline map from the calendar ─────────────────────────────
+// For one month + campaign type, return { REGION: deadlineISO } read straight
+// from the admin's calendar. Each region's deadline is:
+//   1. an explicit Deadline-type event for that region, if present; else
+//   2. that region's D-Day event time minus 4h (DEADLINE_OFFSET_HOURS).
+// This is the single source of truth reporting compares against, so the admin
+// only ever maintains the calendar. One generation covers every region; each
+// region is then judged against its own deadline (see renderAdminView).
+function buildRegionDeadlineMap({ year, month, campaignType }) {
+  const monthStart = new Date(year, month, 1);
+  const monthEnd   = new Date(year, month + 1, 0);
+  const _dt = e => e.startTime ? `${e.date}T${e.startTime}` : e.date;
+
+  // Collect, per region, the best D-Day and any explicit Deadline event.
+  const perRegion = {}; // { REGION: { dday, deadline } }
+  calendarEntries.forEach(e => {
+    if (!e.date) return;
+    const d = new Date(e.date);
+    if (d < monthStart || d > monthEnd) return;
+    // Match the campaign phase when one was requested. Accept either the
+    // resolved campaign type or the raw event type (midmonth_sale/payday_sale
+    // can live on either field), so however the calendar was filled still works.
+    if (campaignType) {
+      const ct = _calCampaignType(e).id;
+      if (ct !== campaignType && e.type !== campaignType) return;
+    }
+    const r = _calRegionOf(e);
+    if (!r) return;
+    const region = r.id;
+    perRegion[region] = perRegion[region] || { dday: null, deadline: null };
+    if (e.type === 'deadline') {
+      const iso = _dt(e);
+      if (!perRegion[region].deadline || iso < perRegion[region].deadline)
+        perRegion[region].deadline = iso;
+    } else if (e.type === 'dday') {
+      const iso = _dt(e);
+      if (!perRegion[region].dday || iso < perRegion[region].dday)
+        perRegion[region].dday = iso;
+    }
+  });
+
+  const out = {};
+  Object.entries(perRegion).forEach(([region, v]) => {
+    const deadline = v.deadline || _deadlineFromDday(v.dday);
+    if (deadline) out[region] = deadline;
+  });
+  return out; // { MY: "2026-07-14T16:00", VN: "2026-07-13T16:00", ... }
+}
+
+// Best-effort: infer { year, month, campaignType } for a generation from a
+// campaign name like "Mid-Month — Jul 2026" / "PayDay — Aug 2026", so the
+// deadline map can be built even when the flow doesn't track them explicitly.
+// Returns null for any part it can't parse; callers fall back sensibly.
+function inferGenScopeFromName(name) {
+  const s = String(name || '');
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const mMatch = s.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i);
+  const yMatch = s.match(/\b(20\d{2})\b/);
+  let campaignType = null;
+  if (/mid[\s-]*month/i.test(s))       campaignType = 'midmonth_sale';
+  else if (/pay[\s-]*day/i.test(s))    campaignType = 'payday_sale';
+  else if (/double[\s-]*digit|\b\d\.\d\b|\b(11\.11|12\.12|10\.10|9\.9)\b/i.test(s)) campaignType = null; // double-digit spans regions; leave type open
+  const month = mMatch ? months.indexOf(mMatch[1].toLowerCase().slice(0,3)) : null;
+  const year  = yMatch ? Number(yMatch[1]) : null;
+  return { year, month, campaignType };
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -7346,6 +7443,19 @@ async function confirmBulkAssign() {
   const btn = document.getElementById('bulk-assign-btn');
   btn.textContent = 'Generating…'; btn.disabled = true;
 
+  // Build the per-region deadline map from the calendar for this generation.
+  // Scope (month + campaign phase) is inferred from the campaign name
+  // ("Mid-Month — Jul 2026" etc.); missing parts fall back to the current
+  // month / all phases so it still produces a usable map.
+  const _scope = inferGenScopeFromName(campaignName);
+  const _now = new Date();
+  const regionDeadlines = buildRegionDeadlineMap({
+    year:  _scope.year  != null ? _scope.year  : _now.getFullYear(),
+    month: _scope.month != null ? _scope.month : _now.getMonth(),
+    campaignType: _scope.campaignType || null,
+  });
+  const _hasDeadlines = regionDeadlines && Object.keys(regionDeadlines).length > 0;
+
   try {
     if (isNew) {
       const ref = await db.collection('campaigns').add({
@@ -7357,13 +7467,16 @@ async function confirmBulkAssign() {
         checklistTemplateId: null,
         dday: null,
         deadline: null,
+        regionDeadlines: _hasDeadlines ? regionDeadlines : null,
       });
       campaignId = ref.id;
     } else {
-      // Add any newly-assigned CDMs to the campaign's assignedUids
-      await db.collection('campaigns').doc(campaignId).update({
-        assignedUids: firebase.firestore.FieldValue.arrayUnion(...uids),
-      });
+      // Add any newly-assigned CDMs to the campaign's assignedUids, and refresh
+      // the per-region deadline map from the calendar (calendar stays the
+      // source of truth even when re-running assign on an existing campaign).
+      const _update = { assignedUids: firebase.firestore.FieldValue.arrayUnion(...uids) };
+      if (_hasDeadlines) _update.regionDeadlines = regionDeadlines;
+      await db.collection('campaigns').doc(campaignId).update(_update);
     }
 
     // Merge entries into each CDM's checklist for this campaign —
@@ -8904,10 +9017,16 @@ async function renderTeamLeadView() {
     const isSelf = r.member.uid === currentUser.uid;
     return `<tr>
       <td><strong>${escHtml(r.member.name || r.member.username)}</strong>${isSelf ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">You</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${escHtml(r.member.username)}</span></td>
-      <td>${escHtml(r.camp.name)}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.camp.deadline ? `<br><span style="font-size:10px;color:#D97706;font-weight:600;">⏰ ${fmtDeadlineShort(r.camp.deadline)}</span>` : ''}</td>
+      <td>${escHtml(r.camp.name)}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.rowDeadline ? `<br><span style="font-size:10px;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};font-weight:600;">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>` : ''}</td>
       <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
       <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
-      <td><span class="badge ${badge}</span></td>
+      <td><span class="badge ${badge}</span>${
+        r.overallDone < 100 && r.dueState === 'overdue'
+          ? '<br><span class="deadline-pill dp-red" style="margin-top:3px;display:inline-block;">⚠ Overdue</span>'
+          : (r.overallDone < 100 && r.dueState === 'not_due' && r.rowDeadline)
+            ? '<br><span class="deadline-pill ac-notdue" style="margin-top:3px;display:inline-block;" title="This region\u2019s deadline hasn\u2019t passed yet">Not due yet</span>'
+            : ''
+      }</td>
       <td style="font-size:12px;color:var(--text-muted)">${lastStr}</td>
       <td style="white-space:nowrap;">
         <button class="btn-link" onclick="openTlReviewModal('${r.member.uid}','${r.camp.id}')">Review</button>
