@@ -1576,7 +1576,188 @@ function openNewCampaignModal() {
   document.getElementById('new-camp-bulk-file').value = '';
   document.getElementById('new-camp-bulk-preview').innerHTML = '';
   populateCampaignTemplateSel();
+  initNewCampCalendarControls();
   document.getElementById('modal-overlay').style.display = 'flex';
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  NEW CAMPAIGN — MAP DEADLINES FROM CALENDAR
+//  The merged flow: admin types the campaign details manually, and this
+//  panel maps the chosen phase + month onto the admin calendar to derive
+//  each region's on-time deadline (the same buildRegionDeadlineMap() the
+//  Generate-from-Calendar flow uses, so both stay in sync). Regions with
+//  no calendar date are flagged; the admin skips them (they fall back to
+//  the campaign-wide deadline) or fixes the calendar and re-maps.
+// ══════════════════════════════════════════════════════════════════
+
+// Resolved map for the current modal session: { REGION: deadlineISO }.
+// null/empty means "no calendar mapping" → createCampaign passes null and
+// every entry uses the campaign-wide deadline, exactly as before this flow.
+let newCampRegionDeadlines = {};
+// Regions the admin chose to skip this session (flagged, no calendar date).
+// Skipped regions are simply omitted from the saved map.
+let newCampSkippedRegions = new Set();
+
+const _MONTH_LABELS = ['January','February','March','April','May','June',
+                       'July','August','September','October','November','December'];
+
+// Fill the month/year dropdowns (defaulting to the current month) and clear
+// any previous session's resolved map + preview.
+function initNewCampCalendarControls() {
+  newCampRegionDeadlines = {};
+  newCampSkippedRegions = new Set();
+
+  const now = new Date();
+  const monthSel = document.getElementById('new-campaign-cal-month');
+  const yearSel  = document.getElementById('new-campaign-cal-year');
+  const typeSel  = document.getElementById('new-campaign-cal-type');
+  if (typeSel) typeSel.value = '';
+
+  if (monthSel) {
+    monthSel.innerHTML = _MONTH_LABELS
+      .map((m, i) => `<option value="${i}" ${i === now.getMonth() ? 'selected' : ''}>${m}</option>`)
+      .join('');
+  }
+  if (yearSel) {
+    const y0 = now.getFullYear();
+    yearSel.innerHTML = [y0 - 1, y0, y0 + 1]
+      .map(y => `<option value="${y}" ${y === y0 ? 'selected' : ''}>${y}</option>`)
+      .join('');
+  }
+
+  const preview = document.getElementById('new-campaign-cal-preview');
+  if (preview) {
+    preview.innerHTML = `<div style="font-size:11px;color:var(--text-muted);">Pick a phase and month above to pull each region's deadline from the calendar. Leave this untouched to just use the single deadline set above for everyone.</div>`;
+  }
+}
+
+// Recompute the resolved map on every control change and render the preview,
+// including flags for regions that appear in the calendar month but resolved
+// to no usable deadline. `_prevSkipped` is preserved across re-maps so an
+// admin's skip choices survive a month/phase tweak.
+function refreshNewCampCalendarMap() {
+  const preview = document.getElementById('new-campaign-cal-preview');
+  if (!preview) return;
+
+  const typeVal  = document.getElementById('new-campaign-cal-type')?.value || null;
+  const monthVal = parseInt(document.getElementById('new-campaign-cal-month')?.value, 10);
+  const yearVal  = parseInt(document.getElementById('new-campaign-cal-year')?.value, 10);
+  if (isNaN(monthVal) || isNaN(yearVal)) return;
+
+  // The resolved-deadline map: { REGION: deadlineISO }. Same builder the
+  // Generate flow uses, so a region is judged identically whichever path
+  // created its campaign.
+  const resolved = buildRegionDeadlineMap({
+    year: yearVal, month: monthVal, campaignType: typeVal || null,
+  });
+
+  // Also collect every region that HAS a calendar event this month/phase but
+  // produced NO usable deadline (no explicit Deadline event and a date-only
+  // D-Day with no time to subtract from). Those are the ones to flag.
+  const flagged = _regionsWithoutDeadline({ year: yearVal, month: monthVal, campaignType: typeVal || null }, resolved);
+
+  newCampRegionDeadlines = resolved;
+
+  const resolvedRegions = Object.keys(resolved).sort();
+  if (resolvedRegions.length === 0 && flagged.length === 0) {
+    preview.innerHTML = `<div class="chooser-warn" style="font-size:12px;">No region-tagged calendar events found for ${escHtml(_MONTH_LABELS[monthVal])} ${yearVal}${typeVal ? ' · ' + escHtml(_phaseLabel(typeVal)) : ''}. Add D-Day or Deadline events to the calendar, or just use the single deadline above for everyone.</div>`;
+    return;
+  }
+
+  let html = '';
+
+  if (resolvedRegions.length > 0) {
+    html += `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Deadlines mapped from the calendar — each region is judged on-time/late against its own date:</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:4px;">` +
+      resolvedRegions.map(r => {
+        const label = (CAL_REGION_MAP[r]?.label) || r;
+        return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 8px;background:var(--bg-soft,#F8FAFC);border-radius:6px;">
+          <span style="font-weight:600;min-width:52px;">${escHtml(label)}</span>
+          <span style="color:var(--text-muted);">${escHtml(_fmtDeadline(resolved[r]))}</span>
+        </div>`;
+      }).join('') +
+      `</div>`;
+  }
+
+  if (flagged.length > 0) {
+    html += `<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
+      <div style="font-size:12px;color:#B45309;font-weight:600;margin-bottom:4px;">⚠️ No calendar date found for ${flagged.length} region${flagged.length !== 1 ? 's' : ''}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">These have a calendar event but no usable deadline (no Deadline event, and the D-Day has no time to derive one from). Skip them to fall back to the single deadline above, or add the date on the calendar and re-map.</div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:4px;">` +
+      flagged.map(r => {
+        const label = (CAL_REGION_MAP[r]?.label) || r;
+        const skipped = newCampSkippedRegions.has(r);
+        return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 8px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;">
+          <span style="font-weight:600;min-width:52px;">${escHtml(label)}</span>
+          <span style="color:#B45309;flex:1;">${skipped ? 'Skipped — using campaign-wide deadline' : 'No deadline'}</span>
+          <button type="button" class="btn-ghost-light" style="font-size:11px;padding:2px 10px;"
+            onclick="toggleNewCampSkipRegion('${escHtml(r)}')">${skipped ? 'Undo skip' : 'Skip'}</button>
+        </div>`;
+      }).join('') +
+      `</div>`;
+    const unresolvedActive = flagged.filter(r => !newCampSkippedRegions.has(r));
+    if (unresolvedActive.length > 0) {
+      html += `<div style="font-size:11px;color:#B45309;margin-top:6px;">${unresolvedActive.length} flagged region${unresolvedActive.length !== 1 ? 's are' : ' is'} still unresolved. You can still create the campaign — flagged regions will use the campaign-wide deadline above.</div>`;
+    }
+  }
+
+  preview.innerHTML = html;
+}
+
+// Regions that appear in the calendar for this scope but have no resolved
+// deadline in `resolvedMap`. Mirrors buildRegionDeadlineMap's scoping so the
+// two agree on what "in scope" means.
+function _regionsWithoutDeadline({ year, month, campaignType }, resolvedMap) {
+  const monthStart = new Date(year, month, 1);
+  const monthEnd   = new Date(year, month + 1, 0);
+  const seen = new Set();
+  calendarEntries.forEach(e => {
+    if (!e.date) return;
+    const d = new Date(e.date);
+    if (d < monthStart || d > monthEnd) return;
+    if (campaignType) {
+      const want = _canonicalPhase(campaignType);
+      const got  = _canonicalPhase(_calCampaignType(e).id) || _canonicalPhase(e.type);
+      if (want && got && want !== got) return;
+      if ((!want || !got) && _calCampaignType(e).id !== campaignType && e.type !== campaignType) return;
+    }
+    // Only D-Day / Deadline events can supply a deadline; a region seen only
+    // via a teasing/meeting event isn't "missing a deadline" in a meaningful
+    // sense, so don't flag it. This keeps the flag list to genuinely
+    // actionable gaps (a D-Day with no time, or no Deadline event).
+    if (e.type !== 'dday' && e.type !== 'deadline') return;
+    const r = _calRegionOf(e);
+    if (!r) return;
+    seen.add(r.id);
+  });
+  return [...seen].filter(r => !(resolvedMap && resolvedMap[r])).sort();
+}
+
+function toggleNewCampSkipRegion(region) {
+  if (newCampSkippedRegions.has(region)) newCampSkippedRegions.delete(region);
+  else newCampSkippedRegions.add(region);
+  refreshNewCampCalendarMap();
+}
+
+// Human label for a phase id used in the calendar-map controls.
+function _phaseLabel(typeVal) {
+  if (typeVal === 'mid_month')    return 'Mid-Month';
+  if (typeVal === 'payday')       return 'PayDay';
+  if (typeVal === 'double_digit') return 'Double Digit';
+  return 'Any phase';
+}
+
+// Pretty-print a resolved deadline ("2026-07-14T16:00" → "Jul 14, 4:00 PM").
+function _fmtDeadline(iso) {
+  if (!iso) return '—';
+  const [datePart, timePart] = iso.split('T');
+  const [y, mo, d] = datePart.split('-').map(Number);
+  const base = `${_MONTH_LABELS[mo - 1].slice(0, 3)} ${d}`;
+  if (!timePart) return base;
+  let [h, mi] = timePart.slice(0, 5).split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${base}, ${h}:${String(mi).padStart(2, '0')} ${ampm}`;
 }
 
 function toggleChip(el) { el.classList.toggle('selected'); }
@@ -1772,6 +1953,20 @@ async function createCampaign() {
 
     const hasEntries = Object.keys(prefillData).length > 0;
 
+    // Calendar-mapped per-region deadlines: take the resolved map from the
+    // "Map from Calendar" panel and drop any regions the admin skipped (those
+    // fall back to the campaign-wide deadline in reporting). Null when nothing
+    // was mapped, so behaviour is identical to before for admins who ignore
+    // the panel.
+    let regionDeadlines = null;
+    if (newCampRegionDeadlines && Object.keys(newCampRegionDeadlines).length > 0) {
+      const kept = {};
+      Object.entries(newCampRegionDeadlines).forEach(([region, dl]) => {
+        if (!newCampSkippedRegions.has(region)) kept[region] = dl;
+      });
+      if (Object.keys(kept).length > 0) regionDeadlines = kept;
+    }
+
     await createCampaignWithChecklists({
       name,
       uids:       assignedUids,
@@ -1779,6 +1974,7 @@ async function createCampaign() {
       templateId: selectedTemplateId,
       dday:       combineDatetime('new-campaign-dday', 'new-campaign-dday-time'),
       deadline:   combineDatetime('new-campaign-deadline', 'new-campaign-deadline-time'),
+      regionDeadlines,
       fromPollId: pollId,
       // Only shout about it when there's actually a pre-filled checklist waiting.
       broadcastMessage: hasEntries
@@ -3131,6 +3327,23 @@ function _deadlineFromDday(ddayStr) {
 // This is the single source of truth reporting compares against, so the admin
 // only ever maintains the calendar. One generation covers every region; each
 // region is then judged against its own deadline (see renderAdminView).
+// Normalise the two phase vocabularies to one canonical token so they can be
+// compared regardless of which convention filled the calendar:
+//   entry-form / classifier:  mid_month | payday | double_digit
+//   legacy sale event types:  midmonth_sale | payday_sale
+// Returns null for anything with no phase (dday, deadline, meeting, other…),
+// which the caller treats as "don't use this to decide the match".
+function _canonicalPhase(id) {
+  switch (id) {
+    case 'mid_month':
+    case 'midmonth_sale': return 'mid';
+    case 'payday':
+    case 'payday_sale':   return 'payday';
+    case 'double_digit':  return 'dd';
+    default:              return null;
+  }
+}
+
 function buildRegionDeadlineMap({ year, month, campaignType }) {
   const monthStart = new Date(year, month, 1);
   const monthEnd   = new Date(year, month + 1, 0);
@@ -3142,12 +3355,21 @@ function buildRegionDeadlineMap({ year, month, campaignType }) {
     if (!e.date) return;
     const d = new Date(e.date);
     if (d < monthStart || d > monthEnd) return;
-    // Match the campaign phase when one was requested. Accept either the
-    // resolved campaign type or the raw event type (midmonth_sale/payday_sale
-    // can live on either field), so however the calendar was filled still works.
+    // Match the campaign phase when one was requested. Two vocabularies are in
+    // play: the phase classifier (mid_month/payday/double_digit, used by the
+    // entry form's campaignType field + _calCampaignType) and the raw event
+    // type (midmonth_sale/payday_sale, used on legacy sale events). D-Day and
+    // Deadline events carry the phase on their campaignType field, not their
+    // type, so we normalise BOTH the request and the event to a canonical
+    // phase before comparing — otherwise a phase filter would wrongly exclude
+    // the very dday/deadline events it needs.
     if (campaignType) {
-      const ct = _calCampaignType(e).id;
-      if (ct !== campaignType && e.type !== campaignType) return;
+      const want = _canonicalPhase(campaignType);
+      const got  = _canonicalPhase(_calCampaignType(e).id) || _canonicalPhase(e.type);
+      if (want && got && want !== got) return;
+      // If either side can't be canonicalised, fall back to the old loose
+      // check so nothing that used to match stops matching.
+      if ((!want || !got) && _calCampaignType(e).id !== campaignType && e.type !== campaignType) return;
     }
     const r = _calRegionOf(e);
     if (!r) return;

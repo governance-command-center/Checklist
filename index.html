@@ -811,6 +811,36 @@
         </select>
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Assigns this template's checklist to all members of this campaign.</div>
       </div>
+
+      <!-- ── Map from Calendar ──────────────────────────────────────────
+           Pick the campaign phase + month, and pull each region's deadline
+           straight from the admin calendar (explicit Deadline event, else
+           D-Day − 4h). Regions with no calendar date are flagged so the
+           admin can skip them (they fall back to the campaign-wide deadline
+           above) or proceed after adding the event. -->
+      <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
+        <label style="margin-bottom:6px;">🗓 Map Deadlines from Calendar <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — auto-fills each region's on-time deadline)</span></label>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+          <div>
+            <label style="font-size:11px;color:var(--text-muted);">Campaign Phase</label>
+            <select id="new-campaign-cal-type" style="font-size:13px;" onchange="refreshNewCampCalendarMap()">
+              <option value="">Any phase</option>
+              <option value="mid_month">Mid-Month</option>
+              <option value="payday">PayDay</option>
+              <option value="double_digit">Double Digit</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-muted);">Month</label>
+            <select id="new-campaign-cal-month" style="font-size:13px;" onchange="refreshNewCampCalendarMap()"></select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-muted);">Year</label>
+            <select id="new-campaign-cal-year" style="font-size:13px;" onchange="refreshNewCampCalendarMap()"></select>
+          </div>
+        </div>
+        <div id="new-campaign-cal-preview" style="margin-top:8px;"></div>
+      </div>
       <div class="field">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
           <label style="margin-bottom:0;">Assign Members</label>
