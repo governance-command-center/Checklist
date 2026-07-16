@@ -541,88 +541,9 @@
           </span>
           <span class="chooser-tag">1 campaign</span>
         </button>
-
-        <button class="chooser-card" onclick="chooseCampaignMode('generate')">
-          <span class="chooser-icon">⚡</span>
-          <span class="chooser-title">Generate from calendar</span>
-          <span class="chooser-desc">
-            Auto-match this month's calendar events against your saved roster.
-            Names, members, D-Days and deadlines are filled in for you.
-          </span>
-          <span class="chooser-tag">1 per region · platform</span>
-        </button>
       </div>
 
       <div id="chooser-roster-note"></div>
-    </div>
-  </div>
-
-  <!-- Generate Checklist Modal -->
-  <div id="gen-checklist-overlay" style="display:none;" onclick="closeGenChecklistModal(event)">
-    <div class="modal" style="max-width:640px;">
-      <div class="modal-header">
-        <h3>⚡ Generate Checklist</h3>
-        <button class="btn-ghost-light" onclick="closeGenChecklistModal()">✕</button>
-      </div>
-
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">
-        Auto-matches calendar events against your uploaded roster. One campaign is created per
-        region + platform pair that has <strong>both</strong> an event in the selected month and members in the sheet.
-      </div>
-
-      <!-- Scope -->
-      <div class="gen-scope-grid">
-        <div>
-          <label>Month</label>
-          <input type="month" id="gen-cl-month" onchange="refreshGenChecklistPlan()" />
-        </div>
-        <div>
-          <label>Campaign</label>
-          <select id="gen-cl-campaign" onchange="refreshGenChecklistPlan()">
-            <option value="">All campaigns</option>
-          </select>
-        </div>
-        <div>
-          <label>Region</label>
-          <select id="gen-cl-region" onchange="refreshGenChecklistPlan()">
-            <option value="">All regions</option>
-          </select>
-        </div>
-        <div>
-          <label>Platform</label>
-          <select id="gen-cl-platform" onchange="refreshGenChecklistPlan()">
-            <option value="">All platforms</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Template picker: mega vs non-mega -->
-      <div style="margin-top:14px;">
-        <label>Checklist Template</label>
-        <select id="gen-cl-template" onchange="refreshGenChecklistPlan()">
-          <option value="">None (use default checklist)</option>
-        </select>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
-          Applied to every campaign generated in this run — pick your Mega template for mega sales, or leave as default for non-mega.
-        </div>
-      </div>
-
-      <!-- Plan preview -->
-      <div style="margin-top:18px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-          <label style="margin:0;">Preview</label>
-          <span id="gen-cl-count" style="font-size:11px;color:var(--text-muted);"></span>
-        </div>
-        <div id="gen-cl-plan" class="gen-plan-box"></div>
-      </div>
-
-      <div id="gen-cl-warnings"></div>
-      <div id="gen-cl-error" class="error-msg" style="display:none;"></div>
-
-      <div class="modal-actions">
-        <button class="btn-ghost-light" onclick="closeGenChecklistModal()">Cancel</button>
-        <button class="btn-primary" id="gen-cl-submit" onclick="confirmGenerateChecklist()">Generate</button>
-      </div>
     </div>
   </div>
 
@@ -818,14 +739,15 @@
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Assigns this template's checklist to all members of this campaign.</div>
       </div>
 
-      <!-- ── Map from Calendar ──────────────────────────────────────────
-           Pick the campaign phase + month, and pull each region's deadline
-           straight from the admin calendar (explicit Deadline event, else
-           D-Day − 4h). Regions with no calendar date are flagged so the
-           admin can skip them (they fall back to the campaign-wide deadline
-           above) or proceed after adding the event. -->
+      <!-- ── Per-Region Deadlines from Calendar (READ-ONLY PREVIEW) ──────
+           Shows what deadline each region will get, read straight from the
+           admin calendar (explicit Deadline event, else event start − 4h).
+           This is informational only: there is no Skip control. Regions whose
+           calendar event has no start time can't derive a deadline and will
+           fall back to the campaign-wide Checklist Deadline above. Fix a
+           flagged region by adding a start time to its calendar event. -->
       <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
-        <label style="margin-bottom:6px;">🗓 Map Deadlines from Calendar <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — auto-fills each region's on-time deadline)</span></label>
+        <label style="margin-bottom:6px;">🗓 Per-Region Deadlines from Calendar <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(preview — each region's deadline is read from its calendar event; regions with no time fall back to the deadline above)</span></label>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
           <div>
             <label style="font-size:11px;color:var(--text-muted);">Campaign Phase</label>
@@ -1184,6 +1106,21 @@
       <div class="field" id="bulk-assign-new-name-field">
         <label>New Campaign Name</label>
         <input type="text" id="bulk-assign-new-name" placeholder="e.g. 11.11 Mega Sale" />
+      </div>
+      <!-- Campaign-wide checklist deadline. Applies to every region that
+           doesn't get its own per-region deadline from the calendar, so no
+           region is ever left un-deadlined (which would make it invisible in
+           the overdue/pending trace). Shown for new campaigns only — existing
+           campaigns keep the deadline they already have. -->
+      <div class="field" id="bulk-assign-deadline-field">
+        <label>Checklist Deadline</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="date" id="bulk-assign-deadline-date" style="flex:1;" />
+          <input type="time" id="bulk-assign-deadline-time" style="flex:1;" />
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+          Regions with a timed calendar event use their own deadline; everyone else uses this. Leave blank only if every region has its own calendar deadline.
+        </div>
       </div>
 
       <div id="bulk-assign-preview" style="max-height:240px;overflow-y:auto;margin-top:6px;"></div>

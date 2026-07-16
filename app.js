@@ -464,7 +464,7 @@ async function renderAdminView(force) {
       : '—';
     return `<tr>
       <td><strong>${r.member.name || r.member.username}</strong>${r.member.role === 'team_lead' ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">Team Lead</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${r.member.username}</span></td>
-      <td>${r.camp.name}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.rowDeadline ? `<br><span style="font-size:10px;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};font-weight:600;">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>` : ''}</td>
+      <td>${r.camp.name}${r.entryRegion ? ` <span style="font-size:10px;font-weight:700;background:#EEF2FF;color:#4338CA;border-radius:4px;padding:1px 6px;margin-left:2px;">${escHtml(r.entryRegion)}</span>` : ''}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.rowDeadline ? `<br><span style="font-size:10px;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};font-weight:600;">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>` : ''}</td>
       <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
       <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
       <td><span class="badge ${badge}</span>${
@@ -1680,25 +1680,23 @@ function refreshNewCampCalendarMap() {
   }
 
   if (flagged.length > 0) {
+    // Read-only heads-up. These regions have a calendar event but no time to
+    // derive a deadline from, so they'll automatically fall back to the
+    // campaign-wide deadline typed above. No action needed here — the fix is to
+    // add a start time to the event on the calendar (which also fixes the
+    // deadline for everyone using that event).
     html += `<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
-      <div style="font-size:12px;color:#B45309;font-weight:600;margin-bottom:4px;">⚠️ No calendar date found for ${flagged.length} region${flagged.length !== 1 ? 's' : ''}</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">These have a calendar event but no usable deadline (no Deadline event, and the D-Day has no time to derive one from). Skip them to fall back to the single deadline above, or add the date on the calendar and re-map.</div>`;
+      <div style="font-size:12px;color:#B45309;font-weight:600;margin-bottom:4px;">No time set for ${flagged.length} region${flagged.length !== 1 ? 's' : ''}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">These have a calendar event but no start time, so no per-region deadline can be derived. They'll use the campaign-wide Checklist Deadline set above. To give a region its own deadline, add a start time to its event on the calendar.</div>`;
     html += `<div style="display:flex;flex-direction:column;gap:4px;">` +
       flagged.map(r => {
         const label = (CAL_REGION_MAP[r]?.label) || r;
-        const skipped = newCampSkippedRegions.has(r);
         return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 8px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;">
           <span style="font-weight:600;min-width:52px;">${escHtml(label)}</span>
-          <span style="color:#B45309;flex:1;">${skipped ? 'Skipped — using campaign-wide deadline' : 'No deadline'}</span>
-          <button type="button" class="btn-ghost-light" style="font-size:11px;padding:2px 10px;"
-            onclick="toggleNewCampSkipRegion('${escHtml(r)}')">${skipped ? 'Undo skip' : 'Skip'}</button>
+          <span style="color:#B45309;flex:1;">Uses campaign-wide deadline</span>
         </div>`;
       }).join('') +
       `</div>`;
-    const unresolvedActive = flagged.filter(r => !newCampSkippedRegions.has(r));
-    if (unresolvedActive.length > 0) {
-      html += `<div style="font-size:11px;color:#B45309;margin-top:6px;">${unresolvedActive.length} flagged region${unresolvedActive.length !== 1 ? 's are' : ' is'} still unresolved. You can still create the campaign — flagged regions will use the campaign-wide deadline above.</div>`;
-    }
   }
 
   preview.innerHTML = html;
@@ -1733,11 +1731,9 @@ function _regionsWithoutDeadline({ year, month, campaignType }, resolvedMap) {
   return [...seen].filter(r => !(resolvedMap && resolvedMap[r])).sort();
 }
 
-function toggleNewCampSkipRegion(region) {
-  if (newCampSkippedRegions.has(region)) newCampSkippedRegions.delete(region);
-  else newCampSkippedRegions.add(region);
-  refreshNewCampCalendarMap();
-}
+// Skip control removed — the calendar panel is read-only now. Regions without
+// a derivable deadline simply fall back to the campaign-wide deadline, so
+// newCampSkippedRegions stays empty and every resolved region is kept as-is.
 
 // Human label for a phase id used in the calendar-map controls.
 function _phaseLabel(typeVal) {
@@ -1903,9 +1899,10 @@ function closeCampaignChooser(e) {
 }
 
 function chooseCampaignMode(mode) {
+  // "Generate from calendar" was removed — Bulk Assign is the calendar-driven
+  // path now. Any mode simply opens the manual New Campaign modal.
   closeCampaignChooser();
-  if (mode === 'generate') openGenChecklistModal();
-  else openNewCampaignModal();
+  openNewCampaignModal();
 }
 
 async function createCampaign() {
@@ -3062,17 +3059,40 @@ const CAL_CAMPAIGN_TYPES = [
 
 // Regions carry their own badge colour so "which market" is scannable at a
 // glance. Keys are the bracket codes already used in event titles.
+// Per-region only — combined codes (SGTH, SGMYTH) were removed so calendar
+// filtering and per-region deadline matching stay exact. Always add a separate
+// event per market. (_expandRegionCode still splits any legacy combined code
+// that lingers in old data, so historical events don't break.)
 const CAL_REGIONS = [
   { id: 'MY',    label: 'MY',    color: '#2563EB' },
   { id: 'PH',    label: 'PH',    color: '#D97706' },
   { id: 'VN',    label: 'VN',    color: '#059669' },
-  { id: 'SGTH',  label: 'SG/TH', color: '#DB2777' },
-  { id: 'SGMYTH',label: 'SGMYTH',color: '#7C3AED' },
   { id: 'TH',    label: 'TH',    color: '#0891B2' },
   { id: 'SG',    label: 'SG',    color: '#DB2777' },
   { id: 'LAZ',   label: 'LAZ',   color: '#EA580C' },
 ];
 const CAL_REGION_MAP = Object.fromEntries(CAL_REGIONS.map(r => [r.id, r]));
+
+// Normalise a region string from an uploaded sheet to a canonical CAL_REGIONS
+// code, so checklist entry regions always match the keys used by the
+// per-region deadline map. Without this, "Singapore" / "sg" / "SG " would each
+// become a distinct key and silently fail the deadline join. Returns the
+// canonical code (e.g. "SG") or '' if unrecognised, so the caller can flag it.
+const _REGION_ALIASES = {
+  SG: 'SG', SGP: 'SG', SINGAPORE: 'SG',
+  MY: 'MY', MYS: 'MY', MALAYSIA: 'MY',
+  PH: 'PH', PHL: 'PH', PHILIPPINES: 'PH', PILIPINAS: 'PH',
+  VN: 'VN', VNM: 'VN', VIETNAM: 'VN', 'VIET NAM': 'VN',
+  TH: 'TH', THA: 'TH', THAILAND: 'TH',
+  LAZ: 'LAZ', LAZADA: 'LAZ',
+};
+function _normalizeRegionCode(raw) {
+  const s = String(raw || '').trim().toUpperCase();
+  if (!s) return '';
+  if (CAL_REGION_MAP[s]) return s;          // already a canonical code
+  if (_REGION_ALIASES[s]) return _REGION_ALIASES[s];
+  return '';                                 // unknown → let caller flag it
+}
 
 // ── Platforms ────────────────────────────────────────────────────────────
 // Platform is its own dimension, separate from region. Existing entries
@@ -3206,6 +3226,9 @@ async function loadCalendarEntries() {
     const doc = await db.collection('settings').doc('calendar').get();
     calendarEntries = doc.exists ? (doc.data().entries || []) : [];
   } catch(e) { calendarEntries = []; }
+  // Repair any events still stored in the old 12-hour "hh:mm AM/PM" time
+  // format (which made derived deadlines 4h off). Idempotent + best-effort.
+  try { _migrateLegacyCalTimes(); } catch(_) {}
 }
 
 async function loadPersonalCalendarEntries(uid) {
@@ -3353,16 +3376,24 @@ function _canonicalPhase(id) {
 }
 
 function buildRegionDeadlineMap({ year, month, campaignType }) {
-  const monthStart = new Date(year, month, 1);
-  const monthEnd   = new Date(year, month + 1, 0);
+  // Compare dates as plain "YYYY-MM-DD" strings, NOT Date objects. Building
+  // `new Date(year, month, 1)` (local midnight) and comparing it to
+  // `new Date("2026-07-31")` (parsed as UTC midnight) mixes two clocks, so in
+  // any timezone east of UTC the last day of the month was judged "after"
+  // month-end and silently dropped — that region then got no deadline. String
+  // bounds are timezone-independent and inclusive on both ends.
+  const pad = n => String(n).padStart(2, '0');
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const monthStartStr = `${year}-${pad(month + 1)}-01`;
+  const monthEndStr   = `${year}-${pad(month + 1)}-${pad(lastDay)}`;
   const _dt = e => e.startTime ? `${e.date}T${e.startTime}` : e.date;
 
   // Collect, per region, the best D-Day and any explicit Deadline event.
   const perRegion = {}; // { REGION: { dday, deadline } }
   calendarEntries.forEach(e => {
     if (!e.date) return;
-    const d = new Date(e.date);
-    if (d < monthStart || d > monthEnd) return;
+    const dateStr = String(e.date).slice(0, 10); // normalise to YYYY-MM-DD
+    if (dateStr < monthStartStr || dateStr > monthEndStr) return;
     // Match the campaign phase when one was requested. Two vocabularies are in
     // play: the phase classifier (mid_month/payday/double_digit, used by the
     // entry form's campaignType field + _calCampaignType) and the raw event
@@ -3420,276 +3451,13 @@ function inferGenScopeFromName(name) {
   return { year, month, campaignType };
 }
 
-// ══════════════════════════════════════════════════════════════════
-//  GENERATE CHECKLIST  —  shared modal used by BOTH the Data tab
-//  (primary home, full controls) and the calendar's ⚡ shortcut
-//  (pre-fills month + filters from the current calendar view).
-//
-//  Flow: openGenChecklistModal(prefill) → refreshGenChecklistPlan()
-//        (recomputes + previews on every control change)
-//        → confirmGenerateChecklist() (actually writes).
-//  Reuses the same non-destructive checklist-merge logic as
-//  confirmBulkAssign, so member progress is never clobbered.
-// ══════════════════════════════════════════════════════════════════
-
-// The plan computed by the last refreshGenChecklistPlan() call. This is what
-// confirmGenerateChecklist() acts on, so what you see previewed is exactly
-// what gets created.
-let genChecklistPlan = null; // { plan:[], skipped:[], overlaps:[], monthLabel, campSuffix }
-
-// Build the plan from an explicit scope instead of reading globals, so the
-// modal's own controls (not the calendar's) drive generation.
-function _buildChecklistPlan({ year, month, campaign, region, platform }) {
-  const monthStart = new Date(year, month, 1);
-  const monthEnd   = new Date(year, month + 1, 0);
-  const monthLabel = monthStart.toLocaleString('en-GB', { month: 'short', year: 'numeric' });
-
-  // Combine an entry's date + local start time into "YYYY-MM-DDTHH:mm".
-  // Deadlines stay in the region's LOCAL clock so D-Days are fair across markets.
-  const _ddayDateTime = e => e.startTime ? `${e.date}T${e.startTime}` : e.date;
-
-  // Group by region × platform — the same campaign often runs on different
-  // D-Days per platform, so each pair becomes its own checklist. Events with
-  // no platform fall back to a region-only group so older data still generates.
-  const eventsByKey = {}; // { "REGION|platform": { regionId, platformId, events } }
-  calendarEntries.forEach(e => {
-    if (!e.date) return;
-    const d = new Date(e.date);
-    if (d < monthStart || d > monthEnd) return;
-    const r = _calRegionOf(e);
-    if (!r) return; // events with no region can't be auto-matched
-    if (region && r.id !== region) return;
-    if (campaign && _calCampaignType(e).id !== campaign) return;
-    const p = _calPlatformOf(e);
-    if (platform && (!p || p.id !== platform)) return;
-    const platformId = p ? p.id : '';
-    const key = `${r.id}|${platformId}`;
-    if (!eventsByKey[key]) eventsByKey[key] = { regionId: r.id, platformId, events: [] };
-    eventsByKey[key].events.push({ date: d, dateTime: _ddayDateTime(e), isDday: e.type === 'dday' });
-  });
-
-  // Keep only pairs that ALSO have roster members — generate on the overlap.
-  const plan = [];
-  const skipped = [];
-  Object.keys(eventsByKey).forEach(key => {
-    const { regionId, platformId, events: evs } = eventsByKey[key];
-    const matched = rosterForRegion(regionId, platformId);
-    const uids = Object.keys(matched);
-    const platformInfo = platformId ? CAL_PLATFORM_MAP[platformId] : null;
-    const regionInfo   = CAL_REGION_MAP[regionId] || { id: regionId, label: regionId };
-    const scopeLabel   = `${regionInfo.label}${platformInfo ? ` · ${platformInfo.label}` : ''}`;
-    if (uids.length === 0) { skipped.push(scopeLabel); return; }
-    // Prefer an explicit D-Day event, else the month's earliest event.
-    const events = evs.slice().sort((a, b) => a.date - b.date);
-    const ddayEvent = events.find(ev => ev.isDday) || events[0] || null;
-    const dday = ddayEvent ? ddayEvent.dateTime : null;
-    plan.push({
-      key, regionId, platformId, regionInfo, platformInfo, scopeLabel,
-      matched, uids,
-      entryCount: uids.reduce((s, u) => s + matched[u].length, 0),
-      dday,
-      deadline: _deadlineFromDday(dday), // D-Day − 4h (local), editable later
-    });
-  });
-
-  // Overlap warning: the same market+platform cell covered by more than one
-  // planned campaign (e.g. a combined "SGTH" event AND a separate "SG" event)
-  // would give those members duplicate checklists. Different platforms in one
-  // market are NOT an overlap — that's the point of the platform dimension.
-  const cellToScopes = {};
-  plan.forEach(p => _expandRegionCode(p.regionId).forEach(mkt => {
-    const cell = `${mkt}${p.platformInfo ? ` · ${p.platformInfo.label}` : ''}`;
-    (cellToScopes[cell] = cellToScopes[cell] || new Set()).add(p.scopeLabel);
-  }));
-  const overlaps = Object.entries(cellToScopes)
-    .filter(([, scopes]) => scopes.size > 1)
-    .map(([cell, scopes]) => `${cell} appears in: ${[...scopes].join(' + ')}`);
-
-  const campInfo = campaign ? CAL_CAMPAIGN_TYPES.find(c => c.id === campaign) : null;
-
-  return {
-    plan, skipped, overlaps, monthLabel,
-    campSuffix: campInfo ? ` ${campInfo.label}` : '',
-    hadEvents: Object.keys(eventsByKey).length > 0,
-  };
-}
-
-// Read the modal's controls back into a scope object.
-function _readGenChecklistScope() {
-  const mv = document.getElementById('gen-cl-month')?.value || '';
-  const [y, m] = mv.split('-').map(Number);
-  return {
-    year:     y || calCurrentYear,
-    month:    (m ? m - 1 : calCurrentMonth),
-    campaign: document.getElementById('gen-cl-campaign')?.value || '',
-    region:   document.getElementById('gen-cl-region')?.value   || '',
-    platform: document.getElementById('gen-cl-platform')?.value || '',
-    templateId: document.getElementById('gen-cl-template')?.value || '',
-  };
-}
-
-// Open the modal. `prefill` lets the calendar shortcut seed the current view.
-function openGenChecklistModal(prefill) {
-  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
-  if (!isAdmin) return;
-
-  // No saved roster yet → route to Bulk Assign so the admin can upload a sheet.
-  if (!campaignRoster || campaignRoster.length === 0) {
-    showToast('No brand roster saved yet — upload a Bulk Assign sheet first.', 'warn');
-    if (typeof openBulkAssignModal === 'function') openBulkAssignModal();
-    return;
-  }
-
-  const pf = prefill || {};
-  const year  = pf.year  != null ? pf.year  : calCurrentYear;
-  const month = pf.month != null ? pf.month : calCurrentMonth;
-
-  // Populate the dropdowns from the same sources the calendar filters use.
-  const campSel = document.getElementById('gen-cl-campaign');
-  campSel.innerHTML = '<option value="">All campaigns</option>' +
-    CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other')
-      .map(c => `<option value="${c.id}">${escHtml(c.label)}</option>`).join('');
-
-  const regSel = document.getElementById('gen-cl-region');
-  regSel.innerHTML = '<option value="">All regions</option>' +
-    CAL_REGIONS.map(r => `<option value="${r.id}">${escHtml(r.label)}</option>`).join('');
-
-  const platSel = document.getElementById('gen-cl-platform');
-  platSel.innerHTML = '<option value="">All platforms</option>' +
-    CAL_PLATFORMS.map(p => `<option value="${p.id}">${escHtml(p.label)}</option>`).join('');
-
-  // Template picker — this is the mega vs non-mega choice. Shared helper so
-  // all three modals (new / edit / generate) offer an identical list.
-  populateTemplateSel('gen-cl-template');
-
-  document.getElementById('gen-cl-month').value =
-    `${year}-${String(month + 1).padStart(2, '0')}`;
-  campSel.value  = pf.campaign || '';
-  regSel.value   = pf.region   || '';
-  platSel.value  = pf.platform || '';
-
-  document.getElementById('gen-cl-error').style.display = 'none';
-  document.getElementById('gen-checklist-overlay').style.display = 'flex';
-  refreshGenChecklistPlan();
-}
-
-function closeGenChecklistModal(e) {
-  if (e && e.target !== e.currentTarget) return;
-  document.getElementById('gen-checklist-overlay').style.display = 'none';
-  genChecklistPlan = null;
-}
-
-// Recompute + re-render the preview whenever any control changes, so the admin
-// always sees exactly what the Generate button will create.
-function refreshGenChecklistPlan() {
-  const scope = _readGenChecklistScope();
-  const res   = _buildChecklistPlan(scope);
-  genChecklistPlan = { ...res, scope };
-
-  const box     = document.getElementById('gen-cl-plan');
-  const countEl = document.getElementById('gen-cl-count');
-  const warnEl  = document.getElementById('gen-cl-warnings');
-  const btn     = document.getElementById('gen-cl-submit');
-
-  const { plan, skipped, overlaps, hadEvents } = res;
-
-  // Empty states — say which of the two halves is missing, so it's actionable.
-  if (plan.length === 0) {
-    box.innerHTML = `<div class="gen-plan-empty">${
-      !hadEvents
-        ? 'No region-tagged events in this month for these filters. Add region tags to your calendar events, or widen the filters above.'
-        : 'Found calendar events, but none of those region/platform pairs have members in the uploaded roster sheet.'
-    }</div>`;
-    countEl.textContent = '';
-    btn.disabled = true;
-    btn.textContent = 'Generate';
-  } else {
-    box.innerHTML = plan.map(p => `
-      <div class="gen-plan-row">
-        <div class="gen-plan-scope">${escHtml(p.scopeLabel)}</div>
-        <div class="gen-plan-meta">
-          <span>👤 ${p.uids.length} member${p.uids.length === 1 ? '' : 's'}</span>
-          <span>📋 ${p.entryCount} entr${p.entryCount === 1 ? 'y' : 'ies'}</span>
-          ${p.dday ? `<span>🎯 D-Day ${escHtml(fmtDeadlineShort(p.dday))}</span>` : ''}
-          ${p.deadline ? `<span>⏰ Deadline ${escHtml(fmtDeadlineShort(p.deadline))}</span>` : ''}
-        </div>
-      </div>`).join('');
-    countEl.textContent = `${plan.length} campaign${plan.length === 1 ? '' : 's'} will be created`;
-    btn.disabled = false;
-    btn.textContent = `Generate ${plan.length} campaign${plan.length === 1 ? '' : 's'}`;
-  }
-
-  let warnHtml = '';
-  if (skipped.length) {
-    warnHtml += `<div class="gen-warn gen-warn-info">
-      <strong>Skipped —</strong> these have a calendar event but nobody in the roster sheet:
-      ${escHtml(skipped.join(', '))}
-    </div>`;
-  }
-  if (overlaps.length) {
-    warnHtml += `<div class="gen-warn gen-warn-danger">
-      <strong>⚠️ Overlap —</strong> these market/platform cells are covered by more than one campaign,
-      so the same members may get duplicate checklists:
-      <ul>${overlaps.map(o => `<li>${escHtml(o)}</li>`).join('')}</ul>
-    </div>`;
-  }
-  warnEl.innerHTML = warnHtml;
-}
-
-// Actually write the campaigns for the previewed plan. Each region+platform
-// pair goes through the SAME shared engine the manual "+ New Campaign" flow
-// uses — only the way we decided the name/members/entries differs.
-async function confirmGenerateChecklist() {
-  if (!genChecklistPlan || !genChecklistPlan.plan.length) return;
-  const { plan, monthLabel, campSuffix, scope } = genChecklistPlan;
-  const templateId = scope.templateId || null;
-
-  const btn = document.getElementById('gen-cl-submit');
-  btn.disabled = true;
-  btn.textContent = 'Generating…';
-
-  let okCount = 0;
-  for (const p of plan) {
-    const platSuffix    = p.platformInfo ? ` ${p.platformInfo.short}` : '';
-    const suggestedName = `${p.regionInfo.label}${platSuffix}${campSuffix} — ${monthLabel}`;
-    try {
-      await createCampaignWithChecklists({
-        name:         suggestedName,
-        uids:         p.uids,
-        entries:      p.matched,
-        templateId,                       // ← mega vs non-mega, chosen in the modal
-        dday:         p.dday,
-        deadline:     p.deadline,         // D-Day − 4h (local), editable default
-        region:       p.regionId,
-        platform:     p.platformId || null,
-        campaignType: scope.campaign || null,
-        broadcastMessage: `🚀 Campaign "${suggestedName}" is ready — your brand assignments are pre-filled. Open the Checklist tab to start.`,
-      });
-      okCount++;
-    } catch (e) {
-      console.error(`Failed generating for region ${p.regionId}`, e);
-    }
-  }
-
-  closeGenChecklistModal();
-  await loadAdminData();
-  if (okCount === plan.length) {
-    showToast(`✅ Generated ${okCount} campaign(s).`, 'success');
-  } else {
-    showToast(`Generated ${okCount} of ${plan.length} campaigns — some failed, check the console.`, 'warn');
-  }
-}
-
-// Calendar ⚡ shortcut → opens the SAME modal, pre-filled from the current view.
-function generateChecklistFromCalendarView() {
-  openGenChecklistModal({
-    year:     calCurrentYear,
-    month:    calCurrentMonth,
-    campaign: calFilterCampaign,
-    region:   calFilterRegion,
-    platform: calFilterPlatform,
-  });
-}
+// ── Generate-from-calendar flow removed ─────────────────────────────
+// The "Generate from Calendar" modal and its helpers (_buildChecklistPlan,
+// openGenChecklistModal, refreshGenChecklistPlan, confirmGenerateChecklist,
+// generateChecklistFromCalendarView, genChecklistPlan) were retired. Bulk
+// Assign is now the single calendar-driven path for creating checklists.
+// inferGenScopeFromName + _deadlineFromDday + buildRegionDeadlineMap remain,
+// since Bulk Assign and the New Campaign preview still use them.
 
 async function savePersonalCalendarEntries() {
   if (!currentUser) return;
@@ -3827,7 +3595,6 @@ function renderCalendarView(targetEl) {
           ${canAddPersonal ? `<span class="cal-legend-dot" style="background:#94A3B8;border:2px dashed #64748B;box-sizing:border-box;"></span><span style="font-size:11px;color:var(--text-muted)">My Events</span>` : ''}
         </div>
         ${isAdmin ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Add Event</button>` : ''}
-        ${isAdmin ? `<button class="btn-outline cal-gen-shortcut" onclick="generateChecklistFromCalendarView()" title="Generate Checklist — opens the generator pre-filled with this month and these filters">⚡</button>` : ''}
         ${isTeamLead ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Team Event</button>` : ''}
         ${canAddPersonal ? `<button class="btn-outline" style="background:#475569;border-color:#475569;font-size:12px;" onclick="openCalEntryModal(null,true)">+ My Event</button>` : ''}
       </div>
@@ -3978,7 +3745,10 @@ function calGoToday() {
 
 // ── Calendar time field helpers (HH MM AM/PM) ─────────────────
 function _setCalTimeFields(prefix, timeStr) {
-  // timeStr format: "10:30 AM" or ""
+  // Loads a STORED time back into the HH / MM / AM-PM dropdowns.
+  // Storage format is 24-hour "HH:mm" (e.g. "20:00"). We also still accept the
+  // legacy "hh:mm AM/PM" shape so any old data written before this fix loads
+  // correctly. The dropdowns themselves are 12-hour, so convert to 12h here.
   const hEl = document.getElementById(`cal-entry-${prefix}-hour`);
   const mEl = document.getElementById(`cal-entry-${prefix}-minute`);
   const aEl = document.getElementById(`cal-entry-${prefix}-ampm`);
@@ -3986,20 +3756,74 @@ function _setCalTimeFields(prefix, timeStr) {
   if (!timeStr) { hEl.value = ''; mEl.value = ''; aEl.value = ''; return; }
   const match = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
   if (!match) { hEl.value = ''; mEl.value = ''; aEl.value = ''; return; }
-  let h = match[1].padStart(2, '0');
+  let h24;
   const m = match[2];
   const ap = (match[3] || '').toUpperCase();
-  hEl.value = h;
+  if (ap) {
+    // Legacy 12-hour string with an explicit meridiem.
+    let hh = parseInt(match[1], 10) % 12;
+    if (ap === 'PM') hh += 12;
+    h24 = hh;
+  } else {
+    // Canonical 24-hour string.
+    h24 = parseInt(match[1], 10);
+  }
+  const meridiem = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 || 12;
+  hEl.value = String(h12).padStart(2, '0');
   mEl.value = m;
-  aEl.value = ap || '';
+  aEl.value = meridiem;
 }
 
 function _getCalTimeField(prefix) {
+  // Reads the 12-hour HH / MM / AM-PM dropdowns and returns a canonical
+  // 24-hour "HH:mm" string (e.g. 08 / 00 / PM -> "20:00"). Everything
+  // downstream (calendarEntries[].startTime, _deadlineFromDday, the
+  // `${date}T${startTime}` ISO builders) assumes 24-hour, so the meridiem
+  // MUST be folded in here -- otherwise 8 PM was being stored as "08:00" and
+  // read as 8 AM, making the derived deadline 4 hours off (and in the wrong
+  // half of the day).
   const h = document.getElementById(`cal-entry-${prefix}-hour`)?.value;
   const m = document.getElementById(`cal-entry-${prefix}-minute`)?.value;
   const a = document.getElementById(`cal-entry-${prefix}-ampm`)?.value;
   if (!h || !m || !a) return '';
-  return `${h}:${m} ${a}`;
+  let hh = parseInt(h, 10) % 12;
+  if (a.toUpperCase() === 'PM') hh += 12;
+  return `${String(hh).padStart(2, '0')}:${m}`;
+}
+
+// One-time migration: older calendar events stored their time in the buggy
+// 12-hour "hh:mm AM/PM" format (the meridiem was silently dropped when a
+// deadline was derived). Rewrite any such values in place to canonical 24-hour
+// "HH:mm" so _deadlineFromDday and the ISO builders read them correctly.
+// Idempotent: values already in "HH:mm" form are left untouched. Runs once per
+// load against the in-memory calendarEntries; persists only the rows it fixes.
+function _migrateLegacyCalTimes() {
+  if (typeof calendarEntries === 'undefined' || !Array.isArray(calendarEntries)) return;
+  const to24 = v => {
+    if (!v) return v;
+    const mt = String(v).match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i); // ONLY legacy meridiem form
+    if (!mt) return v; // already 24h "HH:mm" (or unrecognised) -> leave as-is
+    let hh = parseInt(mt[1], 10) % 12;
+    if (mt[3].toUpperCase() === 'PM') hh += 12;
+    return `${String(hh).padStart(2, '0')}:${mt[2]}`;
+  };
+  const dirty = [];
+  calendarEntries.forEach(e => {
+    const ns = to24(e.startTime);
+    const ne = to24(e.endTime);
+    if (ns !== e.startTime || ne !== e.endTime) {
+      e.startTime = ns; e.endTime = ne;
+      dirty.push(e);
+    }
+  });
+  if (dirty.length && typeof saveCalendarEntries === 'function') {
+    // Best-effort persist; failures just mean it retries next load.
+    Promise.resolve()
+      .then(() => saveCalendarEntries())
+      .then(() => console.info(`Migrated ${dirty.length} calendar event time(s) to 24-hour format.`))
+      .catch(err => console.warn('Calendar time migration could not persist:', err));
+  }
 }
 
 // ── Calendar Entry Modal ──
@@ -7642,15 +7466,21 @@ async function confirmImportMembers() {
 // ═════════════════════════════════════════════════════════════
 let bulkAssignMatched   = {}; // { uid: [{label,brand,platform,region}] }
 let bulkAssignUnmatched = []; // usernames in file that don't match any member
+let bulkAssignBadRegions = []; // region spellings that don't map to a known market
 
 function openBulkAssignModal() {
   bulkAssignMatched   = {};
   bulkAssignUnmatched = [];
+  bulkAssignBadRegions = [];
   document.getElementById('bulk-assign-file').value = '';
   document.getElementById('bulk-assign-preview').innerHTML = '';
   document.getElementById('bulk-assign-error').style.display = 'none';
   document.getElementById('bulk-assign-btn').disabled = true;
   document.getElementById('bulk-assign-new-name').value = '';
+  const _dDate = document.getElementById('bulk-assign-deadline-date');
+  const _dTime = document.getElementById('bulk-assign-deadline-time');
+  if (_dDate) _dDate.value = '';
+  if (_dTime) _dTime.value = '';
 
   const sel = document.getElementById('bulk-assign-campaign-sel');
   const activeCamps = Object.values(campaigns).sort((a, b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
@@ -7669,6 +7499,10 @@ function closeBulkAssignModal(e) {
 function onBulkAssignCampaignChange() {
   const isNew = document.getElementById('bulk-assign-campaign-sel').value === '__new__';
   document.getElementById('bulk-assign-new-name-field').style.display = isNew ? '' : 'none';
+  // Deadline is only settable when creating a new campaign; existing campaigns
+  // keep whatever deadline they already have.
+  const dlField = document.getElementById('bulk-assign-deadline-field');
+  if (dlField) dlField.style.display = isNew ? '' : 'none';
 }
 
 function downloadBulkAssignTemplate() {
@@ -7688,6 +7522,7 @@ function handleBulkAssignFileChange(e) {
   errEl.style.display = 'none';
   bulkAssignMatched = {};
   bulkAssignUnmatched = [];
+  bulkAssignBadRegions = [];
   document.getElementById('bulk-assign-preview').innerHTML = '';
   document.getElementById('bulk-assign-btn').disabled = true;
 
@@ -7787,13 +7622,20 @@ function _parseBulkAssignRows(rows, errEl) {
   bulkAssignMatched = {};
   const unmatchedSet = new Set();
   const ambiguousSet = new Set();
+  const badRegionSet = new Set();
 
   rows.slice(headerRowIdx + 1).forEach(r => {
     if (r.length <= Math.max(uIdx, bIdx, pIdx, rIdx)) return;
     const identifier = String(r[uIdx] || '').trim();
     const brand    = String(r[bIdx] || '').trim();
     const platform = String(r[pIdx] || '').trim();
-    const region   = String(r[rIdx] || '').trim();
+    const rawRegion = String(r[rIdx] || '').trim();
+    // Canonicalise so the region code matches the per-region deadline map keys
+    // exactly (SG, MY, PH, VN, TH, LAZ). Unknown spellings still generate an
+    // entry (kept uppercased) but are flagged — they won't join to a calendar
+    // deadline and would silently never be marked overdue otherwise.
+    const region   = _normalizeRegionCode(rawRegion) || rawRegion.toUpperCase();
+    if (rawRegion && !_normalizeRegionCode(rawRegion)) badRegionSet.add(rawRegion);
     if (!identifier || !brand) return;
 
     const { member, ambiguous } = _findMemberByIdentifier(identifier, lookup);
@@ -7811,6 +7653,7 @@ function _parseBulkAssignRows(rows, errEl) {
   });
 
   bulkAssignUnmatched = [...unmatchedSet, ...[...ambiguousSet].map(n => `${n} (multiple members share this first name — use full name or username instead)`)];
+  bulkAssignBadRegions = [...badRegionSet];
   // Keep a reusable roster so the calendar's per-region generator can slice it
   // later without re-uploading the sheet.
   _persistRosterFromMatched(bulkAssignMatched);
@@ -7843,6 +7686,12 @@ function _renderBulkAssignPreview() {
   if (bulkAssignUnmatched.length > 0) {
     html += `<div style="margin-top:10px;padding:8px 10px;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.25);border-radius:8px;font-size:12px;color:#DC2626;">
       ⚠️ Unmatched username(s), skipped: ${bulkAssignUnmatched.map(escHtml).join(', ')}
+    </div>`;
+  }
+
+  if (bulkAssignBadRegions && bulkAssignBadRegions.length > 0) {
+    html += `<div style="margin-top:8px;padding:8px 10px;background:rgba(217,119,6,0.08);border:1px solid rgba(217,119,6,0.3);border-radius:8px;font-size:12px;color:#B45309;">
+      ⚠️ Unrecognised region(s): ${bulkAssignBadRegions.map(escHtml).join(', ')}. These won't match a calendar deadline — use one of ${CAL_REGIONS.map(r => r.id).join(', ')}, or they'll fall back to the campaign-wide deadline.
     </div>`;
   }
 
@@ -7886,6 +7735,27 @@ async function confirmBulkAssign() {
   });
   const _hasDeadlines = regionDeadlines && Object.keys(regionDeadlines).length > 0;
 
+  // Campaign-wide checklist deadline typed into the modal (new campaigns only).
+  // This is the fallback every region without its own calendar-derived deadline
+  // uses, so no region is left un-deadlined (and therefore invisible in the
+  // overdue/pending trace). Combine the date + time inputs into the same
+  // "YYYY-MM-DDTHH:mm" / "YYYY-MM-DD" shape the rest of the app stores.
+  const _campWideDeadline = (() => {
+    const d = document.getElementById('bulk-assign-deadline-date')?.value || '';
+    const t = document.getElementById('bulk-assign-deadline-time')?.value || '';
+    if (!d) return null;
+    return t ? `${d}T${t}` : d;
+  })();
+
+  // Guard: for a NEW campaign, refuse to create something where a region could
+  // end up with no deadline at all. That happens only when there's no
+  // campaign-wide deadline AND no per-region deadlines to fall back on.
+  if (isNew && !_campWideDeadline && !_hasDeadlines) {
+    showError(errEl, 'Set a Checklist Deadline (or make sure the calendar has timed events for these regions) before generating — otherwise nothing can ever be marked overdue.');
+    btn.textContent = '📊 Generate Entries'; btn.disabled = false;
+    return;
+  }
+
   try {
     if (isNew) {
       const ref = await db.collection('campaigns').add({
@@ -7896,7 +7766,7 @@ async function confirmBulkAssign() {
         fromPollId: null,
         checklistTemplateId: null,
         dday: null,
-        deadline: null,
+        deadline: _campWideDeadline,
         regionDeadlines: _hasDeadlines ? regionDeadlines : null,
       });
       campaignId = ref.id;
@@ -7964,12 +7834,18 @@ function parseBrandAssignmentRows(rows) {
 
   const unmatchedSet = new Set();
   const ambiguousSet = new Set();
+  const badRegionSet = new Set(); // sheet regions that don't map to a known market
   rows.slice(headerRowIdx + 1).forEach(r => {
     if (r.length <= Math.max(uIdx, bIdx, pIdx, rIdx)) return;
     const identifier = String(r[uIdx] || '').trim();
     const brand    = String(r[bIdx] || '').trim();
     const platform = String(r[pIdx] || '').trim();
-    const region   = String(r[rIdx] || '').trim();
+    const rawRegion = String(r[rIdx] || '').trim();
+    // Canonicalise the region so its code matches the per-region deadline map's
+    // keys exactly. Unknown spellings are kept as-typed (so the entry still
+    // generates) but flagged, because they won't join to a calendar deadline.
+    const region   = _normalizeRegionCode(rawRegion) || rawRegion.toUpperCase();
+    if (rawRegion && !_normalizeRegionCode(rawRegion)) badRegionSet.add(rawRegion);
     if (!identifier || !brand) return;
 
     const { member, ambiguous } = _findMemberByIdentifier(identifier, lookup);
@@ -7986,6 +7862,7 @@ function parseBrandAssignmentRows(rows) {
   });
 
   result.unmatched = [...unmatchedSet, ...[...ambiguousSet].map(n => `${n} (multiple members share this first name — use full name or username instead)`)];
+  result.badRegions = [...badRegionSet]; // regions with no known market → won't get a calendar deadline
   return result;
 }
 
@@ -8354,6 +8231,7 @@ function useMapInBulkAssign() {
   openBulkAssignModal(); // resets selects/preview, then we override with our mapping below
   bulkAssignMatched = matched;
   bulkAssignUnmatched = [];
+  bulkAssignBadRegions = [];
   renderBrandAssignmentPreview(document.getElementById('bulk-assign-preview'), bulkAssignMatched, [], false);
   document.getElementById('bulk-assign-btn').disabled = Object.keys(matched).length === 0;
 }
@@ -9329,6 +9207,7 @@ async function renderTeamLeadView() {
         allRows.push({
           member, camp,
           entryLabel: eb.label,
+          entryRegion: (eb.region || '').toUpperCase(),
           d5Done: eb.d5Done, d1Done: eb.d1Done, overallDone: eb.d1Pct,
           d5Pct: eb.d5Pct, d1Pct: eb.d1Pct, totalItems: eb.totalItems, hasD5: eb.hasD5,
           lastActive: cl.lastActive || null,
@@ -9447,7 +9326,7 @@ async function renderTeamLeadView() {
     const isSelf = r.member.uid === currentUser.uid;
     return `<tr>
       <td><strong>${escHtml(r.member.name || r.member.username)}</strong>${isSelf ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">You</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${escHtml(r.member.username)}</span></td>
-      <td>${escHtml(r.camp.name)}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.rowDeadline ? `<br><span style="font-size:10px;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};font-weight:600;">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>` : ''}</td>
+      <td>${escHtml(r.camp.name)}${r.entryRegion ? ` <span style="font-size:10px;font-weight:700;background:#EEF2FF;color:#4338CA;border-radius:4px;padding:1px 6px;margin-left:2px;">${escHtml(r.entryRegion)}</span>` : ''}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.rowDeadline ? `<br><span style="font-size:10px;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};font-weight:600;">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>` : ''}</td>
       <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
       <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
       <td><span class="badge ${badge}</span>${
