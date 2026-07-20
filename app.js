@@ -333,12 +333,26 @@ async function renderAdminView(force) {
       // this campaign's total item count rather than lumped together with
       // other entries (or computed against the wrong template's size).
       getEntryBreakdown(cl, totalItemsMap[camp.id]?.total, totalItemsMap[camp.id]?.validIds, totalItemsMap[camp.id]?.hasD5).forEach(eb => {
-        // Per-region deadline: from the campaign's calendar-derived map, falling
-        // back to the campaign-wide deadline for region-less entries.
-        const entryRegion = (eb.region || '').toUpperCase();
+        // Per-row deadline, resolved against the calendar as precisely as the
+        // entry allows: try this exact region+platform first (so MY-Shopee and
+        // MY-Lazada get their OWN dates), then the region-wide fallback, then
+        // any campaign-wide deadline, and finally an admin-set override captured
+        // via the resolution modal. Whatever remains unresolved is flagged so
+        // the admin can fill it in — no checklist is left with no due date.
+        const entryRegion   = (eb.region || '').toUpperCase();
+        const entryPlatform = _normalizePlatformCode(eb.platform);
+        const rd = camp.regionDeadlines || {};
+        const _ov = camp.deadlineOverrides || {};
+        const comboKey = _deadlineKey(entryRegion, entryPlatform);
         const rowDeadline =
-          (camp.regionDeadlines && entryRegion && camp.regionDeadlines[entryRegion])
-          || camp.deadline || null;
+          (entryRegion && entryPlatform && rd[comboKey])   // exact region+platform
+          || (entryRegion && rd[entryRegion])               // region-wide fallback
+          || _ov[comboKey] || (entryRegion && _ov[entryRegion]) // admin override
+          || camp.deadline                                  // campaign-wide
+          || null;
+        // Missing data: a row with a region but no resolvable deadline. Surfaced
+        // to the admin resolution modal so it can be filled in.
+        const needsDeadline = !!entryRegion && !rowDeadline;
 
         // Due-state: an incomplete entry is only an ISSUE once its own region's
         // deadline has passed. Before that it's "not due yet", never an issue.
@@ -354,6 +368,9 @@ async function renderAdminView(force) {
           member, camp,
           entryLabel: eb.label,
           entryRegion,
+          entryPlatform,
+          comboKey,
+          needsDeadline,
           rowDeadline,
           dueState,
           isIssue: dueState === 'overdue',
@@ -365,6 +382,12 @@ async function renderAdminView(force) {
     });
   });
   window._allAdminRows = allRows;
+
+  // No checklist should be left without a due date. If any row couldn't resolve
+  // a deadline from the calendar (region+platform), the region-wide fallback, or
+  // the campaign-wide deadline, surface a centered modal so the admin fills it
+  // in. Deferred so it never blocks the dashboard paint.
+  setTimeout(() => maybePromptMissingDeadlines(allRows), 0);
 
   // The rest of the dashboard (stat cards, "Completion by team lead", and
   // the team progress table) only looks at rows for the selected campaign
@@ -1180,6 +1203,7 @@ function getEntryBreakdown(cl, totalItems, validIds, hasD5) {
       idx,
       label: entries.length > 1 ? buildEntryLabel(entry, idx) : null,
       region: entry.region || '',
+      platform: entry.platform || '',
       d5Done, d1Done, d5Pct, d1Pct, overallPct, totalItems: ti, hasD5: d5Enabled,
     };
   });
@@ -1635,6 +1659,24 @@ function initNewCampCalendarControls() {
 // including flags for regions that appear in the calendar month but resolved
 // to no usable deadline. `_prevSkipped` is preserved across re-maps so an
 // admin's skip choices survive a month/phase tweak.
+// Render one row of the calendar-mapped deadline preview. Handles both bare
+// region keys ("MY") and region+platform composites ("MY|shopee"), showing a
+// region badge plus, when present, a platform badge — so the admin can see MY
+// Shopee and MY Lazada as the distinct deadlines they now are.
+function _deadlinePreviewRow(key, iso) {
+  const [region, platformId] = String(key).split('|');
+  const rLabel = (CAL_REGION_MAP[region]?.label) || region;
+  const p = platformId ? CAL_PLATFORM_MAP[platformId] : null;
+  const regionBadge = `<span class="rp-reg-tag" style="background:#E0F2FE;color:#075985;">${escHtml(rLabel)}</span>`;
+  const platBadge = p
+    ? `<span class="rp-reg-tag" style="background:${p.color}1A;color:${p.color};">${escHtml(p.label)}</span>`
+    : `<span style="font-size:10px;color:var(--text-muted);">all platforms</span>`;
+  return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 8px;background:var(--bg-soft,#F8FAFC);border-radius:6px;">
+    <span style="display:flex;gap:5px;align-items:center;min-width:130px;">${regionBadge}${platBadge}</span>
+    <span style="color:var(--text-muted);">${escHtml(_fmtDeadline(iso))}</span>
+  </div>`;
+}
+
 function refreshNewCampCalendarMap() {
   const preview = document.getElementById('new-campaign-cal-preview');
   if (!preview) return;
@@ -1667,15 +1709,15 @@ function refreshNewCampCalendarMap() {
   let html = '';
 
   if (resolvedRegions.length > 0) {
-    html += `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Deadlines mapped from the calendar — each region is judged on-time/late against its own date:</div>`;
+    html += `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Deadlines mapped from the calendar — each region &amp; platform is judged on-time/late against its own date:</div>`;
+    // Sort so a region's own fallback row sits above its platform-specific rows.
+    const _sortedKeys = resolvedRegions.slice().sort((a, b) => {
+      const [ra] = a.split('|'), [rb] = b.split('|');
+      if (ra !== rb) return ra.localeCompare(rb);
+      return a.localeCompare(b); // bare region ("MY") sorts before "MY|lazada"
+    });
     html += `<div style="display:flex;flex-direction:column;gap:4px;">` +
-      resolvedRegions.map(r => {
-        const label = (CAL_REGION_MAP[r]?.label) || r;
-        return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 8px;background:var(--bg-soft,#F8FAFC);border-radius:6px;">
-          <span style="font-weight:600;min-width:52px;">${escHtml(label)}</span>
-          <span style="color:var(--text-muted);">${escHtml(_fmtDeadline(resolved[r]))}</span>
-        </div>`;
-      }).join('') +
+      _sortedKeys.map(k => _deadlinePreviewRow(k, resolved[k])).join('') +
       `</div>`;
   }
 
@@ -3107,6 +3149,32 @@ const CAL_PLATFORMS = [
 ];
 const CAL_PLATFORM_MAP = Object.fromEntries(CAL_PLATFORMS.map(p => [p.id, p]));
 
+// Normalise a free-text platform (from a checklist entry or an uploaded sheet:
+// "Shopee", "SHP", "shopee", "lazada") to a canonical CAL_PLATFORMS id
+// ("shopee", "lazada", "tiktok"). Returns '' when it doesn't map to a calendar
+// platform (e.g. "Zalora", which has no calendar D-Day dimension) so callers
+// can fall back to the region-wide deadline or prompt the admin. This mirrors
+// _normalizeRegionCode so the composite region|platform deadline keys always
+// join cleanly regardless of how the platform was spelled upstream.
+function _normalizePlatformCode(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const lc = s.toLowerCase();
+  if (CAL_PLATFORM_MAP[lc]) return lc;                 // already a canonical id
+  const byShort = CAL_PLATFORMS.find(p => p.short.toLowerCase() === lc);
+  if (byShort) return byShort.id;
+  const byMatch = CAL_PLATFORMS.find(p => p.match.test(s));
+  return byMatch ? byMatch.id : '';                    // unknown → caller decides
+}
+
+// Build the composite key used by the deadline map + reporting lookup so a
+// region's platforms can carry DIFFERENT deadlines. Region-only entries (no
+// platform) use the bare region code as their key, preserved as a fallback.
+function _deadlineKey(region, platformId) {
+  const r = String(region || '').toUpperCase();
+  return platformId ? `${r}|${platformId}` : r;
+}
+
 // Resolve an entry's platform: explicit field wins, else infer from the
 // title so pre-existing events light up correctly straight away. Legacy
 // entries that used region="LAZ" are also caught here.
@@ -3388,8 +3456,14 @@ function buildRegionDeadlineMap({ year, month, campaignType }) {
   const monthEndStr   = `${year}-${pad(month + 1)}-${pad(lastDay)}`;
   const _dt = e => e.startTime ? `${e.date}T${e.startTime}` : e.date;
 
-  // Collect, per region, the best D-Day and any explicit Deadline event.
-  const perRegion = {}; // { REGION: { dday, deadline } }
+  // Collect the best D-Day / explicit Deadline event PER region+platform, so a
+  // region whose platforms launch on different days (e.g. MY-Shopee on Jul 19
+  // vs MY-Lazada on Jul 24) yields a distinct deadline for each — the calendar,
+  // not the region, becomes the source of truth. A region-only bucket (bare
+  // region code, no platform) is kept alongside so events without a platform
+  // tag still resolve, and so a checklist entry whose platform has no dated
+  // event can fall back to the region-wide date.
+  const perKey = {}; // { "MY|shopee": { dday, deadline }, "MY": {...}, ... }
   calendarEntries.forEach(e => {
     if (!e.date) return;
     const dateStr = String(e.date).slice(0, 10); // normalise to YYYY-MM-DD
@@ -3413,24 +3487,197 @@ function buildRegionDeadlineMap({ year, month, campaignType }) {
     const r = _calRegionOf(e);
     if (!r) return;
     const region = r.id;
-    perRegion[region] = perRegion[region] || { dday: null, deadline: null };
-    if (e.type === 'deadline') {
-      const iso = _dt(e);
-      if (!perRegion[region].deadline || iso < perRegion[region].deadline)
-        perRegion[region].deadline = iso;
-    } else if (e.type === 'dday') {
-      const iso = _dt(e);
-      if (!perRegion[region].dday || iso < perRegion[region].dday)
-        perRegion[region].dday = iso;
-    }
+    // Platform is optional. When present, the event feeds ONLY that region's
+    // platform-specific bucket. When absent, it feeds the region-wide bucket
+    // (which every platform in that region can fall back to).
+    const p = _calPlatformOf(e);
+    const platformId = p ? p.id : '';
+    const key = _deadlineKey(region, platformId);
+
+    const bump = (k) => {
+      perKey[k] = perKey[k] || { dday: null, deadline: null };
+      if (e.type === 'deadline') {
+        const iso = _dt(e);
+        if (!perKey[k].deadline || iso < perKey[k].deadline) perKey[k].deadline = iso;
+      } else if (e.type === 'dday') {
+        const iso = _dt(e);
+        if (!perKey[k].dday || iso < perKey[k].dday) perKey[k].dday = iso;
+      }
+    };
+    bump(key);
+    // A platform-tagged event ALSO contributes to the region-wide fallback
+    // (earliest across platforms), so a region key always exists whenever any
+    // event for that region does. This keeps region-less checklist rows and
+    // unknown-platform rows (e.g. Zalora) resolvable.
+    if (platformId) bump(region);
   });
 
   const out = {};
-  Object.entries(perRegion).forEach(([region, v]) => {
+  Object.entries(perKey).forEach(([key, v]) => {
     const deadline = v.deadline || _deadlineFromDday(v.dday);
-    if (deadline) out[region] = deadline;
+    if (deadline) out[key] = deadline;
   });
-  return out; // { MY: "2026-07-14T16:00", VN: "2026-07-13T16:00", ... }
+  // Shape: { "MY|shopee": "2026-07-19T16:00", "MY|lazada": "2026-07-24T16:00",
+  //          "MY": "2026-07-19T16:00" (region-wide fallback), ... }
+  return out;
+}
+
+// ── Missing-deadline resolution modal ───────────────────────────────────
+// A checklist row is "unresolved" when it has a region but no deadline could
+// be derived from the calendar (region+platform), the region-wide fallback, or
+// the campaign-wide deadline. Rather than let such a row silently never go
+// overdue, we pop a centered modal listing each unresolved campaign + region +
+// platform combo and let the admin type a deadline. Saved values are written to
+// the campaign's `deadlineOverrides` map (keyed by the same region|platform
+// composite used at lookup time), so every checklist ends up with a due date.
+let _resolveDeadlineState = null; // { combos: [{campId, campName, region, platform, comboKey, count}] }
+
+// Only the admin/manager should be interrupted by this (team leads and CDMs
+// can't edit campaign deadlines). Also skip if the modal is already open.
+function _canResolveDeadlines() {
+  const role = currentUser?.role;
+  return role === 'admin' || role === 'manager';
+}
+
+function maybePromptMissingDeadlines(rows) {
+  if (!_canResolveDeadlines()) return;
+  if (document.getElementById('resolve-deadlines-overlay')) return; // already open
+  const unresolved = (rows || []).filter(r => r.needsDeadline);
+  if (unresolved.length === 0) return;
+
+  // De-duplicate to unique campaign + region + platform combos (many CDMs share
+  // the same brand/platform/region, so one input fixes all of them at once).
+  const map = {};
+  unresolved.forEach(r => {
+    const campId   = r.camp?.id || '';
+    const key = `${campId}::${r.comboKey}`;
+    if (!map[key]) {
+      map[key] = {
+        campId,
+        campName: r.camp?.name || campId,
+        region:   r.entryRegion || '',
+        platform: r.entryPlatform || '',   // canonical id ('' when unknown, e.g. Zalora)
+        platformLabel: r.entryPlatform ? (CAL_PLATFORM_MAP[r.entryPlatform]?.label || r.entryPlatform)
+                     : (r.entryPlatform === '' && r.comboKey.includes('|') ? r.comboKey.split('|')[1] : ''),
+        comboKey: r.comboKey,
+        count: 0,
+      };
+    }
+    map[key].count++;
+  });
+
+  _resolveDeadlineState = { combos: Object.values(map) };
+  _openResolveDeadlinesModal();
+}
+
+function _openResolveDeadlinesModal() {
+  const combos = _resolveDeadlineState?.combos || [];
+  if (combos.length === 0) return;
+
+  let overlay = document.getElementById('resolve-deadlines-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'resolve-deadlines-overlay';
+    overlay.onclick = (e) => { if (e.target === overlay) { /* require explicit action */ } };
+    document.body.appendChild(overlay);
+  }
+
+  // Default suggested time: 16:00 (the D-Day − standard 4pm cutoff convention
+  // used across the app). Date is left blank so the admin picks intentionally.
+  const rowsHtml = combos.map((c, i) => {
+    const platTxt = c.platform
+      ? `<span class="rp-reg-tag" style="background:#EEF2FF;color:#4338CA;">${escHtml(CAL_PLATFORM_MAP[c.platform]?.label || c.platform)}</span>`
+      : (c.platformLabel
+          ? `<span class="rp-reg-tag" style="background:#FEF3C7;color:#92400E;">${escHtml(c.platformLabel)}</span>`
+          : `<span class="rp-reg-tag" style="background:#F3F4F6;color:#6B7280;">no platform</span>`);
+    return `
+    <div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+      <div style="flex:1;min-width:180px;">
+        <div style="font-size:13px;font-weight:600;color:var(--text);">${escHtml(c.campName)}</div>
+        <div style="margin-top:3px;display:flex;gap:5px;align-items:center;">
+          <span class="rp-reg-tag" style="background:#E0F2FE;color:#075985;">${escHtml(c.region || '—')}</span>
+          ${platTxt}
+          <span style="font-size:11px;color:var(--text-muted);">· ${c.count} checklist${c.count === 1 ? '' : 's'}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input type="date" id="rd-date-${i}" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+        <input type="time" id="rd-time-${i}" value="16:00" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+      </div>
+    </div>`;
+  }).join('');
+
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:640px;">
+      <div class="modal-header" style="display:flex;align-items:flex-start;gap:10px;margin-bottom:6px;">
+        <div style="font-size:22px;line-height:1;">⏰</div>
+        <div>
+          <h3 style="margin:0;font-size:17px;color:var(--text);">Set missing checklist deadlines</h3>
+          <p style="margin:4px 0 0;font-size:12.5px;color:var(--text-muted);line-height:1.5;">
+            These region/platform combos have checklists but no deadline from the
+            calendar or campaign. Give each one a due date so it can be tracked as
+            on-time or overdue. Nothing is left without a deadline.
+          </p>
+        </div>
+      </div>
+      <div id="rd-list" style="margin-top:8px;">${rowsHtml}</div>
+      <div id="resolve-deadlines-error" class="error-msg" style="display:none;margin-top:10px;"></div>
+      <div class="modal-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+        <button class="btn-outline" onclick="dismissResolveDeadlines()">Later</button>
+        <button class="btn-primary" onclick="saveResolveDeadlines()">Save deadlines</button>
+      </div>
+    </div>`;
+  overlay.style.display = 'flex';
+}
+
+// "Later" — close without saving. The modal will re-appear on the next
+// dashboard render while rows remain unresolved, so nothing is lost.
+function dismissResolveDeadlines() {
+  const o = document.getElementById('resolve-deadlines-overlay');
+  if (o) o.style.display = 'none';
+}
+
+async function saveResolveDeadlines() {
+  const combos = _resolveDeadlineState?.combos || [];
+  const errEl = document.getElementById('resolve-deadlines-error');
+  if (errEl) errEl.style.display = 'none';
+
+  // Collect each combo's typed deadline. Require a date for every row so we
+  // never write a half-filled override that leaves some checklists un-dated.
+  const entered = [];
+  for (let i = 0; i < combos.length; i++) {
+    const d = document.getElementById(`rd-date-${i}`)?.value || '';
+    const t = document.getElementById(`rd-time-${i}`)?.value || '';
+    if (!d) {
+      if (errEl) { errEl.textContent = 'Please set a date for every row before saving.'; errEl.style.display = 'block'; }
+      return;
+    }
+    entered.push({ combo: combos[i], iso: t ? `${d}T${t}` : d });
+  }
+
+  // Group overrides by campaign, then write once per campaign (merge into any
+  // existing deadlineOverrides map). Keyed by the region|platform composite so
+  // reporting's lookup finds them in the same slot it checks.
+  const byCamp = {};
+  entered.forEach(({ combo, iso }) => {
+    byCamp[combo.campId] = byCamp[combo.campId] || {};
+    byCamp[combo.campId][combo.comboKey] = iso;
+  });
+
+  try {
+    await Promise.all(Object.entries(byCamp).map(async ([campId, overrides]) => {
+      const existing = (campaigns[campId]?.deadlineOverrides) || {};
+      const merged = { ...existing, ...overrides };
+      await db.collection('campaigns').doc(campId).update({ deadlineOverrides: merged });
+      if (campaigns[campId]) campaigns[campId].deadlineOverrides = merged; // keep local cache in sync
+    }));
+    dismissResolveDeadlines();
+    showToast('✅ Deadlines saved — checklists are now tracked against them.', 'success');
+    await renderAdminView(true);
+  } catch (e) {
+    console.error(e);
+    if (errEl) { errEl.textContent = 'Failed to save. Please try again.'; errEl.style.display = 'block'; }
+  }
 }
 
 // Best-effort: infer { year, month, campaignType } for a generation from a
@@ -4023,6 +4270,53 @@ function closeCalEntryModal(e) {
   document.getElementById('cal-entry-overlay').style.display = 'none';
 }
 
+// Small centered prompt asking which platform a region-tagged D-Day/Deadline
+// event belongs to. Resolves to a CAL_PLATFORMS id, '__region__' (apply to the
+// whole region), or '__cancel__' (abort the save). Returns a Promise so the
+// caller can await the admin's choice.
+function _promptCalPlatform(region, type) {
+  return new Promise(resolve => {
+    let overlay = document.getElementById('cal-platform-prompt-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'cal-platform-prompt-overlay';
+      // Reuse the shared modal-overlay look.
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(17,40,80,0.55);display:flex;align-items:center;justify-content:center;z-index:260;padding:1rem;';
+      document.body.appendChild(overlay);
+    }
+    const typeLabel = type === 'dday' ? 'D-Day' : 'Deadline';
+    const platBtns = CAL_PLATFORMS.map(p =>
+      `<button class="btn-outline cpp-pick" data-val="${p.id}" style="justify-content:flex-start;">
+         <span class="rp-reg-tag" style="background:${p.color}1A;color:${p.color};margin-right:6px;">${escHtml(p.short)}</span>${escHtml(p.label)}
+       </button>`
+    ).join('');
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:420px;">
+        <h3 style="margin:0 0 6px;font-size:16px;color:var(--text);">Which platform is this ${typeLabel} for?</h3>
+        <p style="margin:0 0 14px;font-size:12.5px;color:var(--text-muted);line-height:1.5;">
+          This ${typeLabel} is tagged <strong>${escHtml(region)}</strong> but no platform.
+          Platforms in the same region can launch on different days, so pick the
+          one this date belongs to for accurate checklist deadlines.
+        </p>
+        <div style="display:flex;flex-direction:column;gap:8px;">${platBtns}</div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
+          <button class="btn-outline cpp-pick" data-val="__region__" style="justify-content:flex-start;color:var(--text-muted);">
+            Applies to all platforms in ${escHtml(region)}
+          </button>
+        </div>
+        <div class="modal-actions" style="display:flex;justify-content:flex-end;margin-top:14px;">
+          <button class="btn-outline cpp-pick" data-val="__cancel__">Cancel</button>
+        </div>
+      </div>`;
+    overlay.style.display = 'flex';
+    const done = (val) => { overlay.style.display = 'none'; resolve(val); };
+    overlay.querySelectorAll('.cpp-pick').forEach(btn => {
+      btn.onclick = () => done(btn.getAttribute('data-val'));
+    });
+    overlay.onclick = (e) => { if (e.target === overlay) done('__cancel__'); };
+  });
+}
+
 async function saveCalEntry() {
   const title    = document.getElementById('cal-entry-title-input').value.trim();
   const date     = document.getElementById('cal-entry-date').value;
@@ -4079,12 +4373,31 @@ async function saveCalEntry() {
     }
   }
 
+  // Deadline accuracy guard: a D-Day / Deadline event that names a region but
+  // no platform would apply region-wide, which is exactly the imprecision we're
+  // removing (MY-Shopee and MY-Lazada launch on different days). Prompt the
+  // admin to pick the correct platform — or explicitly confirm it applies to
+  // the whole region — before saving. Skipped for personal entries, edits that
+  // already resolved this, and non-deadline event types.
+  if (!personalMode && (type === 'dday' || type === 'deadline') && region && !platform) {
+    const picked = await _promptCalPlatform(region, type);
+    if (picked === '__cancel__') return;                 // admin backed out
+    if (picked && picked !== '__region__') {
+      // Reflect the choice in the form select so the rest of save + any
+      // re-open shows the resolved platform.
+      const _ps = document.getElementById('cal-entry-platform');
+      if (_ps) _ps.value = picked;
+    }
+    // '__region__' → keep platform blank on purpose (applies to all platforms).
+    var _resolvedPlatform = (picked && picked !== '__region__') ? picked : '';
+  }
+
   const entryData = {
     title, date,
     endDate: endDate || date,
     type,
     region: region || null,
-    platform: platform || null,
+    platform: (typeof _resolvedPlatform !== 'undefined' ? _resolvedPlatform : platform) || null,
     campaignType,
     description: desc,
     startTime: startTime || null,
