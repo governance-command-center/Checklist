@@ -572,24 +572,24 @@
         <div>
           <div class="field" style="margin-bottom:6px;">
             <label>Start Date</label>
-            <input type="date" id="cal-entry-date" />
+            <input type="date" id="cal-entry-date" onchange="_calValidateEntry()" />
           </div>
           <div class="field">
             <label style="font-size:11px;color:var(--text-muted);">Start Time (optional)</label>
             <div style="display:grid;grid-template-columns:1fr 1fr 80px;gap:6px;align-items:center;">
-              <select id="cal-entry-start-hour" style="font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);">
+              <select id="cal-entry-start-hour" onchange="_calValidateEntry()" style="font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);">
                 <option value="">HH</option>
                 <option value="01">01</option><option value="02">02</option><option value="03">03</option>
                 <option value="04">04</option><option value="05">05</option><option value="06">06</option>
                 <option value="07">07</option><option value="08">08</option><option value="09">09</option>
                 <option value="10">10</option><option value="11">11</option><option value="12">12</option>
               </select>
-              <select id="cal-entry-start-minute" style="font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);">
+              <select id="cal-entry-start-minute" onchange="_calValidateEntry()" style="font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);">
                 <option value="">MM</option>
                 <option value="00">00</option><option value="15">15</option>
                 <option value="30">30</option><option value="45">45</option>
               </select>
-              <select id="cal-entry-start-ampm" style="font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);">
+              <select id="cal-entry-start-ampm" onchange="_calValidateEntry()" style="font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);">
                 <option value="">—</option>
                 <option value="AM">AM</option>
                 <option value="PM">PM</option>
@@ -691,11 +691,12 @@
       </div>
       <div id="cal-member-assign-wrap"></div>
       <div id="cal-entry-error" class="error-msg" style="display:none;"></div>
+      <div id="cal-entry-required-hint" style="display:none;font-size:12px;color:#B45309;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:8px 10px;margin-bottom:10px;"></div>
       <div class="modal-actions" style="justify-content:space-between;">
         <button id="cal-delete-btn" class="btn-ghost-light" style="color:#DC2626;border-color:#FCA5A5;display:none;" onclick="deleteCalEntry()">🗑 Delete</button>
         <div style="display:flex;gap:10px;">
           <button class="btn-ghost-light" onclick="closeCalEntryModal()">Cancel</button>
-          <button class="btn-primary" style="width:auto;" onclick="saveCalEntry()">💾 Save Event</button>
+          <button id="cal-entry-save" class="btn-primary" style="width:auto;" onclick="saveCalEntry()">💾 Save Event</button>
         </div>
       </div>
     </div>

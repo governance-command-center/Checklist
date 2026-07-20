@@ -4209,6 +4209,9 @@ function openCalEntryModal(entryId, isPersonal, occurrenceDate) {
   // under the (hidden) title box and it recomposes live as they change fields.
   // Personal events keep their free text.
   if (!personalMode) _calComposeTitle();
+  // Set the initial Save-enabled state (composeTitle already validates for
+  // shared events; this covers personal mode, which skips composeTitle).
+  _calValidateEntry();
 
   document.getElementById('cal-entry-overlay').style.display = 'flex';
 }
@@ -4251,6 +4254,56 @@ function _calComposeTitle() {
   // campaign events) so the admin can see exactly what the event will be named.
   const note = document.getElementById('cal-entry-title-auto-note');
   if (note) note.innerHTML = `Auto-named: <strong>${escHtml(title)}</strong> <span style="opacity:0.7;">(from Campaign · Region · Platform · Milestone)</span>`;
+
+  // Any field that composes the title also affects completeness — re-validate.
+  _calValidateEntry();
+}
+
+// Live completeness gate for SHARED (non-personal) calendar events. Region,
+// Platform, Start Date and Start Time are all required so every event that can
+// feed a checklist deadline carries the full reference the reporting side needs
+// — no event is saved with the details that make it usable left blank. Personal
+// notes are exempt (they never drive a checklist). Returns the list of missing
+// field labels (empty = valid) and toggles the Save button + hint accordingly.
+function _calValidateEntry() {
+  const saveBtn = document.getElementById('cal-entry-save');
+  const hint    = document.getElementById('cal-entry-required-hint');
+  const personalMode = document.getElementById('cal-entry-personal-mode')?.value === '1';
+
+  // Personal events: no requirement — always allow save.
+  if (personalMode) {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.style.opacity = ''; saveBtn.style.cursor = ''; }
+    if (hint) hint.style.display = 'none';
+    return [];
+  }
+
+  const region   = document.getElementById('cal-entry-region')?.value || '';
+  const platform = document.getElementById('cal-entry-platform')?.value || '';
+  const date     = document.getElementById('cal-entry-date')?.value || '';
+  const startTime = _getCalTimeField('start'); // '' unless HH+MM+AM/PM all set
+
+  const missing = [];
+  if (!region)    missing.push('Region');
+  if (!platform)  missing.push('Platform');
+  if (!date)      missing.push('Start Date');
+  if (!startTime) missing.push('Start Time');
+
+  if (saveBtn) {
+    const ok = missing.length === 0;
+    saveBtn.disabled = !ok;
+    saveBtn.style.opacity = ok ? '' : '0.5';
+    saveBtn.style.cursor  = ok ? '' : 'not-allowed';
+  }
+  if (hint) {
+    if (missing.length === 0) {
+      hint.style.display = 'none';
+    } else {
+      hint.style.display = 'block';
+      hint.innerHTML = `Complete these before saving: <strong>${missing.map(escHtml).join(', ')}</strong>. `
+        + `Shared events need a region, platform, date and start time so the checklist has a complete deadline reference.`;
+    }
+  }
+  return missing;
 }
 
 // Select All / Clear on the "Visible to" member checklist in the calendar
@@ -4268,53 +4321,6 @@ function toggleCalRecurrenceUntil() {
 function closeCalEntryModal(e) {
   if (e && e.target !== document.getElementById('cal-entry-overlay')) return;
   document.getElementById('cal-entry-overlay').style.display = 'none';
-}
-
-// Small centered prompt asking which platform a region-tagged D-Day/Deadline
-// event belongs to. Resolves to a CAL_PLATFORMS id, '__region__' (apply to the
-// whole region), or '__cancel__' (abort the save). Returns a Promise so the
-// caller can await the admin's choice.
-function _promptCalPlatform(region, type) {
-  return new Promise(resolve => {
-    let overlay = document.getElementById('cal-platform-prompt-overlay');
-    if (!overlay) {
-      overlay = document.createElement('div');
-      overlay.id = 'cal-platform-prompt-overlay';
-      // Reuse the shared modal-overlay look.
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(17,40,80,0.55);display:flex;align-items:center;justify-content:center;z-index:260;padding:1rem;';
-      document.body.appendChild(overlay);
-    }
-    const typeLabel = type === 'dday' ? 'D-Day' : 'Deadline';
-    const platBtns = CAL_PLATFORMS.map(p =>
-      `<button class="btn-outline cpp-pick" data-val="${p.id}" style="justify-content:flex-start;">
-         <span class="rp-reg-tag" style="background:${p.color}1A;color:${p.color};margin-right:6px;">${escHtml(p.short)}</span>${escHtml(p.label)}
-       </button>`
-    ).join('');
-    overlay.innerHTML = `
-      <div class="modal" style="max-width:420px;">
-        <h3 style="margin:0 0 6px;font-size:16px;color:var(--text);">Which platform is this ${typeLabel} for?</h3>
-        <p style="margin:0 0 14px;font-size:12.5px;color:var(--text-muted);line-height:1.5;">
-          This ${typeLabel} is tagged <strong>${escHtml(region)}</strong> but no platform.
-          Platforms in the same region can launch on different days, so pick the
-          one this date belongs to for accurate checklist deadlines.
-        </p>
-        <div style="display:flex;flex-direction:column;gap:8px;">${platBtns}</div>
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
-          <button class="btn-outline cpp-pick" data-val="__region__" style="justify-content:flex-start;color:var(--text-muted);">
-            Applies to all platforms in ${escHtml(region)}
-          </button>
-        </div>
-        <div class="modal-actions" style="display:flex;justify-content:flex-end;margin-top:14px;">
-          <button class="btn-outline cpp-pick" data-val="__cancel__">Cancel</button>
-        </div>
-      </div>`;
-    overlay.style.display = 'flex';
-    const done = (val) => { overlay.style.display = 'none'; resolve(val); };
-    overlay.querySelectorAll('.cpp-pick').forEach(btn => {
-      btn.onclick = () => done(btn.getAttribute('data-val'));
-    });
-    overlay.onclick = (e) => { if (e.target === overlay) done('__cancel__'); };
-  });
 }
 
 async function saveCalEntry() {
@@ -4338,6 +4344,18 @@ async function saveCalEntry() {
   if (!date)  { showError(errEl, 'Start date is required.'); return; }
   if (recurrenceFreq !== 'none' && recurrenceUntil && recurrenceUntil < date) {
     showError(errEl, '"Repeat Until" must be on or after the start date.'); return;
+  }
+
+  // Completeness backstop for SHARED events: region, platform, date and start
+  // time are all required so the checklist always has a full deadline reference.
+  // The Save button is disabled live while anything's missing (see
+  // _calValidateEntry); this guards the programmatic path / any stale state.
+  if (!personalMode) {
+    const missing = _calValidateEntry();
+    if (missing.length > 0) {
+      showError(errEl, `Please complete: ${missing.join(', ')}. Shared events need a region, platform, date and start time.`);
+      return;
+    }
   }
 
   const campInfo = CAL_CAMPAIGN_TYPES.find(c => c.id === campaignType) || CAL_CAMPAIGN_TYPES[3];
@@ -4373,31 +4391,12 @@ async function saveCalEntry() {
     }
   }
 
-  // Deadline accuracy guard: a D-Day / Deadline event that names a region but
-  // no platform would apply region-wide, which is exactly the imprecision we're
-  // removing (MY-Shopee and MY-Lazada launch on different days). Prompt the
-  // admin to pick the correct platform — or explicitly confirm it applies to
-  // the whole region — before saving. Skipped for personal entries, edits that
-  // already resolved this, and non-deadline event types.
-  if (!personalMode && (type === 'dday' || type === 'deadline') && region && !platform) {
-    const picked = await _promptCalPlatform(region, type);
-    if (picked === '__cancel__') return;                 // admin backed out
-    if (picked && picked !== '__region__') {
-      // Reflect the choice in the form select so the rest of save + any
-      // re-open shows the resolved platform.
-      const _ps = document.getElementById('cal-entry-platform');
-      if (_ps) _ps.value = picked;
-    }
-    // '__region__' → keep platform blank on purpose (applies to all platforms).
-    var _resolvedPlatform = (picked && picked !== '__region__') ? picked : '';
-  }
-
   const entryData = {
     title, date,
     endDate: endDate || date,
     type,
     region: region || null,
-    platform: (typeof _resolvedPlatform !== 'undefined' ? _resolvedPlatform : platform) || null,
+    platform: platform || null,
     campaignType,
     description: desc,
     startTime: startTime || null,
