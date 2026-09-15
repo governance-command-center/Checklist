@@ -839,7 +839,7 @@ select { cursor: pointer; }
 
 .cl-table thead tr.sub-head th {
   /* Second header row must stick BELOW the first header row, not on top of
-     it — otherwise (D-5/D-1 Status, Notes) overlaps/hides under row 1 while
+     it — otherwise (Teasing/D-Day Status, Notes) overlaps/hides under row 1 while
      scrolling. 41px matches row 1's rendered height (th-inner padding). */
   top: 41px;
   background: var(--navy);
@@ -1061,6 +1061,14 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 .modal-actions .btn-primary { width: auto; }
 
 .member-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); max-height: 160px; overflow-y: auto; }
+
+/* Per-region Teasing / D-Day / Deadline grid (New & Edit Campaign modals) */
+.region-milestone-grid { width: 100%; border-collapse: collapse; min-width: 480px; }
+.region-milestone-grid th { text-align: left; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.region-milestone-grid td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.region-milestone-grid tr:last-child td { border-bottom: none; }
+.region-milestone-grid .rm-region-cell { font-size: 12px; font-weight: 700; color: var(--navy); width: 48px; }
+.region-milestone-grid input[type="datetime-local"] { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
 .member-chip {
   display: flex; align-items: center; gap: 6px;
   padding: 4px 10px; border: 1px solid var(--border); border-radius: 99px;

@@ -203,8 +203,8 @@
               <tr>
                 <th>Member</th>
                 <th>Campaign</th>
-                <th>D-5 Check</th>
-                <th>D-1 Check</th>
+                <th>Teasing Check</th>
+                <th>D-Day Check</th>
                 <th>Overall</th>
                 <th>Last active</th>
                 <th>Actions</th>
@@ -314,7 +314,7 @@
               <div class="danger-action-row" style="margin-top:12px;">
                 <div>
                   <div style="font-size:13px;font-weight:600;color:#FCA5A5;">Delete ALL Checklist Progress</div>
-                  <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">Permanently wipes every member's D-5 and D-1 progress across all campaigns.</div>
+                  <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">Permanently wipes every member's Teasing and D-Day progress across all campaigns.</div>
                 </div>
                 <button class="btn-danger" onclick="openDeleteAllChecklistsModal()">🗑 Delete All Checklists</button>
               </div>
@@ -727,35 +727,32 @@
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Assigns this template's checklist to all members of this campaign.</div>
       </div>
 
-      <!-- ── Per-Region Deadlines from Calendar (READ-ONLY PREVIEW) ──────
-           Shows what deadline each region will get, read straight from the
-           admin calendar (explicit Deadline event, else event start − 4h).
-           This is informational only: there is no Skip control. Regions whose
-           calendar event has no start time can't derive a deadline and will
-           fall back to the campaign-wide Checklist Deadline above. Fix a
-           flagged region by adding a start time to its calendar event. -->
+      <!-- ── Per-Region Teasing / D-Day / Deadline (MANUAL) ───────────────
+           One row per region (PH/MY/SG/TH/VN) so the admin can type each
+           region's actual Teasing date, D-Day date, and Checklist Deadline
+           directly, since they can differ by market. Any row left blank
+           just uses the single D-Day/Deadline fields set above for that
+           region. -->
       <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
-        <label style="margin-bottom:6px;">🗓 Per-Region Deadlines from Calendar <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(preview — each region's deadline is read from its calendar event; regions with no time fall back to the deadline above)</span></label>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
-          <div>
-            <label style="font-size:11px;color:var(--text-muted);">Campaign Phase</label>
-            <select id="new-campaign-cal-type" style="font-size:13px;" onchange="refreshNewCampCalendarMap()">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
+          <label style="margin-bottom:0;">📍 Per-Region Teasing / D-Day / Deadline <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — set actual dates per region when they differ)</span></label>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <label style="font-size:11px;color:var(--text-muted);margin-bottom:0;">Phase</label>
+            <select id="new-campaign-cal-type" style="font-size:12px;padding:4px 8px;" title="Tags this campaign with a phase, used by reminders/alerts">
               <option value="">Any phase</option>
               <option value="mid_month">Mid-Month</option>
               <option value="payday">PayDay</option>
               <option value="double_digit">Double Digit</option>
             </select>
           </div>
-          <div>
-            <label style="font-size:11px;color:var(--text-muted);">Month</label>
-            <select id="new-campaign-cal-month" style="font-size:13px;" onchange="refreshNewCampCalendarMap()"></select>
-          </div>
-          <div>
-            <label style="font-size:11px;color:var(--text-muted);">Year</label>
-            <select id="new-campaign-cal-year" style="font-size:13px;" onchange="refreshNewCampCalendarMap()"></select>
-          </div>
         </div>
-        <div id="new-campaign-cal-preview" style="margin-top:8px;"></div>
+        <div style="overflow-x:auto;">
+          <table class="region-milestone-grid" id="new-campaign-region-grid">
+            <thead><tr><th>Region</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Leave a region blank to use the single D-Day/Deadline set above for everyone. If only D-Day is set for a region, its checklist deadline defaults to 4h before D-Day.</div>
       </div>
       <div class="field">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
@@ -857,9 +854,9 @@
           <h3 id="tmpl-editor-modal-title">✏️ New Template</h3>
           <div style="margin-top:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <input type="text" id="tmpl-name-input" placeholder="Template name (e.g. Mega Campaign, Non-Mega)" style="font-size:14px;font-weight:600;border:1px solid var(--border);border-radius:6px;padding:5px 12px;width:300px;color:var(--navy);" />
-            <select id="tmpl-d5-select" style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);" title="Whether checklists using this template show a D-5 stage">
-              <option value="yes">With D-5</option>
-              <option value="no">No D-5</option>
+            <select id="tmpl-d5-select" style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);" title="Whether checklists using this template show a Teasing stage">
+              <option value="yes">With Teasing</option>
+              <option value="no">No Teasing</option>
             </select>
             <span id="tmpl-editor-stats" style="font-size:12px;color:var(--text-muted);"></span>
           </div>
@@ -1007,7 +1004,7 @@
         This will <strong>permanently delete ALL checklist progress</strong> for every member across every campaign.
       </p>
       <p style="margin-bottom:1.25rem;padding:10px 14px;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.25);border-radius:8px;font-size:13px;color:#FCA5A5;">
-        ⚠️ This action <strong>cannot be undone</strong>. All D-5 and D-1 statuses and notes will be lost.
+        ⚠️ This action <strong>cannot be undone</strong>. All Teasing and D-Day statuses and notes will be lost.
       </p>
       <div class="field">
         <label style="color:#FCA5A5;font-size:13px;">Enter admin password to confirm</label>
@@ -1232,6 +1229,27 @@
           <option value="">None (use default checklist)</option>
         </select>
       </div>
+      <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
+          <label style="margin-bottom:0;">📍 Per-Region Teasing / D-Day / Deadline <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional)</span></label>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <label style="font-size:11px;color:var(--text-muted);margin-bottom:0;">Phase</label>
+            <select id="edit-campaign-cal-type" style="font-size:12px;padding:4px 8px;">
+              <option value="">Any phase</option>
+              <option value="mid_month">Mid-Month</option>
+              <option value="payday">PayDay</option>
+              <option value="double_digit">Double Digit</option>
+            </select>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="region-milestone-grid" id="edit-campaign-region-grid">
+            <thead><tr><th>Region</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Leave a region blank to use the single D-Day/Deadline set above for everyone.</div>
+      </div>
       <div class="field">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
           <label style="margin-bottom:0;">Assign Members</label>
@@ -1261,7 +1279,7 @@
 
       <div class="field">
         <label>Title</label>
-        <input type="text" id="tc-title" placeholder="e.g. D-5 Kit & RSP Check" value="Kit & RSP Check" />
+        <input type="text" id="tc-title" placeholder="e.g. Teasing Kit & RSP Check" value="Kit & RSP Check" />
       </div>
 
       <div class="field">
@@ -1444,8 +1462,8 @@
               <tr>
                 <th>Member</th>
                 <th>Campaign</th>
-                <th>D-5 Check</th>
-                <th>D-1 Check</th>
+                <th>Teasing Check</th>
+                <th>D-Day Check</th>
                 <th>Overall</th>
                 <th>Last active</th>
                 <th>Actions</th>

@@ -615,13 +615,8 @@ function _startCampaignFromAlert(phaseValue, year, month) {
   openNewCampaignModal();
   const nameEl = document.getElementById('new-campaign-name');
   if (nameEl) nameEl.value = `${_phaseLabel(phaseValue)} — ${_MONTH_LABELS[month]} ${year}`;
-  const typeSel  = document.getElementById('new-campaign-cal-type');
-  const monthSel = document.getElementById('new-campaign-cal-month');
-  const yearSel  = document.getElementById('new-campaign-cal-year');
-  if (typeSel)  typeSel.value  = phaseValue;
-  if (monthSel) monthSel.value = String(month);
-  if (yearSel)  yearSel.value  = String(year);
-  refreshNewCampCalendarMap();
+  const typeSel = document.getElementById('new-campaign-cal-type');
+  if (typeSel) typeSel.value = phaseValue;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -650,7 +645,7 @@ function renderCompletionChart(rows) {
     subEl.textContent = filterCampId ? `📁 ${campaigns[filterCampId]?.name || ''}` : '';
   }
 
-  // Member-level aggregate: D-5 and D-1 are accumulated separately across
+  // Member-level aggregate: Teasing and D-Day are accumulated separately across
   // ALL of a member's entries/campaigns — never blended into one number.
   const memberMap = {};
   rows.forEach(r => {
@@ -675,7 +670,7 @@ function renderCompletionChart(rows) {
   Object.values(memberMap).forEach(m => {
     m.d5Pct  = exactPct(m.d5Done, m.d5Total);
     m.d1Pct  = exactPct(m.d1Done, m.d1Total);
-    // Overall rate is based on D-1 inputs alone for every user.
+    // Overall rate is based on D-Day inputs alone for every user.
     m.avgPct = m.d1Pct;
   });
 
@@ -702,7 +697,7 @@ function renderCompletionChart(rows) {
     const d1Pct = exactPct(d1Done, d1Total);
     return {
       name: tl.name || tl.username, uid: tl.uid,
-      d5Pct, d1Pct, avgPct: d1Pct, // overall rate is D-1-based
+      d5Pct, d1Pct, avgPct: d1Pct, // overall rate is D-Day-based
       memberCount: memberList.length, hasOwnChecklist: !!ownStats,
       memberList: (ownStats ? [...memberList, { ...ownStats, isLead: true }] : memberList)
         .slice().sort((a, b) => b.avgPct - a.avgPct),
@@ -751,10 +746,10 @@ function renderCompletionChart(rows) {
     const memberRowsHtml = g.memberList.map(m => `
       <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);">
         <div style="flex:1.4;font-size:12px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(m.name)}${m.isLead ? ' <span style="font-size:9px;color:var(--text-muted);font-weight:400;">(Team Lead)</span>' : ''}</div>
-        <div style="font-size:10px;color:var(--text-muted);width:26px;">D-5</div>
+        <div style="font-size:10px;color:var(--text-muted);width:26px;">Teasing</div>
         <div style="flex:1;background:#F3F4F6;border-radius:4px;height:6px;overflow:hidden;"><div style="width:${m.d5Pct}%;background:${barColor(m.d5Pct)};height:100%;border-radius:4px;"></div></div>
         <div style="font-size:11px;font-family:var(--mono);color:var(--text-muted);width:32px;text-align:right;">${m.d5Pct}%</div>
-        <div style="font-size:10px;color:var(--text-muted);width:26px;">D-1</div>
+        <div style="font-size:10px;color:var(--text-muted);width:26px;">D-Day</div>
         <div style="flex:1;background:#F3F4F6;border-radius:4px;height:6px;overflow:hidden;"><div style="width:${m.d1Pct}%;background:${barColor(m.d1Pct)};height:100%;border-radius:4px;"></div></div>
         <div style="font-size:11px;font-family:var(--mono);color:var(--text-muted);width:32px;text-align:right;">${m.d1Pct}%</div>
       </div>`).join('') || '<div style="font-size:12px;color:var(--text-muted);padding:6px 0;">No members.</div>';
@@ -768,12 +763,12 @@ function renderCompletionChart(rows) {
         </div>
       </div>
       <div class="completion-bar-row" style="margin-bottom:3px;">
-        <div class="completion-name" style="width:32px;font-size:10px;color:var(--text-muted);">D-5</div>
+        <div class="completion-name" style="width:32px;font-size:10px;color:var(--text-muted);">Teasing</div>
         <div class="completion-track"><div class="completion-fill" style="width:${g.d5Pct}%;background:${barColor(g.d5Pct)};"></div></div>
         <div class="completion-pct">${g.d5Pct}%</div>
       </div>
       <div class="completion-bar-row">
-        <div class="completion-name" style="width:32px;font-size:10px;color:var(--text-muted);">D-1</div>
+        <div class="completion-name" style="width:32px;font-size:10px;color:var(--text-muted);">D-Day</div>
         <div class="completion-track"><div class="completion-fill" style="width:${g.d1Pct}%;background:${barColor(g.d1Pct)};"></div></div>
         <div class="completion-pct">${g.d1Pct}%</div>
       </div>
@@ -1201,7 +1196,7 @@ function countDone(obj, validIds) {
 //  PER-ENTRY COMPLETION HELPERS
 //  A checklist can have multiple "entries" (e.g. one per brand/platform/
 //  region combo — "Lazada SG", "Shopee SG", etc). Each entry has its own
-//  full set of D-5 / D-1 items, so completion must be computed PER ENTRY
+//  full set of Teasing / D-Day items, so completion must be computed PER ENTRY
 //  against TOTAL_ITEMS — never by summing every entry's items together
 //  over a single TOTAL_ITEMS denominator (that produces >100% rates).
 // ─────────────────────────────────────────────────────────────
@@ -1255,9 +1250,9 @@ function countDoneForEntryIdx(dataObj, entryIdx, validIds) {
 // will show a wrong percentage even when every visible item is done.
 // `validIds` should be passed alongside `totalItems` for the same reason —
 // otherwise stale/orphaned item flags can push a count above 100%.
-// `hasD5` — when false (a "No D-5" template), the D-5 stage doesn't exist
+// `hasD5` — when false (a "No Teasing" template), the Teasing stage doesn't exist
 // for this checklist: d5Done/d5Pct are reported as 0. `overallPct` is
-// ALWAYS based on D-1 inputs alone for every user — D-5 is informational
+// ALWAYS based on D-Day inputs alone for every user — Teasing is informational
 // only and never factors into anyone's overall completion percentage.
 function getEntryBreakdown(cl, totalItems, validIds, hasD5) {
   const ti  = totalItems || getTotalItems();
@@ -1286,7 +1281,7 @@ function getEntryBreakdown(cl, totalItems, validIds, hasD5) {
 }
 
 // Resolves the EFFECTIVE total-item count, valid item-id set, AND whether
-// the D-5 stage applies for each campaign in campaignList, honoring
+// the Teasing stage applies for each campaign in campaignList, honoring
 // per-campaign checklist templates (campaign.checklistTemplateId) and the
 // global checklist override doc, WITHOUT mutating the shared
 // CHECKLIST_SECTIONS / window._TOTAL_ITEMS_OVERRIDE state (those represent
@@ -1404,7 +1399,7 @@ async function openReviewModal(uid, campId) {
   });
   html += `</tr><tr>`;
   entries.forEach(() => {
-    html += `${hasD5 ? `<th class="sub" colspan="2" style="text-align:center;">D-5<br><span style="font-size:10px;font-weight:400;opacity:0.7;">status &amp; notes</span></th>` : ''}<th class="sub" colspan="2" style="text-align:center;">D-1<br><span style="font-size:10px;font-weight:400;opacity:0.7;">status &amp; notes</span></th>`;
+    html += `${hasD5 ? `<th class="sub" colspan="2" style="text-align:center;">Teasing<br><span style="font-size:10px;font-weight:400;opacity:0.7;">status &amp; notes</span></th>` : ''}<th class="sub" colspan="2" style="text-align:center;">D-Day<br><span style="font-size:10px;font-weight:400;opacity:0.7;">status &amp; notes</span></th>`;
   });
   html += `</tr></thead><tbody>`;
 
@@ -1675,187 +1670,93 @@ function openNewCampaignModal() {
   newCampBulkMatched = {};
   document.getElementById('new-camp-bulk-file').value = '';
   document.getElementById('new-camp-bulk-preview').innerHTML = '';
+  const typeSel = document.getElementById('new-campaign-cal-type');
+  if (typeSel) typeSel.value = '';
   populateCampaignTemplateSel();
-  initNewCampCalendarControls();
+  initRegionMilestoneGrid('new-campaign', null);
   document.getElementById('modal-overlay').style.display = 'flex';
 }
-
-// ══════════════════════════════════════════════════════════════════
-//  NEW CAMPAIGN — MAP DEADLINES FROM CALENDAR
-//  The merged flow: admin types the campaign details manually, and this
-//  panel maps the chosen phase + month onto the admin calendar to derive
-//  each region's on-time deadline (the same buildRegionDeadlineMap() the
-//  Generate-from-Calendar flow uses, so both stay in sync). Regions with
-//  no calendar date are flagged; the admin skips them (they fall back to
-//  the campaign-wide deadline) or fixes the calendar and re-maps.
-// ══════════════════════════════════════════════════════════════════
-
-// Resolved map for the current modal session: { REGION: deadlineISO }.
-// null/empty means "no calendar mapping" → createCampaign passes null and
-// every entry uses the campaign-wide deadline, exactly as before this flow.
-let newCampRegionDeadlines = {};
-// Regions the admin chose to skip this session (flagged, no calendar date).
-// Skipped regions are simply omitted from the saved map.
-let newCampSkippedRegions = new Set();
 
 const _MONTH_LABELS = ['January','February','March','April','May','June',
                        'July','August','September','October','November','December'];
 
-// Fill the month/year dropdowns (defaulting to the current month) and clear
-// any previous session's resolved map + preview.
-function initNewCampCalendarControls() {
-  newCampRegionDeadlines = {};
-  newCampSkippedRegions = new Set();
+// ══════════════════════════════════════════════════════════════════
+//  PER-REGION TEASING / D-DAY / DEADLINE — MANUAL GRID
+//  A campaign's Teasing and D-Day dates can land on different actual days
+//  per region (PH/MY/SG/TH/VN), so instead of reading them off the shared
+//  admin calendar, the New Campaign (and Edit Campaign) modals show one row
+//  per region where the admin can type the real Teasing date, D-Day date,
+//  and Checklist Deadline directly. Any row left blank simply uses the
+//  single D-Day/Deadline fields set above it for that region.
+// ══════════════════════════════════════════════════════════════════
+const MANUAL_REGIONS = [
+  { id: 'PH', label: 'PH' },
+  { id: 'MY', label: 'MY' },
+  { id: 'SG', label: 'SG' },
+  { id: 'TH', label: 'TH' },
+  { id: 'VN', label: 'VN' },
+];
 
-  const now = new Date();
-  const monthSel = document.getElementById('new-campaign-cal-month');
-  const yearSel  = document.getElementById('new-campaign-cal-year');
-  const typeSel  = document.getElementById('new-campaign-cal-type');
-  if (typeSel) typeSel.value = '';
-
-  if (monthSel) {
-    monthSel.innerHTML = _MONTH_LABELS
-      .map((m, i) => `<option value="${i}" ${i === now.getMonth() ? 'selected' : ''}>${m}</option>`)
-      .join('');
-  }
-  if (yearSel) {
-    const y0 = now.getFullYear();
-    yearSel.innerHTML = [y0 - 1, y0, y0 + 1]
-      .map(y => `<option value="${y}" ${y === y0 ? 'selected' : ''}>${y}</option>`)
-      .join('');
-  }
-
-  const preview = document.getElementById('new-campaign-cal-preview');
-  if (preview) {
-    preview.innerHTML = `<div style="font-size:11px;color:var(--text-muted);">Pick a phase and month above to pull each region's deadline from the calendar. Leave this untouched to just use the single deadline set above for everyone.</div>`;
-  }
+// Renders the <tbody> rows for a region-milestone grid. `prefix` namespaces
+// the input ids so the New Campaign and Edit Campaign modals can each have
+// their own grid on the page at once (e.g. "new-campaign" / "edit-campaign").
+function regionMilestoneGridRowsHtml(prefix) {
+  return MANUAL_REGIONS.map(r => `
+    <tr>
+      <td class="rm-region-cell">${r.label}</td>
+      <td><input type="datetime-local" id="${prefix}-rm-${r.id}-teasing" style="font-size:12px;width:100%;" /></td>
+      <td><input type="datetime-local" id="${prefix}-rm-${r.id}-dday" style="font-size:12px;width:100%;" /></td>
+      <td><input type="datetime-local" id="${prefix}-rm-${r.id}-deadline" style="font-size:12px;width:100%;" /></td>
+    </tr>`).join('');
 }
 
-// Recompute the resolved map on every control change and render the preview,
-// including flags for regions that appear in the calendar month but resolved
-// to no usable deadline. `_prevSkipped` is preserved across re-maps so an
-// admin's skip choices survive a month/phase tweak.
-// Render one row of the calendar-mapped deadline preview. Handles both bare
-// region keys ("MY") and region+platform composites ("MY|shopee"), showing a
-// region badge plus, when present, a platform badge — so the admin can see MY
-// Shopee and MY Lazada as the distinct deadlines they now are.
-function _deadlinePreviewRow(key, iso) {
-  const [region, platformId] = String(key).split('|');
-  const rLabel = (CAL_REGION_MAP[region]?.label) || region;
-  const p = platformId ? CAL_PLATFORM_MAP[platformId] : null;
-  const regionBadge = `<span class="rp-reg-tag" style="background:#E0F2FE;color:#075985;">${escHtml(rLabel)}</span>`;
-  const platBadge = p
-    ? `<span class="rp-reg-tag" style="background:${p.color}1A;color:${p.color};">${escHtml(p.label)}</span>`
-    : `<span style="font-size:10px;color:var(--text-muted);">all platforms</span>`;
-  return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 8px;background:var(--bg-soft,#F8FAFC);border-radius:6px;">
-    <span style="display:flex;gap:5px;align-items:center;min-width:130px;">${regionBadge}${platBadge}</span>
-    <span style="color:var(--text-muted);">${escHtml(_fmtDeadline(iso))}</span>
-  </div>`;
-}
-
-function refreshNewCampCalendarMap() {
-  const preview = document.getElementById('new-campaign-cal-preview');
-  if (!preview) return;
-
-  const typeVal  = document.getElementById('new-campaign-cal-type')?.value || null;
-  const monthVal = parseInt(document.getElementById('new-campaign-cal-month')?.value, 10);
-  const yearVal  = parseInt(document.getElementById('new-campaign-cal-year')?.value, 10);
-  if (isNaN(monthVal) || isNaN(yearVal)) return;
-
-  // The resolved-deadline map: { REGION: deadlineISO }. Same builder the
-  // Generate flow uses, so a region is judged identically whichever path
-  // created its campaign.
-  const resolved = buildRegionDeadlineMap({
-    year: yearVal, month: monthVal, campaignType: typeVal || null,
+// Builds/clears the grid for a modal session and, when `existing` (a stored
+// regionMilestones object) is passed, pre-fills it — used when opening the
+// Edit Campaign modal on a campaign that already has per-region dates set.
+function initRegionMilestoneGrid(prefix, existing) {
+  const tbody = document.querySelector(`#${prefix}-region-grid tbody`);
+  if (!tbody) return;
+  tbody.innerHTML = regionMilestoneGridRowsHtml(prefix);
+  MANUAL_REGIONS.forEach(r => {
+    const m  = (existing && existing[r.id]) || {};
+    const t  = document.getElementById(`${prefix}-rm-${r.id}-teasing`);
+    const d  = document.getElementById(`${prefix}-rm-${r.id}-dday`);
+    const dl = document.getElementById(`${prefix}-rm-${r.id}-deadline`);
+    if (t)  t.value  = m.teasing  || '';
+    if (d)  d.value  = m.dday     || '';
+    if (dl) dl.value = m.deadline || '';
   });
-
-  // Also collect every region that HAS a calendar event this month/phase but
-  // produced NO usable deadline (no explicit Deadline event and a date-only
-  // D-Day with no time to subtract from). Those are the ones to flag.
-  const flagged = _regionsWithoutDeadline({ year: yearVal, month: monthVal, campaignType: typeVal || null }, resolved);
-
-  newCampRegionDeadlines = resolved;
-
-  const resolvedRegions = Object.keys(resolved).sort();
-  if (resolvedRegions.length === 0 && flagged.length === 0) {
-    preview.innerHTML = `<div class="chooser-warn" style="font-size:12px;">No region-tagged calendar events found for ${escHtml(_MONTH_LABELS[monthVal])} ${yearVal}${typeVal ? ' · ' + escHtml(_phaseLabel(typeVal)) : ''}. Add D-Day or Deadline events to the calendar, or just use the single deadline above for everyone.</div>`;
-    return;
-  }
-
-  let html = '';
-
-  if (resolvedRegions.length > 0) {
-    html += `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Deadlines mapped from the calendar — each region &amp; platform is judged on-time/late against its own date:</div>`;
-    // Sort so a region's own fallback row sits above its platform-specific rows.
-    const _sortedKeys = resolvedRegions.slice().sort((a, b) => {
-      const [ra] = a.split('|'), [rb] = b.split('|');
-      if (ra !== rb) return ra.localeCompare(rb);
-      return a.localeCompare(b); // bare region ("MY") sorts before "MY|lazada"
-    });
-    html += `<div style="display:flex;flex-direction:column;gap:4px;">` +
-      _sortedKeys.map(k => _deadlinePreviewRow(k, resolved[k])).join('') +
-      `</div>`;
-  }
-
-  if (flagged.length > 0) {
-    // Read-only heads-up. These regions have a calendar event but no time to
-    // derive a deadline from, so they'll automatically fall back to the
-    // campaign-wide deadline typed above. No action needed here — the fix is to
-    // add a start time to the event on the calendar (which also fixes the
-    // deadline for everyone using that event).
-    html += `<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
-      <div style="font-size:12px;color:#B45309;font-weight:600;margin-bottom:4px;">No time set for ${flagged.length} region${flagged.length !== 1 ? 's' : ''}</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">These have a calendar event but no start time, so no per-region deadline can be derived. They'll use the campaign-wide Checklist Deadline set above. To give a region its own deadline, add a start time to its event on the calendar.</div>`;
-    html += `<div style="display:flex;flex-direction:column;gap:4px;">` +
-      flagged.map(r => {
-        const label = (CAL_REGION_MAP[r]?.label) || r;
-        return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 8px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;">
-          <span style="font-weight:600;min-width:52px;">${escHtml(label)}</span>
-          <span style="color:#B45309;flex:1;">Uses campaign-wide deadline</span>
-        </div>`;
-      }).join('') +
-      `</div>`;
-  }
-
-  preview.innerHTML = html;
 }
 
-// Regions that appear in the calendar for this scope but have no resolved
-// deadline in `resolvedMap`. Mirrors buildRegionDeadlineMap's scoping so the
-// two agree on what "in scope" means.
-function _regionsWithoutDeadline({ year, month, campaignType }, resolvedMap) {
-  const monthStart = new Date(year, month, 1);
-  const monthEnd   = new Date(year, month + 1, 0);
-  const seen = new Set();
-  calendarEntries.forEach(e => {
-    if (!e.date) return;
-    const d = new Date(e.date);
-    if (d < monthStart || d > monthEnd) return;
-    if (campaignType) {
-      const want = _canonicalPhase(campaignType);
-      const got  = _canonicalPhase(_calCampaignType(e).id) || _canonicalPhase(e.type);
-      if (want && got && want !== got) return;
-      if ((!want || !got) && _calCampaignType(e).id !== campaignType && e.type !== campaignType) return;
-    }
-    // D-Day / Deadline events can supply a deadline directly; a phase-tagged
-    // "Other"-milestone event (e.g. Campaign=Mid-Month, Milestone left as
-    // default) is treated the same way buildRegionDeadlineMap treats it — as
-    // an implicit D-Day. A region seen only via a Teasing/Meeting event isn't
-    // "missing a deadline" in a meaningful sense, so those still aren't
-    // flagged. This keeps the flag list to genuinely actionable gaps (a D-Day
-    // /implicit D-Day with no time, or no Deadline event).
-    const isImplicitDday = (e.type === 'other' || !e.type) && _canonicalPhase(_calCampaignType(e).id);
-    if (e.type !== 'dday' && e.type !== 'deadline' && !isImplicitDday) return;
-    const r = _calRegionOf(e);
-    if (!r) return;
-    seen.add(r.id);
+// Reads the grid back into two pieces:
+//  - regionMilestones: exactly what the admin typed, kept as-is for display
+//    (campaign detail views, exports, etc).
+//  - regionDeadlines: { REGION: deadlineISO }, derived from regionMilestones
+//    the same way the old calendar-mapped flow worked (explicit deadline,
+//    else D-Day − 4h) — this is what the existing overdue/on-time logic
+//    reads, so that machinery keeps working unchanged.
+// Both are null when every row was left blank.
+function collectRegionMilestones(prefix) {
+  const regionMilestones = {};
+  const regionDeadlines  = {};
+  MANUAL_REGIONS.forEach(r => {
+    const teasing  = document.getElementById(`${prefix}-rm-${r.id}-teasing`)?.value  || '';
+    const dday     = document.getElementById(`${prefix}-rm-${r.id}-dday`)?.value     || '';
+    const deadline = document.getElementById(`${prefix}-rm-${r.id}-deadline`)?.value || '';
+    if (!teasing && !dday && !deadline) return;
+    const entry = {};
+    if (teasing)  entry.teasing  = teasing;
+    if (dday)     entry.dday     = dday;
+    if (deadline) entry.deadline = deadline;
+    regionMilestones[r.id] = entry;
+    const resolvedDeadline = deadline || _deadlineFromDday(dday) || null;
+    if (resolvedDeadline) regionDeadlines[r.id] = resolvedDeadline;
   });
-  return [...seen].filter(r => !(resolvedMap && resolvedMap[r])).sort();
+  return {
+    regionMilestones: Object.keys(regionMilestones).length ? regionMilestones : null,
+    regionDeadlines:  Object.keys(regionDeadlines).length  ? regionDeadlines  : null,
+  };
 }
-
-// Skip control removed — the calendar panel is read-only now. Regions without
-// a derivable deadline simply fall back to the campaign-wide deadline, so
-// newCampSkippedRegions stays empty and every resolved region is kept as-is.
 
 // Human label for a phase id used in the calendar-map controls.
 function _phaseLabel(typeVal) {
@@ -1934,7 +1835,8 @@ async function createCampaignWithChecklists({
   campaignType = null,
   fromPollId = null,
   broadcastMessage = null, // null → no broadcast sent
-  regionDeadlines = null,  // { REGION: deadlineISO } — per-region deadlines from the calendar
+  regionDeadlines = null,  // { REGION: deadlineISO } — derived on-time cutoff per region
+  regionMilestones = null, // { REGION: { teasing, dday, deadline } } — the actual per-region dates as typed
 }) {
   const ref = await db.collection('campaigns').add({
     name,
@@ -1949,6 +1851,7 @@ async function createCampaignWithChecklists({
     dday:                dday || null,
     deadline:            deadline || null,
     regionDeadlines:     regionDeadlines || null,
+    regionMilestones:    regionMilestones || null,
   });
   const campaignId = ref.id;
 
@@ -2072,19 +1975,12 @@ async function createCampaign() {
 
     const hasEntries = Object.keys(prefillData).length > 0;
 
-    // Calendar-mapped per-region deadlines: take the resolved map from the
-    // "Map from Calendar" panel and drop any regions the admin skipped (those
-    // fall back to the campaign-wide deadline in reporting). Null when nothing
-    // was mapped, so behaviour is identical to before for admins who ignore
-    // the panel.
-    let regionDeadlines = null;
-    if (newCampRegionDeadlines && Object.keys(newCampRegionDeadlines).length > 0) {
-      const kept = {};
-      Object.entries(newCampRegionDeadlines).forEach(([region, dl]) => {
-        if (!newCampSkippedRegions.has(region)) kept[region] = dl;
-      });
-      if (Object.keys(kept).length > 0) regionDeadlines = kept;
-    }
+    // Manual per-region grid: whatever the admin typed for Teasing/D-Day/
+    // Deadline per region (PH/MY/SG/TH/VN). regionMilestones is the raw
+    // values for display; regionDeadlines is derived from it and feeds the
+    // existing overdue/on-time logic. Both are null when every row was left
+    // blank, in which case every entry just uses the campaign-wide dates.
+    const { regionMilestones, regionDeadlines } = collectRegionMilestones('new-campaign');
 
     await createCampaignWithChecklists({
       name,
@@ -2094,10 +1990,11 @@ async function createCampaign() {
       dday:       combineDatetime('new-campaign-dday', 'new-campaign-dday-time'),
       deadline:   combineDatetime('new-campaign-deadline', 'new-campaign-deadline-time'),
       regionDeadlines,
-      // Whatever phase was picked in "Per-Region Deadlines from Calendar" —
-      // saved on the campaign itself so future features (e.g. the upcoming-
-      // campaign alert) can match it precisely instead of guessing from the
-      // name. '' (Any phase) is normalised to null, same as an untouched picker.
+      regionMilestones,
+      // Whatever phase was picked next to the per-region grid — saved on the
+      // campaign itself so future features (e.g. the upcoming-campaign alert)
+      // can match it precisely instead of guessing from the name. '' (Any
+      // phase) is normalised to null, same as an untouched picker.
       campaignType: document.getElementById('new-campaign-cal-type')?.value || null,
       fromPollId: pollId,
       // Only shout about it when there's actually a pre-filled checklist waiting.
@@ -2171,6 +2068,9 @@ async function openEditCampaignModal(campId) {
   document.getElementById('edit-campaign-deadline').value      = deadlineDate;
   document.getElementById('edit-campaign-deadline-time').value = deadlineTime;
   document.getElementById('edit-campaign-error').style.display = 'none';
+  const editTypeSel = document.getElementById('edit-campaign-cal-type');
+  if (editTypeSel) editTypeSel.value = camp.campaignType || '';
+  initRegionMilestoneGrid('edit-campaign', camp.regionMilestones || null);
 
   // Build template selector
   const tmplSel = document.getElementById('edit-campaign-template-sel');
@@ -2214,6 +2114,8 @@ async function saveEditCampaign() {
   const templateId = document.getElementById('edit-campaign-template-sel')?.value || null;
   const dday       = combineDatetime('edit-campaign-dday', 'edit-campaign-dday-time');
   const deadline   = combineDatetime('edit-campaign-deadline', 'edit-campaign-deadline-time');
+  const campaignType = document.getElementById('edit-campaign-cal-type')?.value || null;
+  const { regionMilestones, regionDeadlines } = collectRegionMilestones('edit-campaign');
 
   try {
     await db.collection('campaigns').doc(campId).update({
@@ -2222,8 +2124,11 @@ async function saveEditCampaign() {
       checklistTemplateId: templateId || null,
       dday:     dday || null,
       deadline: deadline || null,
+      campaignType,
+      regionMilestones,
+      regionDeadlines,
     });
-    campaigns[campId] = { ...campaigns[campId], name, assignedUids, checklistTemplateId: templateId || null, dday: dday || null, deadline: deadline || null };
+    campaigns[campId] = { ...campaigns[campId], name, assignedUids, checklistTemplateId: templateId || null, dday: dday || null, deadline: deadline || null, campaignType, regionMilestones, regionDeadlines };
     overlay.style.display = 'none';
     await loadAdminData();
     showToast('✅ Campaign updated!', 'success');
@@ -2286,8 +2191,8 @@ async function exportCampaignSummaryCSV(camp) {
     const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB') : '';
 
     const rows = [['Campaign', 'Member', 'Username',
-      'D-5 Done', 'D-5 Total', 'D-5 %',
-      'D-1 Done', 'D-1 Total', 'D-1 %',
+      'Teasing Done', 'Teasing Total', 'Teasing %',
+      'D-Day Done', 'D-Day Total', 'D-Day %',
       'Overall %', 'Status', 'Last Active', 'Completed', 'Brand/Platform/Region']];
 
     (camp.assignedUids || []).forEach(uid => {
@@ -2494,7 +2399,7 @@ function showTlTab(tab) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  USER CHECKLIST — COMBINED D-5 / D-1 TABLE VIEW
+//  USER CHECKLIST — COMBINED Teasing / D-Day TABLE VIEW
 // ─────────────────────────────────────────────────────────────
 function populateUserCampaignSelect() {
   const sel = document.getElementById('user-campaign-select');
@@ -2644,7 +2549,7 @@ function applyBulkStatus(status, targetTab) {
 
   updateUserProgress();
   saveChecklist();
-  // Keep panel open so user can also set D-1 after D-5 without re-selecting
+  // Keep panel open so user can also set D-Day after Teasing without re-selecting
   document.getElementById('bulk-count-label').textContent =
     `${checked.length} item${checked.length > 1 ? 's' : ''} selected — ${tab.toUpperCase()} updated ✓`;
 }
@@ -2669,7 +2574,7 @@ function toggleCatCheckboxes(catCb, catId) {
   updateBulkBar();
 }
 
-// Bulk-apply a status to all items in a category for D-5 or D-1
+// Bulk-apply a status to all items in a category for Teasing or D-Day
 // Show a small status-picker popup anchored to the category checkbox
 function toggleCatD5(cb, catId, entryIdx) {
   if (!cb.checked) { cb.checked = false; return; } // unchecking does nothing
@@ -2827,14 +2732,14 @@ function renderUserChecklist() {
     margin-bottom:10px;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 4px 16px rgba(27,58,107,0.3);">
     <span id="bulk-count-label" style="font-size:13px;font-weight:600;min-width:100px;"></span>
     ${hasD5 ? `<div style="display:flex;align-items:center;gap:6px;border-left:1px solid rgba(255,255,255,0.2);padding-left:10px;">
-      <span style="font-size:11px;font-weight:700;color:#93C5FD;letter-spacing:.05em;">D-5:</span>
+      <span style="font-size:11px;font-weight:700;color:#93C5FD;letter-spacing:.05em;">Teasing:</span>
       <button class="bulk-btn bulk-done"     onclick="applyBulkStatus('done','d5')">✓ Done</button>
       <button class="bulk-btn bulk-progress" onclick="applyBulkStatus('in-progress','d5')">⟳ In Progress</button>
       <button class="bulk-btn bulk-pending"  onclick="applyBulkStatus('','d5')">— Pending</button>
       <button class="bulk-btn bulk-na"       onclick="applyBulkStatus('na','d5')">N/A</button>
     </div>` : ''}
     <div style="display:flex;align-items:center;gap:6px;border-left:1px solid rgba(255,255,255,0.2);padding-left:10px;">
-      <span style="font-size:11px;font-weight:700;color:#C4B5FD;letter-spacing:.05em;">D-1:</span>
+      <span style="font-size:11px;font-weight:700;color:#C4B5FD;letter-spacing:.05em;">D-Day:</span>
       <button class="bulk-btn bulk-done"     onclick="applyBulkStatus('done','d1')">✓ Done</button>
       <button class="bulk-btn bulk-progress" onclick="applyBulkStatus('in-progress','d1')">⟳ In Progress</button>
       <button class="bulk-btn bulk-pending"  onclick="applyBulkStatus('','d1')">— Pending</button>
@@ -2875,14 +2780,14 @@ function renderUserChecklist() {
   </th>`;
   html += `</tr>`;
 
-  // ── THEAD row 2: D-5 [☐] Status | D-1 [☐] Status | Notes (shared) ──
+  // ── THEAD row 2: Teasing [☐] Status | D-Day [☐] Status | Notes (shared) ──
   html += `<tr class="sub-head">`;
   entries.forEach((e, i) => {
     const borderL = 'border-left:3px solid rgba(255,255,255,0.3)';
     html += `${hasD5 ? `
     <th class="sub-head sub-head-cb-col d5-zone" style="${borderL};">
       <span class="th-inner" style="display:flex;align-items:center;justify-content:center;padding:6px 2px;">
-        <span class="sub-day-pill d5-pill">D-5</span>
+        <span class="sub-day-pill d5-pill">Teasing</span>
       </span>
     </th>
     <th class="sub-head d5-zone sub-head-status-col">
@@ -2890,7 +2795,7 @@ function renderUserChecklist() {
     </th>` : ''}
     <th class="sub-head sub-head-cb-col d1-zone" ${!hasD5 ? `style="${borderL};"` : ''}>
       <span class="th-inner" style="display:flex;align-items:center;justify-content:center;padding:6px 2px;">
-        <span class="sub-day-pill d1-pill">D-1</span>
+        <span class="sub-day-pill d1-pill">D-Day</span>
       </span>
     </th>
     <th class="sub-head d1-zone sub-head-status-col">
@@ -2909,20 +2814,20 @@ function renderUserChecklist() {
     const isOpen    = !collapsedCats[sec.id];
     const totalCols = 3 + entryCount * (hasD5 ? 4 : 2) + 1; // +1 for checkbox col, +1 for item name
 
-    // Build per-entry D-5 (if applicable) and D-1 cat checkboxes plus a shared notes empty td
+    // Build per-entry Teasing (if applicable) and D-Day cat checkboxes plus a shared notes empty td
     let catEntryCells = '';
     for (let ei = 0; ei < entryCount; ei++) {
       const borderL = ei === 0 ? 'border-left:2px solid rgba(255,255,255,0.2)' : '';
       catEntryCells += `
         ${hasD5 ? `<td style="padding:4px 8px;text-align:center;background:var(--navy);${borderL}">
           <input type="checkbox" class="cat-d5-cb" data-cat-id="${sec.id}" data-entry-idx="${ei}"
-            onchange="toggleCatD5(this,'${sec.id}',${ei})" title="Click to bulk-set D-5 status for this category"
+            onchange="toggleCatD5(this,'${sec.id}',${ei})" title="Click to bulk-set Teasing status for this category"
             style="width:14px;height:14px;cursor:pointer;accent-color:#93C5FD;" />
         </td>
         <td style="padding:4px 6px;background:var(--navy);"></td>` : ''}
         <td style="padding:4px 8px;text-align:center;background:var(--navy);${!hasD5 ? borderL : ''}">
           <input type="checkbox" class="cat-d1-cb" data-cat-id="${sec.id}" data-entry-idx="${ei}"
-            onchange="toggleCatD1(this,'${sec.id}',${ei})" title="Click to bulk-set D-1 status for this category"
+            onchange="toggleCatD1(this,'${sec.id}',${ei})" title="Click to bulk-set D-Day status for this category"
             style="width:14px;height:14px;cursor:pointer;accent-color:#C4B5FD;" />
         </td>
         <td style="padding:4px 6px;background:var(--navy);"></td>
@@ -3001,7 +2906,7 @@ function renderUserChecklist() {
   const bannerId = containerId === 'tl-checklist' ? 'tl-rspkit-banner' : 'user-rspkit-banner';
   renderEntryRspKitBanner(bannerId, entries);
 
-  // Keep the second header row (D-5/D-1 Status, Notes) pinned directly under
+  // Keep the second header row (Teasing/D-Day Status, Notes) pinned directly under
   // the first header row regardless of actual rendered height, so the two
   // sticky rows never overlap when scrolling.
   requestAnimationFrame(() => {
@@ -3216,8 +3121,8 @@ function updateUserProgress() {
   const d5Done   = hasD5 ? countDone(campData.d5 || {}, ids) : 0;
   const d1Done   = countDone(campData.d1 || {}, ids);
   const entries  = getEntries();
-  // Overall completion is based on D-1 inputs alone for every user — Done
-  // and N/A are treated the same, and D-5 (when present) is informational
+  // Overall completion is based on D-Day inputs alone for every user — Done
+  // and N/A are treated the same, and Teasing (when present) is informational
   // only and never factors into the overall percentage.
   const done     = d1Done;
   const total    = ti * entries.length;
@@ -3245,8 +3150,8 @@ function updateUserProgress() {
         </div>
         <div class="user-prog-bar-track"><div class="user-prog-bar-fill" style="width:${pct}%;background:${color};"></div></div>
         <div class="user-prog-detail">
-          ${hasD5 ? `<span>D-5: ${d5Done}/${ti * entries.length} (${d5Pct}%)</span>` : ''}
-          <span>D-1: ${d1Done}/${ti * entries.length} (${d1Pct}%)</span>
+          ${hasD5 ? `<span>Teasing: ${d5Done}/${ti * entries.length} (${d5Pct}%)</span>` : ''}
+          <span>D-Day: ${d1Done}/${ti * entries.length} (${d1Pct}%)</span>
           <span>${done} / ${total} items complete</span>
         </div>
         <div id="${uiPrefix}-kitrsp-mini" class="user-prog-detail" style="display:none;margin-top:4px;"></div>
@@ -3278,7 +3183,7 @@ function saveChecklist() {
       saveData[selectedCampaignId].startedAt = new Date().toISOString();
     }
 
-    // Record completedAt if just hit 100% (based on D-1 inputs alone —
+    // Record completedAt if just hit 100% (based on D-Day inputs alone —
     // Done and N/A are treated the same, for every user).
     const campData   = saveData[selectedCampaignId];
     const validIds   = getCurrentValidItemIds();
@@ -5246,7 +5151,7 @@ async function renderDataTab() {
       clEl.innerHTML = `<table class="data-cl-table">
         <thead><tr>
           <th>Member</th><th>Campaign</th>
-          <th>D-5</th><th>D-1</th><th>Last Active</th><th>Actions</th>
+          <th>Teasing</th><th>D-Day</th><th>Last Active</th><th>Actions</th>
         </tr></thead>
         <tbody>${rows.map(r => {
           const lastStr = r.cl.lastActive
@@ -5760,7 +5665,7 @@ function updateUserSidebarProgress() {
   }
   const campData = userChecklist[selectedCampaignId] || {};
   const ids      = getCurrentValidItemIds();
-  // Overall progress is based on D-1 inputs alone for every user — Done
+  // Overall progress is based on D-Day inputs alone for every user — Done
   // and N/A are treated the same.
   const done     = countDone(campData.d1 || {}, ids);
   const entries  = getEntries();
@@ -5891,7 +5796,7 @@ async function renderUserDashboard() {
       overallRspDone  += campRspDone;
 
       const campRate = cTotal > 0 ? Math.round((cComplete / cTotal) * 100) : 0;
-      // Campaign-level rate — D-5 and D-1 aggregated across every row
+      // Campaign-level rate — Teasing and D-Day aggregated across every row
       // (member × entry) for this campaign, computed SEPARATELY. This is
       // distinct from campRate above (which is "% of rows fully done").
       const campTi   = dashTotalItemsMap[camp.id]?.total || TOTAL_ITEMS;
@@ -5952,21 +5857,21 @@ async function renderUserDashboard() {
 
       // Team leads see anonymous mini-bars across their team; plain members
       // see bars per entry of their OWN checklist (labelled when >1 entry).
-      // D-5 and D-1 are always shown as separate bars — never blended.
+      // Teasing and D-Day are always shown as separate bars — never blended.
       const barsHtml = memberRows.map(r => {
         const d5Color = r.d5Pct === 100 ? '#059669' : r.d5Pct > 0 ? '#3B82F6' : '#E5E7EB';
         const d1Color = r.d1Pct === 100 ? '#059669' : r.d1Pct > 0 ? '#3B82F6' : '#E5E7EB';
         const labelHtml = (!isTl && r.label) ? `<div style="font-size:10px;font-weight:600;color:var(--text-muted);margin-top:6px;">${escHtml(r.label)}</div>` : '';
         return `${labelHtml}
         ${r.hasD5 !== false ? `<div class="user-dash-mini-bar-row">
-          <span style="font-size:9px;color:var(--text-faint);min-width:22px;">D-5</span>
+          <span style="font-size:9px;color:var(--text-faint);min-width:22px;">Teasing</span>
           <div class="user-dash-mini-track">
             <div style="width:${r.d5Pct}%;background:${d5Color};height:100%;border-radius:4px;transition:width .3s;"></div>
           </div>
           <span style="font-size:10px;font-family:var(--mono);color:var(--text-muted);min-width:28px;text-align:right;">${r.d5Pct}%</span>
         </div>` : ''}
         <div class="user-dash-mini-bar-row">
-          <span style="font-size:9px;color:var(--text-faint);min-width:22px;">D-1</span>
+          <span style="font-size:9px;color:var(--text-faint);min-width:22px;">D-Day</span>
           <div class="user-dash-mini-track">
             <div style="width:${r.d1Pct}%;background:${d1Color};height:100%;border-radius:4px;transition:width .3s;"></div>
           </div>
@@ -5982,8 +5887,8 @@ async function renderUserDashboard() {
               ${deadlineStr}
             </div>
             <div style="text-align:right;">
-              <div style="font-size:12px;font-weight:700;color:${campD5Color};">D-5 ${campD5Pct}%</div>
-              <div style="font-size:12px;font-weight:700;color:${campD1Color};margin-top:2px;">D-1 ${campD1Pct}%</div>
+              <div style="font-size:12px;font-weight:700;color:${campD5Color};">Teasing ${campD5Pct}%</div>
+              <div style="font-size:12px;font-weight:700;color:${campD1Color};margin-top:2px;">D-Day ${campD1Pct}%</div>
               ${campRspPct !== null ? `<div style="font-size:12px;font-weight:700;color:${campRspColor};margin-top:2px;">📦 RSP &amp; Kit ${campRspPct}%</div>` : ''}
             </div>
           </div>
@@ -6363,6 +6268,19 @@ function campDateMetaHtml(camp) {
   const parts = [];
   if (camp.dday)     parts.push(`<span style="font-size:11px;color:var(--text-muted);">📅 D-Day: ${fmt(camp.dday)}</span>`);
   if (camp.deadline) parts.push(`<span style="font-size:11px;color:#D97706;font-weight:600;">⏰ Checklist Deadline: ${fmt(camp.deadline)}</span>`);
+  const rm = camp.regionMilestones || {};
+  const rmRegions = Object.keys(rm);
+  if (rmRegions.length > 0) {
+    const tip = rmRegions.map(r => {
+      const m = rm[r];
+      const bits = [];
+      if (m.teasing)  bits.push(`Teasing ${fmt(m.teasing)}`);
+      if (m.dday)     bits.push(`D-Day ${fmt(m.dday)}`);
+      if (m.deadline) bits.push(`Deadline ${fmt(m.deadline)}`);
+      return `${r}: ${bits.join(', ')}`;
+    }).join(' | ');
+    parts.push(`<span style="font-size:11px;color:#4338CA;font-weight:600;" title="${escHtml(tip)}">📍 ${rmRegions.length} region${rmRegions.length !== 1 ? 's' : ''} with custom dates</span>`);
+  }
   return parts.join(' &nbsp;·&nbsp; ');
 }
 
@@ -6704,7 +6622,7 @@ function getTotalItems() {
 }
 
 // Whether the CURRENTLY loaded checklist template (CHECKLIST_SECTIONS) has
-// a D-5 stage. Defaults true when no override has been set yet.
+// a Teasing stage. Defaults true when no override has been set yet.
 function getHasD5() {
   return window._HAS_D5_OVERRIDE !== false;
 }
@@ -6774,7 +6692,7 @@ function renderChecklistTabContent() {
           <div class="tmpl-card-top">
             <div class="tmpl-card-name">${escHtml(t.name)}</div>
             ${isDefault ? '<span class="tmpl-card-badge">Default</span>' : ''}
-            ${t.hasD5 === false ? '<span class="tmpl-card-badge" style="background:#FEF3C7;color:#92400E;">No D-5</span>' : ''}
+            ${t.hasD5 === false ? '<span class="tmpl-card-badge" style="background:#FEF3C7;color:#92400E;">No Teasing</span>' : ''}
           </div>
           <div class="tmpl-card-meta">${secCount} section${secCount !== 1 ? 's' : ''} · ${itemCount} item${itemCount !== 1 ? 's' : ''}</div>
           <div class="tmpl-card-sections">
@@ -7175,7 +7093,7 @@ function confirmImportTemplate() {
 
   // Seed the editor exactly like openNewTemplateModal does, but with our
   // imported section instead of the default sections, and default to
-  // "No D-5" since imported/flat checklists typically have a single stage.
+  // "No Teasing" since imported/flat checklists typically have a single stage.
   editingTemplateId = null;
   templateEditorSections = [section];
   document.getElementById('tmpl-name-input').value = sectionName;
@@ -7974,9 +7892,9 @@ async function renderReportTab() {
         // getEntryBreakdown / resolveCampaignTotalItems).
         const entryCount = entries.length || 1;
         const ti          = campInfo.total * entryCount;
-        // "No D-5" checklists have no D-5 stage at all — overall completion
-        // is based on D-1 alone, never divided by a phantom D-5 half.
-        // Overall completion is based on D-1 inputs alone for every user.
+        // "No Teasing" checklists have no Teasing stage at all — overall completion
+        // is based on D-Day alone, never divided by a phantom Teasing half.
+        // Overall completion is based on D-Day inputs alone for every user.
         const overallPct  = Math.round((d1Done / ti) * 100);
         const d5Pct       = hasD5 ? Math.round((d5Done / ti) * 100) : 0;
         const d1Pct       = Math.round((d1Done / ti) * 100);
@@ -8109,8 +8027,8 @@ async function renderReportTab() {
               <thead>
                 <tr>
                   <th>Member</th>
-                  <th>D-5</th>
-                  <th>D-1</th>
+                  <th>Teasing</th>
+                  <th>D-Day</th>
                   <th>Overall</th>
                   <th>Status</th>
                   <th>Started</th>
@@ -8163,7 +8081,7 @@ async function renderReportTab() {
         const campInfo = reportTotalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null };
         const d1Done = countDone(cl.d1 || {}, campInfo.validIds);
         const entryCount = (cl.entries || []).length || 1;
-        // Overall completion is based on D-1 inputs alone for every user.
+        // Overall completion is based on D-Day inputs alone for every user.
         const overallPct = Math.round((d1Done / (campInfo.total * entryCount)) * 100);
         if (overallPct === 100 && !cl.completedAt) {
           const updateData = {};
@@ -8208,8 +8126,8 @@ async function exportReportToExcel() {
   const daysDiff = (isoA, isoB) => Math.ceil((new Date(isoA) - new Date(isoB)) / 86400000);
 
   const rows = [['Campaign', 'D-Day', 'Deadline', 'Member', 'Username',
-    'D-5 Done', 'D-5 Total', 'D-5 %',
-    'D-1 Done', 'D-1 Total', 'D-1 %',
+    'Teasing Done', 'Teasing Total', 'Teasing %',
+    'D-Day Done', 'D-Day Total', 'D-Day %',
     'Overall %', 'Status', 'Started', 'Last Active', 'Completed',
     'vs Deadline', 'Deadline Status', 'Brand/Platform/Region']];
 
@@ -8237,7 +8155,7 @@ async function exportReportToExcel() {
       // getEntryBreakdown / resolveCampaignTotalItems).
       const entryCount = (cl.entries || []).length || 1;
       const ti         = campInfo.total * entryCount;
-      // Overall completion is based on D-1 inputs alone for every user.
+      // Overall completion is based on D-Day inputs alone for every user.
       const overallPct = Math.round((d1Done / ti) * 100);
       const d5Pct      = hasD5 ? Math.round((d5Done / ti) * 100) : 0;
       const d1Pct      = Math.round((d1Done / ti) * 100);
@@ -9864,7 +9782,7 @@ function closeMemberTaskCheck(e) {
 // ── Admin dashboard: load & show recent task checks ──────────
 // Mirrors the "Completion by team lead" widget: collapsible lead groups,
 // an overall Kit/RSP progress rate per lead, and per-member rows with
-// Kit-progress / RSP-progress bars (instead of D-5/D-1, since this panel
+// Kit-progress / RSP-progress bars (instead of Teasing/D-Day, since this panel
 // is specifically about Kit & RSP Check completion).
 async function renderTaskChecksInDashboard(force) {
   // Called from renderDashboardWidgets – shows a compact list below stats
