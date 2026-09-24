@@ -341,21 +341,15 @@ async function renderAdminView(force) {
         // the admin can fill it in — no checklist is left with no due date.
         const entryRegion   = (eb.region || '').toUpperCase();
         const entryPlatform = _normalizePlatformCode(eb.platform);
-        const rd = camp.regionDeadlines || {};
-        const _ov = camp.deadlineOverrides || {};
         const comboKey = _deadlineKey(entryRegion, entryPlatform);
-        // If this entry answered "Yes" to "Joining the After Party?", the
-        // after-party END date the member entered supersedes every other
-        // deadline source — it's the newest, most specific commitment for
-        // this exact entry (see openAfterPartyModal / confirmAfterPartyDates).
-        const afterPartyDeadline = (eb.entry && eb.entry.afterPartyEnd) || null;
-        const rowDeadline =
-          afterPartyDeadline                                // after-party override (highest priority)
-          || (entryRegion && entryPlatform && rd[comboKey])   // exact region+platform
-          || (entryRegion && rd[entryRegion])               // region-wide fallback
-          || _ov[comboKey] || (entryRegion && _ov[entryRegion]) // admin override
-          || camp.deadline                                  // campaign-wide
-          || null;
+        // Resolve BOTH reference dates for this entry — D-Day and the
+        // Checklist Deadline — via the shared resolver so this table and
+        // every other "all users" view read the same two dates (see
+        // resolveEntryMilestones for the priority order, incl. an
+        // after-party END date superseding the deadline when set — see
+        // openAfterPartyModal / confirmAfterPartyDates).
+        const { dday: rowDday, deadline: rowDeadline, isAfterPartyDeadline: afterPartyDeadline } =
+          resolveEntryMilestones(camp, entryRegion, entryPlatform, eb.entry);
         // Missing data: a row with a region but no resolvable deadline. Surfaced
         // to the admin resolution modal so it can be filled in.
         const needsDeadline = !!entryRegion && !rowDeadline;
@@ -377,6 +371,7 @@ async function renderAdminView(force) {
           entryPlatform,
           comboKey,
           needsDeadline,
+          rowDday,
           rowDeadline,
           isAfterPartyDeadline: !!afterPartyDeadline,
           dueState,
@@ -480,7 +475,7 @@ async function renderAdminView(force) {
 
   const tbody = document.getElementById('admin-tbody');
   if (rows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2rem;">No assignments yet. Create a campaign and assign members.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:2rem;">No assignments yet. Create a campaign and assign members.</td></tr>`;
     renderDashboardWidgets(rows);
     return;
   }
@@ -492,9 +487,20 @@ async function renderAdminView(force) {
     const lastStr = r.lastActive
       ? new Date(r.lastActive).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
       : '—';
+    // D-Day / Checklist Deadline cells — the same two reference dates this
+    // row's compliance (dueState) is measured against, so admins and every
+    // other viewer of this table are aligned on exactly what's due when.
+    const ddayCell = r.rowDday
+      ? `<span style="font-size:12px;color:var(--text);">${fmtDeadlineShort(r.rowDday)}</span>`
+      : '<span style="color:var(--text-muted);font-size:11px;">—</span>';
+    const deadlineCell = r.rowDeadline
+      ? `<span style="font-size:12px;font-weight:600;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>${r.isAfterPartyDeadline ? ' <span style="font-size:9px;color:var(--text-muted);" title="Set from this entry\u2019s After Party end date">(after party)</span>' : ''}`
+      : (r.needsDeadline ? '<span style="color:#DC2626;font-size:11px;" title="No deadline resolved yet">⚠ Not set</span>' : '<span style="color:var(--text-muted);font-size:11px;">—</span>');
     return `<tr>
       <td><strong>${r.member.name || r.member.username}</strong>${r.member.role === 'team_lead' ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">Team Lead</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${r.member.username}</span></td>
-      <td>${r.camp.name}${r.entryRegion ? ` <span style="font-size:10px;font-weight:700;background:#EEF2FF;color:#4338CA;border-radius:4px;padding:1px 6px;margin-left:2px;">${escHtml(r.entryRegion)}</span>` : ''}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.rowDeadline ? `<br><span style="font-size:10px;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};font-weight:600;">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>` : ''}</td>
+      <td>${r.camp.name}${r.entryRegion ? ` <span style="font-size:10px;font-weight:700;background:#EEF2FF;color:#4338CA;border-radius:4px;padding:1px 6px;margin-left:2px;">${escHtml(r.entryRegion)}</span>` : ''}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}</td>
+      <td>${ddayCell}</td>
+      <td>${deadlineCell}</td>
       <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
       <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
       <td><span class="badge ${badge}</span>${
@@ -2760,15 +2766,33 @@ function renderUserChecklist() {
     <th class="col-freeze-item2" rowspan="2"><span class="th-inner">Item</span></th>
     <th class="col-freeze-guide" rowspan="2"><span class="th-inner">Guide Questions</span></th>`;
 
+  const _camp = campaigns[selectedCampaignId];
   entries.forEach((e, i) => {
     const labelVal = buildEntryLabel(e, i);
+    // Same D-Day / Checklist Deadline the admin and team-lead dashboards
+    // show for this entry — surfaced right where the entry is filled in,
+    // so everyone works against the same reference dates and knows exactly
+    // what determines their on-time / overdue (compliance) status.
+    const entryPlatform = _normalizePlatformCode(e.platform);
+    const { dday: entryDday, deadline: entryDeadline, isAfterPartyDeadline: entryIsAP } =
+      resolveEntryMilestones(_camp, e.region, entryPlatform, e);
+    const nowTs2 = Date.now();
+    const entryOverdue = entryDeadline && new Date(entryDeadline).getTime() < nowTs2;
+    const datesHtml = (entryDday || entryDeadline) ? `
+      <div style="font-size:10px;font-weight:500;margin-top:3px;line-height:1.5;">
+        ${entryDday ? `<div style="color:rgba(255,255,255,0.85);">📅 D-Day: ${fmtDeadlineShort(entryDday)}</div>` : ''}
+        ${entryDeadline ? `<div style="color:${entryOverdue ? '#FCA5A5' : '#FDE68A'};font-weight:700;">⏰ Deadline: ${fmtDeadlineShort(entryDeadline)}${entryIsAP ? ' (after party)' : ''}</div>` : ''}
+      </div>` : '';
     html += `<th colspan="${hasD5 ? 5 : 3}" class="entry-group-header" style="border-left:3px solid rgba(255,255,255,0.3);">
-      <span class="th-inner" style="display:flex;align-items:center;gap:8px;justify-content:center;">
-        <input type="text" id="entry-label-${i}" placeholder="Entry ${i+1}"
-          value="${escHtml(labelVal)}"
-          oninput="updateEntryLabel(${i},this.value)"
-          style="font-size:13px;font-weight:600;padding:4px 12px;border:1px solid rgba(255,255,255,0.3);border-radius:6px;background:rgba(255,255,255,0.12);color:white;font-family:var(--font);text-align:center;min-width:160px;max-width:260px;" />
-        ${i > 0 ? `<button onclick="removeEntry(${i})" title="Remove entry" style="background:rgba(239,68,68,0.25);border:1px solid rgba(239,68,68,0.4);color:#FCA5A5;border-radius:50%;width:20px;height:20px;font-size:11px;cursor:pointer;flex-shrink:0;">✕</button>` : ''}
+      <span class="th-inner" style="display:flex;flex-direction:column;align-items:center;gap:4px;justify-content:center;">
+        <span style="display:flex;align-items:center;gap:8px;justify-content:center;">
+          <input type="text" id="entry-label-${i}" placeholder="Entry ${i+1}"
+            value="${escHtml(labelVal)}"
+            oninput="updateEntryLabel(${i},this.value)"
+            style="font-size:13px;font-weight:600;padding:4px 12px;border:1px solid rgba(255,255,255,0.3);border-radius:6px;background:rgba(255,255,255,0.12);color:white;font-family:var(--font);text-align:center;min-width:160px;max-width:260px;" />
+          ${i > 0 ? `<button onclick="removeEntry(${i})" title="Remove entry" style="background:rgba(239,68,68,0.25);border:1px solid rgba(239,68,68,0.4);color:#FCA5A5;border-radius:50%;width:20px;height:20px;font-size:11px;cursor:pointer;flex-shrink:0;">✕</button>` : ''}
+        </span>
+        ${datesHtml}
       </span>
     </th>`;
   });
@@ -3304,6 +3328,41 @@ function _normalizePlatformCode(raw) {
 function _deadlineKey(region, platformId) {
   const r = String(region || '').toUpperCase();
   return platformId ? `${r}|${platformId}` : r;
+}
+
+// Resolve a single entry's D-Day and Checklist Deadline together, so every
+// "all users" view (admin Dashboard table, team-lead Dashboard table, the
+// checklist-filling screen itself) reads the SAME two reference dates —
+// the ones compliance/overdue status is actually measured against.
+// Priority mirrors the admin dashboard's existing deadline resolution:
+// an after-party end date (most specific, entry-level) > exact
+// region+platform > region-wide > admin override > campaign-wide fallback.
+// D-Day has no after-party equivalent, so it falls back straight from the
+// per-region milestone to the campaign-wide D-Day.
+function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
+  if (!camp) return { dday: null, deadline: null, isAfterPartyDeadline: false };
+  const region   = String(entryRegion || '').toUpperCase();
+  const platform = entryPlatform || '';
+  const rm = camp.regionMilestones  || {};
+  const rd = camp.regionDeadlines   || {};
+  const ov = camp.deadlineOverrides || {};
+  const comboKey = _deadlineKey(region, platform);
+  const afterPartyDeadline = (entry && entry.afterPartyEnd) || null;
+
+  const deadline =
+    afterPartyDeadline
+    || (region && platform && rd[comboKey])
+    || (region && rd[region])
+    || ov[comboKey] || (region && ov[region])
+    || camp.deadline
+    || null;
+
+  const dday =
+    (region && rm[region] && rm[region].dday)
+    || camp.dday
+    || null;
+
+  return { dday, deadline, isAfterPartyDeadline: !!afterPartyDeadline };
 }
 
 // Resolve an entry's platform: explicit field wins, else infer from the
@@ -10002,7 +10061,7 @@ async function loadTeamLeadData() {
   showTlTab('dashboard');
   if (managedUids.length === 0) {
     const tbody = document.getElementById('tl-tbody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:3rem;">No members assigned to you yet. Contact the admin.</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:3rem;">No members assigned to you yet. Contact the admin.</td></tr>';
   }
 }
 
@@ -10105,10 +10164,10 @@ async function renderTeamLeadView() {
     }
   }
 
-  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2rem;">Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:2rem;">Loading…</td></tr>';
 
   if (managedUids.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:3rem;">No members assigned to you yet. Contact the admin.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:3rem;">No members assigned to you yet. Contact the admin.</td></tr>';
     if (statsEl) statsEl.innerHTML = '';
     return;
   }
@@ -10118,7 +10177,7 @@ async function renderTeamLeadView() {
     : Object.values(tlCampaigns);
 
   if (campsToShow.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:3rem;">No campaigns found for your team.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:3rem;">No campaigns found for your team.</td></tr>';
     if (statsEl) statsEl.innerHTML = '';
     return;
   }
@@ -10148,10 +10207,26 @@ async function renderTeamLeadView() {
       const cl = (checklistData[uid] || {})[camp.id] || {};
       const info = tlTotalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null, hasD5: true };
       getEntryBreakdown(cl, info.total, info.validIds, info.hasD5).forEach(eb => {
+        const entryRegion   = (eb.region || '').toUpperCase();
+        const entryPlatform = _normalizePlatformCode(eb.platform);
+        // Same two reference dates (D-Day + Checklist Deadline) and the
+        // same overdue logic as the admin dashboard table, so the team
+        // lead's "Dashboard" reads the exact same compliance signal.
+        const { dday: rowDday, deadline: rowDeadline, isAfterPartyDeadline } =
+          resolveEntryMilestones(camp, entryRegion, entryPlatform, eb.entry);
+        const needsDeadline = !!entryRegion && !rowDeadline;
+        const nowTs  = Date.now();
+        const dlTs   = rowDeadline ? new Date(rowDeadline).getTime() : null;
+        const isDone = eb.overallPct === 100;
+        let dueState;
+        if (isDone)                    dueState = 'done';
+        else if (dlTs && nowTs > dlTs) dueState = 'overdue';
+        else                           dueState = 'not_due';
         allRows.push({
           member, camp,
           entryLabel: eb.label,
-          entryRegion: (eb.region || '').toUpperCase(),
+          entryRegion,
+          rowDday, rowDeadline, isAfterPartyDeadline, needsDeadline, dueState,
           d5Done: eb.d5Done, d1Done: eb.d1Done, overallDone: eb.d1Pct,
           d5Pct: eb.d5Pct, d1Pct: eb.d1Pct, totalItems: eb.totalItems, hasD5: eb.hasD5,
           lastActive: cl.lastActive || null,
@@ -10256,7 +10331,7 @@ async function renderTeamLeadView() {
 
   // ── Table rows ──
   if (allRows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2rem;">No checklist data yet for your team.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:2rem;">No checklist data yet for your team.</td></tr>';
     return;
   }
 
@@ -10268,9 +10343,20 @@ async function renderTeamLeadView() {
       ? new Date(r.lastActive).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
       : '—';
     const isSelf = r.member.uid === currentUser.uid;
+    // D-Day / Checklist Deadline cells — same two reference dates the
+    // admin dashboard table shows, so the whole team reads one shared
+    // source of truth for what's due when.
+    const ddayCell = r.rowDday
+      ? `<span style="font-size:12px;color:var(--text);">${fmtDeadlineShort(r.rowDday)}</span>`
+      : '<span style="color:var(--text-muted);font-size:11px;">—</span>';
+    const deadlineCell = r.rowDeadline
+      ? `<span style="font-size:12px;font-weight:600;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>${r.isAfterPartyDeadline ? ' <span style="font-size:9px;color:var(--text-muted);" title="Set from this entry\u2019s After Party end date">(after party)</span>' : ''}`
+      : (r.needsDeadline ? '<span style="color:#DC2626;font-size:11px;" title="No deadline resolved yet">⚠ Not set</span>' : '<span style="color:var(--text-muted);font-size:11px;">—</span>');
     return `<tr>
       <td><strong>${escHtml(r.member.name || r.member.username)}</strong>${isSelf ? ' <span style="font-size:10px;background:#eff6ff;color:#2563eb;border-radius:4px;padding:1px 6px;margin-left:2px;">You</span>' : ''}<br><span style="font-size:11px;color:var(--text-muted)">@${escHtml(r.member.username)}</span></td>
-      <td>${escHtml(r.camp.name)}${r.entryRegion ? ` <span style="font-size:10px;font-weight:700;background:#EEF2FF;color:#4338CA;border-radius:4px;padding:1px 6px;margin-left:2px;">${escHtml(r.entryRegion)}</span>` : ''}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}${r.rowDeadline ? `<br><span style="font-size:10px;color:${r.dueState === 'overdue' ? '#DC2626' : '#D97706'};font-weight:600;">⏰ ${fmtDeadlineShort(r.rowDeadline)}</span>` : ''}</td>
+      <td>${escHtml(r.camp.name)}${r.entryRegion ? ` <span style="font-size:10px;font-weight:700;background:#EEF2FF;color:#4338CA;border-radius:4px;padding:1px 6px;margin-left:2px;">${escHtml(r.entryRegion)}</span>` : ''}${r.entryLabel ? ` <span style="font-size:11px;color:var(--text-muted);">· ${escHtml(r.entryLabel)}</span>` : ''}</td>
+      <td>${ddayCell}</td>
+      <td>${deadlineCell}</td>
       <td>${r.hasD5 === false ? '<span style="color:var(--text-muted);font-size:11px;">N/A</span>' : `${miniBar(r.d5Pct)} ${r.d5Done}/${r.totalItems}`}</td>
       <td>${miniBar(r.d1Pct)} ${r.d1Done}/${r.totalItems}</td>
       <td><span class="badge ${badge}</span>${
