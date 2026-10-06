@@ -757,7 +757,7 @@
           <label style="margin-bottom:0;">📍 Per-Region Teasing / D-Day / Deadline <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — set actual dates per region when they differ)</span></label>
           <div style="display:flex;align-items:center;gap:6px;">
             <label style="font-size:11px;color:var(--text-muted);margin-bottom:0;">Phase</label>
-            <select id="new-campaign-cal-type" style="font-size:12px;padding:4px 8px;" title="Tags this campaign with a phase, used by reminders/alerts">
+            <input type="month" id="new-campaign-rm-month" onchange="rmReload('new-campaign')" style="font-size:12px;padding:4px 6px;" title="Month to read from the Calendar" /><select onchange="rmReload('new-campaign')" id="new-campaign-cal-type" style="font-size:12px;padding:4px 8px;" title="Tags this campaign with a phase, used by reminders/alerts">
               <option value="">Any phase</option>
               <option value="mid_month">Mid-Month</option>
               <option value="payday">PayDay</option>
@@ -767,11 +767,11 @@
         </div>
         <div style="overflow-x:auto;">
           <table class="region-milestone-grid" id="new-campaign-region-grid">
-            <thead><tr><th>Region</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th></tr></thead>
+            <thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th><th title="Keep on this campaign only; do not change the Calendar">Campaign only</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Leave a region blank to use the single D-Day/Deadline set above for everyone. If only D-Day is set for a region, its checklist deadline defaults to 4h before D-Day.</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Dates load from the Calendar for the Phase and Month chosen. Editing a row updates the Calendar (one source of truth); tick Campaign only to keep it on this campaign. Blank deadline = D-Day − 4h. Platform blank = all platforms in that region.</div>
       </div>
       <div class="field">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
@@ -1253,7 +1253,7 @@
           <label style="margin-bottom:0;">📍 Per-Region Teasing / D-Day / Deadline <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional)</span></label>
           <div style="display:flex;align-items:center;gap:6px;">
             <label style="font-size:11px;color:var(--text-muted);margin-bottom:0;">Phase</label>
-            <select id="edit-campaign-cal-type" style="font-size:12px;padding:4px 8px;">
+            <input type="month" id="edit-campaign-rm-month" onchange="rmReload('edit-campaign')" style="font-size:12px;padding:4px 6px;" title="Month to read from the Calendar" /><select onchange="rmReload('edit-campaign')" id="edit-campaign-cal-type" style="font-size:12px;padding:4px 8px;">
               <option value="">Any phase</option>
               <option value="mid_month">Mid-Month</option>
               <option value="payday">PayDay</option>
@@ -1263,11 +1263,11 @@
         </div>
         <div style="overflow-x:auto;">
           <table class="region-milestone-grid" id="edit-campaign-region-grid">
-            <thead><tr><th>Region</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th></tr></thead>
+            <thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th><th title="Keep on this campaign only; do not change the Calendar">Campaign only</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Leave a region blank to use the single D-Day/Deadline set above for everyone.</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Dates load from the Calendar for the Phase and Month chosen. Editing a row updates the Calendar (one source of truth); tick Campaign only to keep it on this campaign. Blank deadline = D-Day − 4h. Platform blank = all platforms in that region.</div>
       </div>
       <div class="field">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">

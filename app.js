@@ -1704,65 +1704,124 @@ const MANUAL_REGIONS = [
   { id: 'ID', label: 'ID' },
 ];
 
-// Renders the <tbody> rows for a region-milestone grid. `prefix` namespaces
-// the input ids so the New Campaign and Edit Campaign modals can each have
-// their own grid on the page at once (e.g. "new-campaign" / "edit-campaign").
-function regionMilestoneGridRowsHtml(prefix) {
-  return MANUAL_REGIONS.map(r => `
-    <tr>
-      <td class="rm-region-cell">${r.label}</td>
-      <td><input type="datetime-local" id="${prefix}-rm-${r.id}-teasing" style="font-size:12px;width:100%;" /></td>
-      <td><input type="datetime-local" id="${prefix}-rm-${r.id}-dday" style="font-size:12px;width:100%;" /></td>
-      <td><input type="datetime-local" id="${prefix}-rm-${r.id}-deadline" style="font-size:12px;width:100%;" /></td>
-    </tr>`).join('');
+// ══════════════════════════════════════════════════════════════════
+//  CAMPAIGN DATES GRID — Calendar-backed
+//  Rows are Region × Platform (platform blank = all platforms in that region).
+//  Rows load from the Calendar for the chosen Phase + Month. Editing a
+//  calendar-backed row writes THROUGH to the Calendar (one store); ticking
+//  "Campaign only" keeps the date on this campaign without touching the
+//  Calendar. The campaign also keeps a snapshot (regionMilestones /
+//  platformMilestones / regionDeadlines) that the resolver reads, unchanged.
+// ══════════════════════════════════════════════════════════════════
+const _rmState = {};   // prefix -> rows[]
+const _rmBlank = () => ({ region: '', platform: '', teasing: '', dday: '', deadline: '', only: false, _orig: {} });
+const _rmDT = iso => !iso ? '' : (iso.length === 10 ? `${iso}T00:00` : iso);
+
+function _rmScope(prefix) {
+  const [y, m] = (document.getElementById(`${prefix}-rm-month`)?.value || '').split('-').map(Number);
+  return { phase: document.getElementById(`${prefix}-cal-type`)?.value || '', year: y, month: m - 1 };
 }
 
-// Builds/clears the grid for a modal session and, when `existing` (a stored
-// regionMilestones object) is passed, pre-fills it — used when opening the
-// Edit Campaign modal on a campaign that already has per-region dates set.
-function initRegionMilestoneGrid(prefix, existing) {
+function _rmBuildRows(prefix, camp) {
+  const { phase, year, month } = _rmScope(prefix);
+  const rows = [];
+  const find = (r, p) => rows.find(x => x.region === r && x.platform === p);
+  if (phase && year) {
+    _calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month, phase).forEach(r => {
+      const x = { ..._rmBlank(), region: r.region.id, platform: r.platform, teasing: _rmDT(r.teasing?.iso), dday: _rmDT(r.dday?.iso),
+        deadline: r.deadline && !r.deadline.derived ? _rmDT(r.deadline.iso) : '' };
+      x._orig = { teasing: x.teasing, dday: x.dday, deadline: x.deadline };
+      rows.push(x);
+    });
+  }
+  // Overlay what the campaign itself already stores (edit, or rows kept across a reload).
+  const overlay = (region, platform, m) => {
+    let x = find(region, platform);
+    if (!x) { x = { ..._rmBlank(), region, platform, only: true }; rows.push(x); }
+    ['teasing', 'dday', 'deadline'].forEach(f => { if (m[f] && _rmDT(m[f]) !== x[f]) { x[f] = _rmDT(m[f]); x.only = true; } });
+  };
+  if (camp) {
+    Object.entries(camp.regionMilestones || {}).forEach(([r, m]) => overlay(r, '', m));
+    Object.entries(camp.platformMilestones || {}).forEach(([k, m]) => { const [r, p] = k.split('|'); overlay(r, p, m); });
+  }
+  (_rmState[prefix] || []).filter(x => x.only && !find(x.region, x.platform)).forEach(x => rows.push(x));
+  return rows.length ? rows : [_rmBlank()];
+}
+
+function initRegionMilestoneGrid(prefix, existing, camp) {
+  const mEl = document.getElementById(`${prefix}-rm-month`);
+  if (mEl) {
+    const inf = camp ? inferGenScopeFromName(camp.name) : {};
+    const fromDate = camp && String(camp.dday || camp.deadline || '').slice(0, 7);
+    const now = new Date();
+    mEl.value = inf.year != null && inf.month != null ? `${inf.year}-${String(inf.month + 1).padStart(2, '0')}`
+      : (/^\d{4}-\d{2}$/.test(fromDate || '') ? fromDate : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
+  }
+  _rmState[prefix] = null;
+  _rmState[prefix] = _rmBuildRows(prefix, camp || (existing ? { regionMilestones: existing } : null));
+  _rmRender(prefix);
+}
+function rmReload(prefix) {
+  const camp = prefix === 'edit-campaign' ? campaigns[document.getElementById('edit-campaign-overlay')?.dataset.campId] : null;
+  _rmState[prefix] = _rmBuildRows(prefix, camp);
+  _rmRender(prefix);
+}
+function rmSet(prefix, i, f, v) {
+  const r = _rmState[prefix][i]; r[f] = f === 'only' ? !!v : v;
+  if (f === 'dday' || f === 'deadline') {
+    const auto = !r.deadline && _deadlineFromDday(r.dday), el = document.getElementById(`${prefix}-rm-hint-${i}`);
+    if (el) el.textContent = auto ? `auto: ${_fmtDeadline(auto)}` : '';
+  }
+}
+function rmAdd(prefix) { _rmState[prefix].push({ ..._rmBlank(), only: true }); _rmRender(prefix); }
+function rmDel(prefix, i) { _rmState[prefix].splice(i, 1); if (!_rmState[prefix].length) _rmState[prefix].push(_rmBlank()); _rmRender(prefix); }
+
+function _rmRender(prefix) {
   const tbody = document.querySelector(`#${prefix}-region-grid tbody`);
   if (!tbody) return;
-  tbody.innerHTML = regionMilestoneGridRowsHtml(prefix);
-  MANUAL_REGIONS.forEach(r => {
-    const m  = (existing && existing[r.id]) || {};
-    const t  = document.getElementById(`${prefix}-rm-${r.id}-teasing`);
-    const d  = document.getElementById(`${prefix}-rm-${r.id}-dday`);
-    const dl = document.getElementById(`${prefix}-rm-${r.id}-deadline`);
-    if (t)  t.value  = m.teasing  || '';
-    if (d)  d.value  = m.dday     || '';
-    if (dl) dl.value = m.deadline || '';
-  });
+  const regs = CAL_REGIONS.filter(r => r.id !== 'LAZ');
+  const opt = (list, v, ph) => `<option value="">${ph}</option>` + list.map(o => `<option value="${o.id}" ${o.id === v ? 'selected' : ''}>${o.label}</option>`).join('');
+  tbody.innerHTML = _rmState[prefix].map((r, i) => {
+    const auto = !r.deadline && _deadlineFromDday(r.dday);
+    const inp = f => `<td><input type="datetime-local" value="${r[f]}" style="font-size:12px;width:100%;" onchange="rmSet('${prefix}',${i},'${f}',this.value)" /></td>`;
+    return `<tr><td><select style="font-size:12px;" onchange="rmSet('${prefix}',${i},'region',this.value)">${opt(regs, r.region, 'Region')}</select></td>
+      <td><select style="font-size:12px;" onchange="rmSet('${prefix}',${i},'platform',this.value)">${opt(CAL_PLATFORMS, r.platform, 'All platforms')}</select></td>
+      ${inp('teasing')}${inp('dday')}
+      <td><input type="datetime-local" value="${r.deadline}" style="font-size:12px;width:100%;" onchange="rmSet('${prefix}',${i},'deadline',this.value)" /><div class="cs-hint" id="${prefix}-rm-hint-${i}">${auto ? `auto: ${_fmtDeadline(auto)}` : ''}</div></td>
+      <td style="text-align:center;"><input type="checkbox" ${r.only ? 'checked' : ''} ${!r.platform ? 'disabled' : ''} title="${r.platform ? 'Keep these dates on this campaign only — do not change the Calendar' : 'All-platform rows are always campaign-only'}" onchange="rmSet('${prefix}',${i},'only',this.checked)" /></td>
+      <td><button type="button" class="btn-ghost-light" onclick="rmDel('${prefix}',${i})">✕</button></td></tr>`;
+  }).join('') + `<tr><td colspan="7"><button type="button" class="btn-outline" style="font-size:11px;" onclick="rmAdd('${prefix}')">+ Add row</button></td></tr>`;
 }
 
-// Reads the grid back into two pieces:
-//  - regionMilestones: exactly what the admin typed, kept as-is for display
-//    (campaign detail views, exports, etc).
-//  - regionDeadlines: { REGION: deadlineISO }, derived from regionMilestones
-//    the same way the old calendar-mapped flow worked (explicit deadline,
-//    else D-Day − 4h) — this is what the existing overdue/on-time logic
-//    reads, so that machinery keeps working unchanged.
-// Both are null when every row was left blank.
-function collectRegionMilestones(prefix) {
-  const regionMilestones = {};
-  const regionDeadlines  = {};
-  MANUAL_REGIONS.forEach(r => {
-    const teasing  = document.getElementById(`${prefix}-rm-${r.id}-teasing`)?.value  || '';
-    const dday     = document.getElementById(`${prefix}-rm-${r.id}-dday`)?.value     || '';
-    const deadline = document.getElementById(`${prefix}-rm-${r.id}-deadline`)?.value || '';
-    if (!teasing && !dday && !deadline) return;
-    const entry = {};
-    if (teasing)  entry.teasing  = teasing;
-    if (dday)     entry.dday     = dday;
-    if (deadline) entry.deadline = deadline;
-    regionMilestones[r.id] = entry;
-    const resolvedDeadline = deadline || _deadlineFromDday(dday) || null;
-    if (resolvedDeadline) regionDeadlines[r.id] = resolvedDeadline;
+// Writes calendar-backed edits through to the Calendar (single store).
+// Skips "Campaign only" rows and all-platform rows.
+async function rmCommitToCalendar(prefix) {
+  const { phase, year, month } = _rmScope(prefix);
+  if (!phase || !year) return;
+  const rows = (_rmState[prefix] || []).filter(r => r.region && r.platform && !r.only);
+  if (!rows.length || !_calUpsertScheduleRows(rows, phase, year, month)) return;
+  await saveCalendarEntries();
+  rows.forEach(r => { r._orig = { teasing: r.teasing, dday: r.dday, deadline: r.deadline }; });
+  try { renderCalendarView(getCalTarget()); } catch (_) {}
+}
+
+// Snapshot for the campaign doc. `ov` = the campaign's deadlineOverrides, so a
+// manual override is never shadowed by a regionDeadlines value written here.
+function collectRegionMilestones(prefix, ov) {
+  const regionMilestones = {}, platformMilestones = {}, regionDeadlines = {};
+  (_rmState[prefix] || []).forEach(r => {
+    if (!r.region || (!r.teasing && !r.dday && !r.deadline)) return;
+    const m = {};
+    if (r.teasing)  m.teasing  = r.teasing;
+    if (r.dday)     m.dday     = r.dday;
+    if (r.deadline) m.deadline = r.deadline;
+    const key = _deadlineKey(r.region, r.platform);
+    (r.platform ? platformMilestones : regionMilestones)[r.platform ? key : r.region] = m;
+    const dl = r.deadline || _deadlineFromDday(r.dday);
+    if (dl && !(ov && (ov[key] || ov[r.region]))) regionDeadlines[key] = dl;
   });
-  return {
-    regionMilestones: Object.keys(regionMilestones).length ? regionMilestones : null,
-    regionDeadlines:  Object.keys(regionDeadlines).length  ? regionDeadlines  : null,
-  };
+  const n = o => Object.keys(o).length ? o : null;
+  return { regionMilestones: n(regionMilestones), platformMilestones: n(platformMilestones), regionDeadlines: n(regionDeadlines) };
 }
 
 // Human label for a phase id used in the calendar-map controls.
@@ -1844,6 +1903,7 @@ async function createCampaignWithChecklists({
   broadcastMessage = null, // null → no broadcast sent
   regionDeadlines = null,  // { REGION: deadlineISO } — derived on-time cutoff per region
   regionMilestones = null, // { REGION: { teasing, dday, deadline } } — the actual per-region dates as typed
+  platformMilestones = null, // { 'REGION|platform': { teasing, dday, deadline } }
 }) {
   const ref = await db.collection('campaigns').add({
     name,
@@ -1859,6 +1919,7 @@ async function createCampaignWithChecklists({
     deadline:            deadline || null,
     regionDeadlines:     regionDeadlines || null,
     regionMilestones:    regionMilestones || null,
+    platformMilestones:  platformMilestones || null,
   });
   const campaignId = ref.id;
 
@@ -1987,7 +2048,8 @@ async function createCampaign() {
     // values for display; regionDeadlines is derived from it and feeds the
     // existing overdue/on-time logic. Both are null when every row was left
     // blank, in which case every entry just uses the campaign-wide dates.
-    const { regionMilestones, regionDeadlines } = collectRegionMilestones('new-campaign');
+    await rmCommitToCalendar('new-campaign');
+    const { regionMilestones, platformMilestones, regionDeadlines } = collectRegionMilestones('new-campaign');
 
     await createCampaignWithChecklists({
       name,
@@ -1998,6 +2060,7 @@ async function createCampaign() {
       deadline:   combineDatetime('new-campaign-deadline', 'new-campaign-deadline-time'),
       regionDeadlines,
       regionMilestones,
+      platformMilestones,
       // Whatever phase was picked next to the per-region grid — saved on the
       // campaign itself so future features (e.g. the upcoming-campaign alert)
       // can match it precisely instead of guessing from the name. '' (Any
@@ -2077,7 +2140,7 @@ async function openEditCampaignModal(campId) {
   document.getElementById('edit-campaign-error').style.display = 'none';
   const editTypeSel = document.getElementById('edit-campaign-cal-type');
   if (editTypeSel) editTypeSel.value = camp.campaignType || '';
-  initRegionMilestoneGrid('edit-campaign', camp.regionMilestones || null);
+  initRegionMilestoneGrid('edit-campaign', camp.regionMilestones || null, camp);
 
   // Build template selector
   const tmplSel = document.getElementById('edit-campaign-template-sel');
@@ -2122,9 +2185,15 @@ async function saveEditCampaign() {
   const dday       = combineDatetime('edit-campaign-dday', 'edit-campaign-dday-time');
   const deadline   = combineDatetime('edit-campaign-deadline', 'edit-campaign-deadline-time');
   const campaignType = document.getElementById('edit-campaign-cal-type')?.value || null;
-  const { regionMilestones, regionDeadlines } = collectRegionMilestones('edit-campaign');
-
+  const _old = campaigns[campId] || {};
   try {
+    await rmCommitToCalendar('edit-campaign');
+    const _c = collectRegionMilestones('edit-campaign', _old.deadlineOverrides);
+    const { regionMilestones, platformMilestones } = _c;
+    // Keep legacy combo deadlines (e.g. from Bulk Assign) the grid doesn't show.
+    const _keep = {};
+    Object.entries(_old.regionDeadlines || {}).forEach(([k, v]) => { if (k.includes('|') && !(_old.platformMilestones || {})[k]) _keep[k] = v; });
+    const regionDeadlines = (Object.keys(_keep).length || _c.regionDeadlines) ? { ..._keep, ...(_c.regionDeadlines || {}) } : null;
     await db.collection('campaigns').doc(campId).update({
       name,
       assignedUids,
@@ -2133,9 +2202,10 @@ async function saveEditCampaign() {
       deadline: deadline || null,
       campaignType,
       regionMilestones,
+      platformMilestones,
       regionDeadlines,
     });
-    campaigns[campId] = { ...campaigns[campId], name, assignedUids, checklistTemplateId: templateId || null, dday: dday || null, deadline: deadline || null, campaignType, regionMilestones, regionDeadlines };
+    campaigns[campId] = { ...campaigns[campId], name, assignedUids, checklistTemplateId: templateId || null, dday: dday || null, deadline: deadline || null, campaignType, regionMilestones, platformMilestones, regionDeadlines };
     overlay.style.display = 'none';
     await loadAdminData();
     showToast('✅ Campaign updated!', 'success');
@@ -4249,6 +4319,28 @@ function _calBuildTitle(campId, region, platId, ms) {
   return q ? `${camp} — ${q}` : camp;
 }
 
+function _calUpsertScheduleRows(rows, phase, year, month) {
+  const monthStr = `${year}-${_csPad(month + 1)}`, color = (CAL_CAMPAIGN_TYPES.find(c => c.id === phase) || {}).color;
+  let n = 0, changed = 0;
+  rows.forEach(r => {
+    if (!r.region || !r.platform) return;
+    ['teasing', 'dday', 'deadline'].forEach(ms => {
+      const v = r[ms];
+      if (!v || v === (r._orig || {})[ms]) return;
+      const [date, time] = v.split('T');
+      const idx = calendarEntries.findIndex(e => e.type === ms && !(e.recurrence && e.recurrence.freq)
+        && (_calRegionOf(e) || {}).id === r.region && ((_calPlatformOf(e) || {}).id || '') === r.platform
+        && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase) && String(e.date).slice(0, 7) === monthStr);
+      const data = { title: _calBuildTitle(phase, r.region, r.platform, ms), date, endDate: date, type: ms, region: r.region, platform: r.platform,
+        campaignType: phase, startTime: time || null, endTime: null, color, updatedAt: new Date().toISOString() };
+      if (idx >= 0) calendarEntries[idx] = { ...calendarEntries[idx], ...data };
+      else calendarEntries.push({ id: `ce_${Date.now()}_${n++}`, ...data, description: '', recurrence: null, assignedUids: [], campaignId: null, createdBy: currentUser?.uid || '' });
+      changed++;
+    });
+  });
+  return changed;
+}
+
 // Writes ordinary calendarEntries (same shape as the single-event form). Only
 // fields the admin actually changed are written, so untouched legacy entries
 // (including date-only ones) are never rewritten. Blank fields never delete.
@@ -4265,24 +4357,7 @@ async function saveCalSchedule() {
     if (seen.has(k)) { showError(errEl, `${r.region} · ${_calPlatLabel(r.platform)} appears twice — keep one row per region and platform.`); return; }
     seen.add(k);
   }
-  const monthStr = `${year}-${_csPad(month + 1)}`, color = (CAL_CAMPAIGN_TYPES.find(c => c.id === phase) || {}).color;
-  let n = 0, changed = 0;
-  _csRows.forEach(r => {
-    if (!r.region || !r.platform) return;
-    ['teasing', 'dday', 'deadline'].forEach(ms => {
-      const v = r[ms];
-      if (!v || v === (r._orig || {})[ms]) return;
-      const [date, time] = v.split('T');
-      const idx = calendarEntries.findIndex(e => e.type === ms && !(e.recurrence && e.recurrence.freq)
-        && (_calRegionOf(e) || {}).id === r.region && ((_calPlatformOf(e) || {}).id || '') === r.platform
-        && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase) && String(e.date).slice(0, 7) === monthStr);
-      const data = { title: _calBuildTitle(phase, r.region, r.platform, ms), date, endDate: date, type: ms, region: r.region, platform: r.platform,
-        campaignType: phase, startTime: time || null, endTime: null, color, updatedAt: new Date().toISOString() };
-      if (idx >= 0) calendarEntries[idx] = { ...calendarEntries[idx], ...data };
-      else calendarEntries.push({ id: `ce_${Date.now()}_${n++}`, ...data, description: '', recurrence: null, assignedUids: [], campaignId: null, createdBy: currentUser?.uid || '' });
-      changed++;
-    });
-  });
+  const changed = _calUpsertScheduleRows(_csRows, phase, year, month);
   if (!changed) { showError(errEl, 'No dates were changed.'); return; }
   try { await saveCalendarEntries(); } catch (e) { console.error(e); showError(errEl, 'Failed to save. Try again.'); return; }
   document.getElementById('cal-sched-overlay').style.display = 'none';
