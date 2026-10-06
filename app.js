@@ -1701,6 +1701,7 @@ const MANUAL_REGIONS = [
   { id: 'SG', label: 'SG' },
   { id: 'TH', label: 'TH' },
   { id: 'VN', label: 'VN' },
+  { id: 'ID', label: 'ID' },
 ];
 
 // Renders the <tbody> rows for a region-milestone grid. `prefix` namespaces
@@ -3266,6 +3267,7 @@ const CAL_REGIONS = [
   { id: 'VN',    label: 'VN',    color: '#059669' },
   { id: 'TH',    label: 'TH',    color: '#0891B2' },
   { id: 'SG',    label: 'SG',    color: '#DB2777' },
+  { id: 'ID',    label: 'ID',    color: '#7C3AED' },
   { id: 'LAZ',   label: 'LAZ',   color: '#EA580C' },
 ];
 const CAL_REGION_MAP = Object.fromEntries(CAL_REGIONS.map(r => [r.id, r]));
@@ -3281,6 +3283,7 @@ const _REGION_ALIASES = {
   PH: 'PH', PHL: 'PH', PHILIPPINES: 'PH', PILIPINAS: 'PH',
   VN: 'VN', VNM: 'VN', VIETNAM: 'VN', 'VIET NAM': 'VN',
   TH: 'TH', THA: 'TH', THAILAND: 'TH',
+  ID: 'ID', IDN: 'ID', INDONESIA: 'ID',
   LAZ: 'LAZ', LAZADA: 'LAZ',
 };
 function _normalizeRegionCode(raw) {
@@ -3357,8 +3360,10 @@ function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
     || camp.deadline
     || null;
 
+  const pm = camp.platformMilestones || {};
   const dday =
-    (region && rm[region] && rm[region].dday)
+    (region && platform && pm[comboKey] && pm[comboKey].dday)
+    || (region && rm[region] && rm[region].dday)
     || camp.dday
     || null;
 
@@ -3538,7 +3543,7 @@ async function _persistRosterFromMatched(matched) {
 // lists members under plain single-market codes (SG, TH, MY). Expand a
 // region id into the set of single-market codes it represents so roster
 // matching bridges the two. A plain code expands to just itself.
-const _SINGLE_MARKET_CODES = ['PH', 'MY', 'VN', 'TH', 'SG'];
+const _SINGLE_MARKET_CODES = ['PH', 'MY', 'VN', 'TH', 'SG', 'ID'];
 function _expandRegionCode(regionId) {
   if (!regionId) return [];
   const id = regionId.toUpperCase();
@@ -4021,6 +4026,290 @@ function _calCreatorLabel(entry) {
   return creator.name || creator.username || 'Team Lead';
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  CAMPAIGN SCHEDULE — views + bulk editor
+//  Pure presentation/bulk-entry layer over calendarEntries. Every row below
+//  is DERIVED from the same teasing/dday/deadline entries that
+//  buildRegionDeadlineMap() reads; nothing is stored separately.
+// ══════════════════════════════════════════════════════════════════
+let calViewMode = 'overview';          // 'overview' | 'region' | 'timeline'
+let calOpenGroup = '';                 // overview: expanded "y-m-d|campId"
+const calExpanded = new Set();         // region view: expanded "campId|REGION"
+const _CAL_MS = [
+  { id: 'teasing',  letter: 'T', label: 'Teasing Check' },
+  { id: 'dday',     letter: 'D', label: 'D-Day Check' },
+  { id: 'deadline', letter: 'E', label: 'Checklist Deadline' },
+];
+function calSetView(v)  { calViewMode = v; calOpenGroup = ''; renderCalendarView(getCalTarget()); }
+function calToggleGroup(k) { calOpenGroup = calOpenGroup === k ? '' : k; renderCalendarView(getCalTarget()); }
+function calToggleRegionRow(k) { calExpanded.has(k) ? calExpanded.delete(k) : calExpanded.add(k); renderCalendarView(getCalTarget()); }
+const _calMD = iso => { const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number); return `${_MONTH_LABELS[m - 1].slice(0, 3)} ${d}`; };
+
+// Collapse the month's milestone entries into one row per Campaign × Region ×
+// Platform. Same earliest-wins / implicit-D-Day rules as buildRegionDeadlineMap;
+// deadline falls back to D-Day − 4h via _deadlineFromDday (flagged derived).
+function _calScheduleRows(entries, year, month, phase) {
+  const pad = n => String(n).padStart(2, '0');
+  const ms = `${year}-${pad(month + 1)}-01`;
+  const me = `${year}-${pad(month + 1)}-${pad(new Date(year, month + 1, 0).getDate())}`;
+  const want = phase ? _canonicalPhase(phase) : null;
+  const map = {};
+  entries.forEach(e => {
+    if (e._type === 'personal' || !e.date) return;
+    const d = String(e.date).slice(0, 10);
+    if (d < ms || d > me) return;
+    const camp = _calCampaignType(e);
+    if (camp.id === 'other' || (want && _canonicalPhase(camp.id) !== want)) return;
+    const r = _calRegionOf(e); if (!r) return;
+    const p = _calPlatformOf(e);
+    const m = ['teasing', 'dday', 'deadline'].includes(e.type) ? e.type : ((e.type === 'other' || !e.type) ? 'ddayFb' : null);
+    if (!m) return;
+    const row = map[`${camp.id}|${r.id}|${p ? p.id : ''}`] ||= { camp, region: r, platform: p ? p.id : '' };
+    const iso = e.startTime ? `${d}T${e.startTime}` : d;
+    if (!row[m] || iso < row[m].iso) row[m] = { iso, id: e.id };
+  });
+  return Object.values(map).map(row => {
+    const dday = row.dday || row.ddayFb || null;
+    const auto = dday && _deadlineFromDday(dday.iso);
+    const dl = row.deadline || (auto ? { iso: auto, derived: true } : null);
+    return { camp: row.camp, region: row.region, platform: row.platform, teasing: row.teasing || null, dday, deadline: dl };
+  }).sort((a, b) => CAL_CAMPAIGN_TYPES.indexOf(a.camp) - CAL_CAMPAIGN_TYPES.indexOf(b.camp)
+    || CAL_REGIONS.indexOf(a.region) - CAL_REGIONS.indexOf(b.region) || a.platform.localeCompare(b.platform));
+}
+
+// { "MY|lazada": { teasing, dday, deadline } } — stored on campaigns as
+// platformMilestones so resolveEntryMilestones can give each platform its own D-Day.
+function buildPlatformMilestoneMap({ year, month, campaignType }) {
+  const out = {};
+  _calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month, campaignType || null).forEach(r => {
+    if (!r.platform) return;
+    const k = _deadlineKey(r.region.id, r.platform);
+    if (out[k]) return;
+    const o = {};
+    if (r.teasing)  o.teasing  = r.teasing.iso;
+    if (r.dday)     o.dday     = r.dday.iso;
+    if (r.deadline && !r.deadline.derived) o.deadline = r.deadline.iso;
+    if (Object.keys(o).length) out[k] = o;
+  });
+  return out;
+}
+
+const _calBadge = (ms, col, derived) => {
+  const m = _CAL_MS.find(x => x.id === ms);
+  return `<span class="cs-ms cs-ms-${ms}${derived ? ' cs-derived' : ''}" style="--c:${col}" title="${m.label}${derived ? ' (D-Day − 4h)' : ''}">${m.letter}</span>`;
+};
+const _calPlatLabel = id => (CAL_PLATFORM_MAP[id] || {}).label || 'All platforms';
+
+function _calToolbarHtml() {
+  const tabs = [['overview', 'Overview'], ['region', 'By Region'], ['timeline', 'Checklist Timeline']];
+  return `<div class="cs-toolbar">
+    <div class="cs-tabs">${tabs.map(([id, l]) => `<button class="cs-tab ${calViewMode === id ? 'on' : ''}" onclick="calSetView('${id}')">${l}</button>`).join('')}</div>
+    <div class="cs-chips">${[['', 'ALL'], ...CAL_REGIONS.filter(r => r.id !== 'LAZ').map(r => [r.id, r.id])].map(([v, l]) =>
+      `<button class="cs-chip ${calFilterRegion === v ? 'on' : ''}" onclick="calSetRegionFilter('${v}')">${l}</button>`).join('')}</div>
+  </div>`;
+}
+
+function _calSummaryStripHtml(entries, year, month) {
+  const rows = _calScheduleRows(entries, year, month);
+  if (!rows.length) return '';
+  const by = {};
+  rows.forEach(r => {
+    const g = by[r.camp.id] ||= { camp: r.camp, regions: {} };
+    const rg = g.regions[r.region.id] ||= { region: r.region, lo: '9999', hi: '0000' };
+    [r.teasing, r.dday, r.deadline].forEach(m => { if (!m) return; const d = m.iso.slice(0, 10); if (d < rg.lo) rg.lo = d; if (d > rg.hi) rg.hi = d; });
+  });
+  return `<div class="cs-strip">${Object.values(by).map(g => `<div class="cs-strip-card" style="--c:${g.camp.color}">
+    <div class="cs-strip-title">${g.camp.label}</div>
+    ${Object.values(g.regions).filter(x => x.lo !== '9999').map(x => `<div class="cs-strip-row"><span class="cal-region-badge" style="background:${x.region.color}">${x.region.id}</span>${x.lo === x.hi ? _calMD(x.lo) : `${_calMD(x.lo)} – ${_calMD(x.hi)}`}</div>`).join('')}
+  </div>`).join('')}</div>`;
+}
+
+function _calGroupPanelHtml(dayMap, isAdmin) {
+  if (!calOpenGroup) return '';
+  const [dayKey, campId] = calOpenGroup.split('|');
+  const list = (dayMap[dayKey] || []).filter(e => e._type === 'shared' && _calCampaignType(e).id === campId);
+  if (!list.length) return '';
+  const camp = CAL_CAMPAIGN_TYPES.find(c => c.id === campId);
+  const [y, m, d] = dayKey.split('-').map(Number);
+  return `<div class="cs-panel" style="--c:${camp.color}">
+    <div class="cs-panel-head"><span><strong>${camp.label}</strong> · ${_MONTH_LABELS[m].slice(0, 3)} ${d}</span>
+      <button class="btn-ghost-light" onclick="calToggleGroup('')">✕</button></div>
+    <table class="cs-table"><thead><tr><th>Region</th><th>Platform</th><th>Milestone</th><th>Time</th><th></th></tr></thead><tbody>
+    ${list.map(e => { const r = _calRegionOf(e), p = _calPlatformOf(e), ms = _CAL_MS.find(x => x.id === e.type);
+      return `<tr><td>${r ? `<span class="cal-region-badge" style="background:${r.color}">${r.id}</span>` : '—'}</td><td>${p ? p.label : '—'}</td>
+      <td>${ms ? `${_calBadge(ms.id, camp.color)} ${ms.label}` : 'Event'}</td><td>${e.startTime ? _fmtDeadline(`${e.date}T${e.startTime}`) : _calMD(e.date)}</td>
+      <td>${isAdmin ? `<a href="#" onclick="openCalEntryModal('${e.id}',false,null);return false;">Edit</a>` : ''}</td></tr>`; }).join('')}
+    </tbody></table></div>`;
+}
+
+function _calAltViewHtml(entries, year, month, isAdmin) {
+  const rows = _calScheduleRows(entries, year, month);
+  const action = isAdmin ? `<button class="btn-outline" style="font-size:12px;" onclick="openCalScheduleModal()">Edit schedule</button>` : '';
+  if (!rows.length) return `<div class="cs-empty">No campaign milestones for this month${calFilterRegion || calFilterPlatform || calFilterCampaign ? ' with the current filters' : ''}. ${action}</div>`;
+  return `<div class="cs-body">${calViewMode === 'region' ? _calRegionMatrixHtml(rows) : _calTimelineHtml(rows)}</div>`;
+}
+
+function _calRegionMatrixHtml(rows) {
+  const byCamp = {};
+  rows.forEach(r => (byCamp[r.camp.id] ||= []).push(r));
+  return Object.values(byCamp).map(list => {
+    const camp = list[0].camp, col = camp.color;
+    const days = [...new Set(list.flatMap(r => [r.teasing, r.dday, r.deadline].filter(Boolean).map(m => m.iso.slice(0, 10))))].sort();
+    const cells = rs => days.map(d => `<td class="cs-cell">${_CAL_MS.map(m => rs.some(r => r[m.id] && r[m.id].iso.slice(0, 10) === d)
+      ? _calBadge(m.id, col, m.id === 'deadline' && rs.every(r => !r.deadline || r.deadline.derived)) : '').join('')}</td>`).join('');
+    const regions = [...new Set(list.map(r => r.region.id))];
+    return `<div class="cs-block" style="--c:${col}"><div class="cs-block-title">${camp.label}</div><div class="cs-scroll"><table class="cs-matrix">
+      <thead><tr><th>Region / Platform</th>${days.map(d => { const dt = new Date(`${d}T00:00:00`); return `<th>${_calMD(d)}<small>${dt.toLocaleDateString('en-GB', { weekday: 'short' })}</small></th>`; }).join('')}</tr></thead><tbody>
+      ${regions.map(rid => { const rs = list.filter(r => r.region.id === rid), key = `${camp.id}|${rid}`, open = calExpanded.has(key);
+        return `<tr class="cs-region-row" onclick="calToggleRegionRow('${key}')"><td><span class="cs-caret">${open ? '▾' : '▸'}</span><span class="cal-region-badge" style="background:${rs[0].region.color}">${rid}</span> <small>${rs.length} platform${rs.length > 1 ? 's' : ''}</small></td>${cells(rs)}</tr>`
+          + (open ? rs.map(r => `<tr class="cs-plat-row"><td>${_calPlatLabel(r.platform)}</td>${cells([r])}</tr>`).join('') : ''); }).join('')}
+      </tbody></table></div></div>`;
+  }).join('') + `<div class="cs-key">${_CAL_MS.map(m => `${_calBadge(m.id, '#64748B')} ${m.label}`).join(' &nbsp; ')} &nbsp; <span class="cs-derived-note">dashed = D-Day − 4h</span></div>`;
+}
+
+function _calTimelineHtml(rows) {
+  const now = Date.now();
+  const ts = iso => new Date(iso.length === 10 ? `${iso}T23:59` : iso).getTime();
+  const byCamp = {};
+  rows.forEach(r => (byCamp[r.camp.id] ||= []).push(r));
+  return Object.values(byCamp).map(list => {
+    const camp = list[0].camp;
+    const blocks = list.map(r => {
+      const items = _CAL_MS.filter(m => r[m.id]).map(m => ({ ...m, iso: r[m.id].iso, derived: r[m.id].derived })).sort((a, b) => ts(a.iso) - ts(b.iso));
+      const next = items.find(i => ts(i.iso) >= now);
+      return { r, items, next, key: next ? ts(next.iso) : Infinity, last: items.length ? ts(items[items.length - 1].iso) : 0 };
+    }).sort((a, b) => (a.key === b.key ? b.last - a.last : a.key - b.key));
+    return `<div class="cs-block" style="--c:${camp.color}"><div class="cs-block-title">${camp.label}</div>
+      ${blocks.map(b => `<div class="cs-tl ${b.next ? '' : 'cs-tl-done'}">
+        <div class="cs-tl-head"><span class="cal-region-badge" style="background:${b.r.region.color}">${b.r.region.id}</span> ${_calPlatLabel(b.r.platform)}
+          ${b.next ? `<span class="cs-next">Next: ${b.next.label} · ${_fmtDeadline(b.next.iso)}</span>` : '<span class="cs-next cs-next-done">All milestones passed</span>'}</div>
+        ${b.items.map(i => `<div class="cs-tl-line ${ts(i.iso) < now ? 'past' : (i === b.next ? 'next' : '')}">${_calBadge(i.id, camp.color, i.derived)}<span class="cs-tl-label">${i.label}</span><span>${_fmtDeadline(i.iso)}${i.derived ? ' <small>(D-Day − 4h)</small>' : ''}</span>${ts(i.iso) < now ? '<span class="cs-check">✓</span>' : ''}</div>`).join('')}
+      </div>`).join('')}</div>`;
+  }).join('');
+}
+
+// ── Bulk campaign schedule editor ─────────────────────────────────
+let _csRows = [];
+const _csPad = n => String(n).padStart(2, '0');
+function openCalScheduleModal() {
+  const sel = document.getElementById('cs-campaign');
+  sel.innerHTML = CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other').map(c => `<option value="${c.id}">${c.label}</option>`).join('');
+  if (calFilterCampaign && sel.querySelector(`[value="${calFilterCampaign}"]`)) sel.value = calFilterCampaign;
+  document.getElementById('cs-month').value = `${calCurrentYear}-${_csPad(calCurrentMonth + 1)}`;
+  document.getElementById('cs-error').style.display = 'none';
+  _csLoad();
+  document.getElementById('cal-sched-overlay').style.display = 'flex';
+}
+function closeCalScheduleModal(e) {
+  if (e && e.target !== document.getElementById('cal-sched-overlay')) return;
+  document.getElementById('cal-sched-overlay').style.display = 'none';
+}
+function _csScope() {
+  const [y, m] = (document.getElementById('cs-month').value || '').split('-').map(Number);
+  return { phase: document.getElementById('cs-campaign').value, year: y, month: m - 1 };
+}
+const _csBlank = () => ({ region: '', platform: '', teasing: '', dday: '', deadline: '', _orig: {} });
+function _csLoad() {
+  const { phase, year, month } = _csScope();
+  if (!year) return;
+  const dt = m => m ? (m.iso.length === 10 ? `${m.iso}T00:00` : m.iso) : '';
+  _csRows = _calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month, phase).map(r => {
+    const x = { region: r.region.id, platform: r.platform, teasing: dt(r.teasing), dday: dt(r.dday), deadline: r.deadline && !r.deadline.derived ? dt(r.deadline) : '' };
+    x._orig = { teasing: x.teasing, dday: x.dday, deadline: x.deadline };
+    return x;
+  });
+  if (!_csRows.length) _csRows.push(_csBlank());
+  _csRender();
+}
+function csAddRow() { _csRows.push(_csBlank()); _csRender(); }
+function csDelRow(i) { _csRows.splice(i, 1); if (!_csRows.length) _csRows.push(_csBlank()); _csRender(); }
+function csSet(i, f, v) {
+  _csRows[i][f] = v;
+  if (f === 'dday' || f === 'deadline') {
+    const el = document.getElementById(`cs-hint-${i}`), auto = !_csRows[i].deadline && _deadlineFromDday(_csRows[i].dday);
+    if (el) el.textContent = auto ? `auto: ${_fmtDeadline(auto)} (D-Day − 4h)` : '';
+  }
+}
+function _csRender() {
+  const regs = CAL_REGIONS.filter(r => r.id !== 'LAZ');
+  const opt = (list, v, ph) => `<option value="">${ph}</option>` + list.map(o => `<option value="${o.id}" ${o.id === v ? 'selected' : ''}>${o.label}</option>`).join('');
+  document.querySelector('#cs-grid tbody').innerHTML = _csRows.map((r, i) => {
+    const auto = !r.deadline && _deadlineFromDday(r.dday);
+    return `<tr><td><select onchange="csSet(${i},'region',this.value)">${opt(regs, r.region, 'Region')}</select></td>
+      <td><select onchange="csSet(${i},'platform',this.value)">${opt(CAL_PLATFORMS, r.platform, 'Platform')}</select></td>
+      <td><input type="datetime-local" value="${r.teasing}" onchange="csSet(${i},'teasing',this.value)"></td>
+      <td><input type="datetime-local" value="${r.dday}" onchange="csSet(${i},'dday',this.value)"></td>
+      <td><input type="datetime-local" value="${r.deadline}" onchange="csSet(${i},'deadline',this.value)"><div class="cs-hint" id="cs-hint-${i}">${auto ? `auto: ${_fmtDeadline(auto)} (D-Day − 4h)` : ''}</div></td>
+      <td><button class="btn-ghost-light" onclick="csDelRow(${i})" title="Remove row">✕</button></td></tr>`;
+  }).join('');
+}
+function _calBuildTitle(campId, region, platId, ms) {
+  const camp = (CAL_CAMPAIGN_TYPES.find(c => c.id === campId) || {}).label || 'Event';
+  const q = [region, (CAL_PLATFORM_MAP[platId] || {}).label, { teasing: 'Teasing', dday: 'D-Day', deadline: 'Deadline' }[ms]].filter(Boolean).join(' · ');
+  return q ? `${camp} — ${q}` : camp;
+}
+
+// Writes ordinary calendarEntries (same shape as the single-event form). Only
+// fields the admin actually changed are written, so untouched legacy entries
+// (including date-only ones) are never rewritten. Blank fields never delete.
+async function saveCalSchedule() {
+  const errEl = document.getElementById('cs-error');
+  errEl.style.display = 'none';
+  const { phase, year, month } = _csScope();
+  if (!year) { showError(errEl, 'Choose a month.'); return; }
+  const seen = new Set();
+  for (const r of _csRows) {
+    if (!r.teasing && !r.dday && !r.deadline && !r.region && !r.platform) continue;
+    if (!r.region || !r.platform) { showError(errEl, 'Every row needs a Region and a Platform.'); return; }
+    const k = `${r.region}|${r.platform}`;
+    if (seen.has(k)) { showError(errEl, `${r.region} · ${_calPlatLabel(r.platform)} appears twice — keep one row per region and platform.`); return; }
+    seen.add(k);
+  }
+  const monthStr = `${year}-${_csPad(month + 1)}`, color = (CAL_CAMPAIGN_TYPES.find(c => c.id === phase) || {}).color;
+  let n = 0, changed = 0;
+  _csRows.forEach(r => {
+    if (!r.region || !r.platform) return;
+    ['teasing', 'dday', 'deadline'].forEach(ms => {
+      const v = r[ms];
+      if (!v || v === (r._orig || {})[ms]) return;
+      const [date, time] = v.split('T');
+      const idx = calendarEntries.findIndex(e => e.type === ms && !(e.recurrence && e.recurrence.freq)
+        && (_calRegionOf(e) || {}).id === r.region && ((_calPlatformOf(e) || {}).id || '') === r.platform
+        && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase) && String(e.date).slice(0, 7) === monthStr);
+      const data = { title: _calBuildTitle(phase, r.region, r.platform, ms), date, endDate: date, type: ms, region: r.region, platform: r.platform,
+        campaignType: phase, startTime: time || null, endTime: null, color, updatedAt: new Date().toISOString() };
+      if (idx >= 0) calendarEntries[idx] = { ...calendarEntries[idx], ...data };
+      else calendarEntries.push({ id: `ce_${Date.now()}_${n++}`, ...data, description: '', recurrence: null, assignedUids: [], campaignId: null, createdBy: currentUser?.uid || '' });
+      changed++;
+    });
+  });
+  if (!changed) { showError(errEl, 'No dates were changed.'); return; }
+  try { await saveCalendarEntries(); } catch (e) { console.error(e); showError(errEl, 'Failed to save. Try again.'); return; }
+  document.getElementById('cal-sched-overlay').style.display = 'none';
+  calCurrentYear = year; calCurrentMonth = month;
+  renderCalendarView(getCalTarget());
+  await _csSyncLinkedCampaigns(phase, year, month);
+}
+
+// If a campaign already covers this phase+month, offer to push the new dates to
+// it. deadlineOverrides are respected: any region/platform with one is skipped.
+async function _csSyncLinkedCampaigns(phase, year, month) {
+  const canon = _canonicalPhase(phase);
+  const linked = Object.entries(campaigns || {}).filter(([, c]) => _campaignCoversPhaseMonth(c, canon, year, month));
+  if (!linked.length) return;
+  if (!confirm(`Campaign schedule changed. Update linked checklist milestone dates?\n\n${linked.map(([, c]) => '• ' + c.name).join('\n')}\n\nDeadlines set manually (overrides) are kept.`)) return;
+  const dls = buildRegionDeadlineMap({ year, month, campaignType: phase });
+  const pms = buildPlatformMilestoneMap({ year, month, campaignType: phase });
+  let skipped = 0;
+  for (const [id, c] of linked) {
+    const ov = c.deadlineOverrides || {}, rd = { ...(c.regionDeadlines || {}) };
+    Object.entries(dls).forEach(([k, v]) => { if (ov[k] || ov[k.split('|')[0]]) { skipped++; return; } rd[k] = v; });
+    const upd = { regionDeadlines: rd, platformMilestones: { ...(c.platformMilestones || {}), ...pms } };
+    try { await db.collection('campaigns').doc(id).update(upd); Object.assign(campaigns[id], upd); } catch (e) { console.error('schedule sync failed', id, e); }
+  }
+  if (skipped) alert(`${skipped} deadline(s) were left unchanged because they have a manual override.`);
+}
+
 function renderCalendarView(targetEl) {
   const wrap = targetEl || document.getElementById('user-calendar-view');
   if (!wrap) return;
@@ -4114,11 +4403,6 @@ function renderCalendarView(targetEl) {
           ${CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other').map(c =>
             `<option value="${c.id}" ${calFilterCampaign === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}
         </select>
-        <select class="cal-filter-select" onchange="calSetRegionFilter(this.value)" title="Filter by region">
-          <option value="">All regions</option>
-          ${CAL_REGIONS.map(r =>
-            `<option value="${r.id}" ${calFilterRegion === r.id ? 'selected' : ''}>${r.label}</option>`).join('')}
-        </select>
         <select class="cal-filter-select" onchange="calSetPlatformFilter(this.value)" title="Filter by platform">
           <option value="">All platforms</option>
           ${CAL_PLATFORMS.map(p =>
@@ -4128,13 +4412,16 @@ function renderCalendarView(targetEl) {
           ${CAL_CAMPAIGN_TYPES.map(t => `<span class="cal-legend-dot" style="background:${t.color}"></span><span style="font-size:11px;color:var(--text-muted)">${t.label}</span>`).join('')}
           ${canAddPersonal ? `<span class="cal-legend-dot" style="background:#94A3B8;border:2px dashed #64748B;box-sizing:border-box;"></span><span style="font-size:11px;color:var(--text-muted)">My Events</span>` : ''}
         </div>
+        ${isAdmin ? `<button class="btn-outline" style="font-size:12px;" onclick="openCalScheduleModal()">+ Campaign Schedule</button>` : ''}
         ${isAdmin ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Add Event</button>` : ''}
         ${isTeamLead ? `<button class="btn-outline" style="background:var(--blue);border-color:var(--blue);font-size:12px;" onclick="openCalEntryModal(null,false)">+ Team Event</button>` : ''}
         ${canAddPersonal ? `<button class="btn-outline" style="background:#475569;border-color:#475569;font-size:12px;" onclick="openCalEntryModal(null,true)">+ My Event</button>` : ''}
       </div>
     </div>
 
-    <div class="cal-grid-wrap">
+    ${_calToolbarHtml()}
+    ${calViewMode === 'overview' ? _calSummaryStripHtml(allVisible, year, month) : _calAltViewHtml(allVisible, year, month, isAdmin)}
+    <div class="cal-grid-wrap" ${calViewMode !== 'overview' ? 'style="display:none"' : ''}>
       <div class="cal-weekdays">
         ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => `<div class="cal-wd">${d}</div>`).join('')}
       </div>
@@ -4158,7 +4445,21 @@ function renderCalendarView(targetEl) {
     // "+N more" link, which silently hid entries on busy days (Mid-Month can
     // easily exceed 4 across PH/SG/MY/VN/TH × Lazada/Shopee) and made it look
     // like new events hadn't saved. The day cell scrolls if it overflows.
+    // Overview grouping: 2+ campaign entries of the same phase on one day collapse
+    // into one chip (click → detail panel). Underlying entries are untouched.
+    const _grouped = new Set();
+    const _byCamp = {};
+    dayEntries.forEach(en => { if (en._type === 'shared' && _calRegionOf(en) && _calCampaignType(en).id !== 'other') (_byCamp[_calCampaignType(en).id] ||= []).push(en); });
+    Object.entries(_byCamp).forEach(([cid, list]) => {
+      if (list.length < 2) return;
+      list.forEach(en => _grouped.add(en));
+      const c = CAL_CAMPAIGN_TYPES.find(x => x.id === cid);
+      const regs = [...new Set(list.map(en => _calRegionOf(en).id))];
+      html += `<div class="cal-event cs-group ${calOpenGroup === `${key}|${cid}` ? 'open' : ''}" style="background:${c.color}1f;border-left:3px solid ${c.color};" onclick="calToggleGroup('${key}|${cid}')" title="${list.length} entries — click for details">
+        <span style="color:${c.color};font-size:10px;font-weight:600;">${c.label}</span>${regs.map(r => `<span class="cal-region-badge" style="background:${CAL_REGION_MAP[r].color}">${r}</span>`).join('')}</div>`;
+    });
     dayEntries.forEach(entry => {
+      if (_grouped.has(entry)) return;
       const camp     = _calCampaignType(entry);
       const col      = entry._type === 'personal' ? '#94A3B8' : camp.color;
       const border   = entry._type === 'personal' ? '2px dashed #64748B' : 'none';
@@ -4192,6 +4493,7 @@ function renderCalendarView(targetEl) {
   }
 
   html += `</div></div>`; // cal-grid, cal-grid-wrap
+  if (calViewMode === 'overview') html += _calGroupPanelHtml(dayMap, isAdmin);
 
   // Upcoming events list (expand recurring entries into their next occurrences).
   // Regular members ("All User" view) see events scoped to whichever month is
@@ -4215,7 +4517,7 @@ function renderCalendarView(targetEl) {
   upcoming = upcoming.sort((a,b) => a._occStart - b._occStart);
   if (!isMemberView) upcoming = upcoming.slice(0, 8);
 
-  if (upcoming.length > 0) {
+  if (upcoming.length > 0 && calViewMode === 'overview') {
     html += `<div class="cal-upcoming">
       <div class="section-label" style="margin-bottom:10px;">Upcoming${isMemberView ? ` — ${monthName}` : ''}</div>
       <div class="cal-upcoming-list">`;
@@ -8727,6 +9029,8 @@ async function confirmBulkAssign() {
     campaignType: _scope.campaignType || null,
   });
   const _hasDeadlines = regionDeadlines && Object.keys(regionDeadlines).length > 0;
+  const _platMs = buildPlatformMilestoneMap({ year: _scope.year != null ? _scope.year : _now.getFullYear(), month: _scope.month != null ? _scope.month : _now.getMonth(), campaignType: _scope.campaignType || null });
+  const _hasPlatMs = Object.keys(_platMs).length > 0;
 
   // Campaign-wide checklist deadline typed into the modal (new campaigns only).
   // This is the fallback every region without its own calendar-derived deadline
@@ -8761,6 +9065,7 @@ async function confirmBulkAssign() {
         dday: null,
         deadline: _campWideDeadline,
         regionDeadlines: _hasDeadlines ? regionDeadlines : null,
+        platformMilestones: _hasPlatMs ? _platMs : null,
       });
       campaignId = ref.id;
     } else {
@@ -8769,6 +9074,7 @@ async function confirmBulkAssign() {
       // source of truth even when re-running assign on an existing campaign).
       const _update = { assignedUids: firebase.firestore.FieldValue.arrayUnion(...uids) };
       if (_hasDeadlines) _update.regionDeadlines = regionDeadlines;
+      if (_hasPlatMs) _update.platformMilestones = _platMs;
       await db.collection('campaigns').doc(campaignId).update(_update);
     }
 

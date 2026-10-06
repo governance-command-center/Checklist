@@ -536,6 +536,22 @@
     </div>
   </div>
 
+  <!-- Campaign Schedule Editor -->
+  <div id="cal-sched-overlay" style="display:none;" onclick="closeCalScheduleModal(event)">
+    <div class="modal" style="max-width:860px;">
+      <div class="modal-header"><h3>Campaign Schedule</h3><button class="btn-ghost-light" onclick="closeCalScheduleModal()">✕</button></div>
+      <div class="cs-form-row">
+        <div class="field"><label>Campaign / Phase</label><select id="cs-campaign" onchange="_csLoad()"></select></div>
+        <div class="field"><label>Month</label><input type="month" id="cs-month" onchange="_csLoad()" /></div>
+      </div>
+      <div class="cs-scroll"><table class="region-milestone-grid" id="cs-grid"><thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th><th></th></tr></thead><tbody></tbody></table></div>
+      <button class="btn-outline" style="font-size:12px;margin-top:8px;" onclick="csAddRow()">+ Add Row</button>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">One row per region and platform. Leave Deadline blank to use D-Day − 4 hours. Saving updates the shared calendar events; clearing a date does not delete the existing event.</div>
+      <div id="cs-error" class="error-msg" style="display:none;"></div>
+      <div class="modal-actions"><button class="btn-outline" onclick="closeCalScheduleModal()">Cancel</button><button class="btn-primary" onclick="saveCalSchedule()">Save schedule</button></div>
+    </div>
+  </div>
+
   <!-- Calendar Entry Modal -->
   <div id="cal-entry-overlay" style="display:none;" onclick="closeCalEntryModal(event)">
     <div class="modal" style="max-width:520px;">
@@ -634,6 +650,7 @@
             <option value="VN">VN</option>
             <option value="TH">TH</option>
             <option value="SG">SG</option>
+            <option value="ID">ID</option>
           </select>
         </div>
         <div class="field">
