@@ -2543,3 +2543,4 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 .cs-form-row{display:flex;gap:12px;flex-wrap:wrap}.cs-form-row .field{flex:1 1 200px}
 #cs-grid select,#cs-grid input{font-size:12px;width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)}
 #cs-grid td:last-child{width:34px}.cs-hint{font-size:10px;color:var(--text-muted);min-height:12px}
+.region-milestone-grid select{min-width:96px}.region-milestone-grid input[type=datetime-local]{min-width:170px}.cs-hint-warn{background:#FEF3C7;color:#92400E;font-size:11px;padding:6px 8px;border-radius:6px}

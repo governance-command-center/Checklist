@@ -1722,8 +1722,34 @@ function _rmScope(prefix) {
   return { phase: document.getElementById(`${prefix}-cal-type`)?.value || '', year: y, month: m - 1 };
 }
 
+const _rmHint = {}, _rmSig = {};
+// Phase left on "Any phase"? Work it out: from the campaign name, else the only
+// phase the Calendar has for that month. If several, ask the admin to choose.
+function _rmAutoPhase(prefix) {
+  _rmHint[prefix] = '';
+  const sel = document.getElementById(`${prefix}-cal-type`);
+  const { year, month } = _rmScope(prefix);
+  if (!sel || sel.value || !year) return;
+  const setIf = id => { const o = [...sel.options].find(o => o.value && _canonicalPhase(o.value) === _canonicalPhase(id)); if (o) sel.value = o.value; return !!o; };
+  const inf = inferGenScopeFromName(document.getElementById(`${prefix}-name`)?.value || '');
+  if (inf.campaignType && setIf(inf.campaignType)) return;
+  const ph = [...new Map(_calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month).map(r => [r.camp.id, r.camp.label])).entries()];
+  if (ph.length === 1 && setIf(ph[0][0])) return;
+  if (ph.length > 1) _rmHint[prefix] = `The Calendar has ${ph.map(p => p[1]).join(' and ')} for this month. Choose a Phase to load its dates.`;
+}
+// Typing the campaign name (e.g. "10.10 Sale") updates month/phase and reloads — only when they actually change.
+function rmNameChanged(prefix) {
+  const inf = inferGenScopeFromName(document.getElementById(`${prefix}-name`)?.value || '');
+  const mEl = document.getElementById(`${prefix}-rm-month`);
+  if (mEl && inf.year != null && inf.month != null) mEl.value = `${inf.year}-${String(inf.month + 1).padStart(2, '0')}`;
+  _rmAutoPhase(prefix);
+  const s = _rmScope(prefix), sig = `${s.phase}|${s.year}|${s.month}`;
+  if (sig !== _rmSig[prefix]) rmReload(prefix);
+}
 function _rmBuildRows(prefix, camp) {
+  _rmAutoPhase(prefix);
   const { phase, year, month } = _rmScope(prefix);
+  _rmSig[prefix] = `${phase}|${year}|${month}`;
   const rows = [];
   const find = (r, p) => rows.find(x => x.region === r && x.platform === p);
   if (phase && year) {
@@ -1781,7 +1807,7 @@ function _rmRender(prefix) {
   if (!tbody) return;
   const regs = CAL_REGIONS.filter(r => r.id !== 'LAZ');
   const opt = (list, v, ph) => `<option value="">${ph}</option>` + list.map(o => `<option value="${o.id}" ${o.id === v ? 'selected' : ''}>${o.label}</option>`).join('');
-  tbody.innerHTML = _rmState[prefix].map((r, i) => {
+  tbody.innerHTML = (_rmHint[prefix] ? `<tr><td colspan="7" class="cs-hint-warn">${_rmHint[prefix]}</td></tr>` : '') + _rmState[prefix].map((r, i) => {
     const auto = !r.deadline && _deadlineFromDday(r.dday);
     const inp = f => `<td><input type="datetime-local" value="${r[f]}" style="font-size:12px;width:100%;" onchange="rmSet('${prefix}',${i},'${f}',this.value)" /></td>`;
     return `<tr><td><select style="font-size:12px;" onchange="rmSet('${prefix}',${i},'region',this.value)">${opt(regs, r.region, 'Region')}</select></td>
