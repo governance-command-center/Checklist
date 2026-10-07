@@ -1668,6 +1668,7 @@ function openNewCampaignModal() {
         `<div class="member-chip" data-uid="${m.uid}" onclick="toggleChip(this)">${m.name || m.username}${m.role === 'team_lead' ? ' <span style="font-size:9px;opacity:0.75;">(Team Lead)</span>' : ''}</div>`
       ).join('');
   document.getElementById('new-campaign-name').value          = '';
+  document.getElementById('new-campaign-name').dataset.userEdited = '0';
   document.getElementById('modal-error').style.display   = 'none';
   newCampBulkMatched = {};
   document.getElementById('new-camp-bulk-file').value = '';
@@ -1677,6 +1678,7 @@ function openNewCampaignModal() {
   populateCampaignTemplateSel();
   initRegionMilestoneGrid('new-campaign', null);
   if (typeof allocInitCampaignPanel === 'function') allocInitCampaignPanel();
+  updateNewCampaignReadySummary();
   document.getElementById('modal-overlay').style.display = 'flex';
 }
 
@@ -1736,6 +1738,8 @@ function _rmAutoPhase(prefix) {
 }
 // Typing the campaign name (e.g. "10.10 Sale") updates month/phase and reloads — only when they actually change.
 function rmNameChanged(prefix) {
+  const nameEl = document.getElementById(`${prefix}-name`);
+  if (prefix === 'new-campaign' && document.activeElement === nameEl) nameEl.dataset.userEdited = '1';
   const inf = inferGenScopeFromName(document.getElementById(`${prefix}-name`)?.value || '');
   const mEl = document.getElementById(`${prefix}-rm-month`);
   if (mEl && inf.year != null && inf.month != null) mEl.value = `${inf.year}-${String(inf.month + 1).padStart(2, '0')}`;
@@ -1789,6 +1793,51 @@ function rmReload(prefix) {
   const camp = prefix === 'edit-campaign' ? campaigns[document.getElementById('edit-campaign-overlay')?.dataset.campId] : null;
   _rmState[prefix] = _rmBuildRows(prefix, camp);
   _rmRender(prefix);
+  if (prefix === 'new-campaign') {
+    suggestNewCampaignName();
+    if (typeof allocCampRecomputeFromSchedule === 'function') allocCampRecomputeFromSchedule();
+    else updateNewCampaignReadySummary();
+  }
+}
+
+function suggestNewCampaignName() {
+  const nameEl = document.getElementById('new-campaign-name');
+  const monthEl = document.getElementById('new-campaign-rm-month');
+  const phaseEl = document.getElementById('new-campaign-cal-type');
+  if (!nameEl || !monthEl?.value || !phaseEl?.value) return;
+  // Don't overwrite a name the admin deliberately edited.
+  if (nameEl.dataset.userEdited === '1') return;
+  const [year, month] = monthEl.value.split('-').map(Number);
+  const phase = phaseEl.value;
+  let label = _phaseLabel(phase);
+  if (phase === 'double_digit') label = `${month}.${month} Double Digit`;
+  nameEl.value = `${label} — ${_MONTH_LABELS[month - 1]} ${year}`;
+}
+
+function updateNewCampaignReadySummary() {
+  const host = document.getElementById('new-campaign-ready-summary');
+  if (!host) return;
+  const scope = _rmScope('new-campaign');
+  const rows = ((_rmState && _rmState['new-campaign']) || []).filter(r => r.region && (r.teasing || r.dday || r.deadline));
+  const matched = newCampBulkMatched || {};
+  const uids = Object.keys(matched);
+  const entries = uids.reduce((n, uid) => n + (matched[uid] || []).length, 0);
+  const regions = new Set(rows.map(r => r.region)).size;
+  const platforms = new Set(rows.map(r => r.platform).filter(Boolean)).size;
+  const missingDday = rows.filter(r => !r.dday).length;
+  if (!scope.year || !scope.phase) {
+    host.innerHTML = `<div class="campaign-ready-title">Choose Month + Campaign Phase</div><div class="campaign-ready-copy">Trackory will load dates from Calendar, then match CDMs, brands and platforms from Allocation.</div>`;
+    return;
+  }
+  if (!rows.length) {
+    host.innerHTML = `<div class="campaign-ready-title campaign-ready-warn">⚠ No Calendar schedule found</div><div class="campaign-ready-copy">Add the ${escHtml(_phaseLabel(scope.phase))} schedule for this month in Calendar, or open Advanced overrides to enter campaign-only dates.</div>`;
+    return;
+  }
+  if (!uids.length) {
+    host.innerHTML = `<div class="campaign-ready-title campaign-ready-warn">⚠ Allocation gap</div><div class="campaign-ready-copy">${regions} region(s) and ${platforms || 'all'} platform scope(s) found in Calendar, but none match the Brand Allocation tab.</div>`;
+    return;
+  }
+  host.innerHTML = `<div class="campaign-ready-title">✓ Ready to generate</div><div class="campaign-ready-metrics"><span><strong>${regions}</strong> regions</span><span><strong>${platforms}</strong> platforms</span><span><strong>${uids.length}</strong> members</span><span><strong>${entries}</strong> checklist entries</span></div><div class="campaign-ready-copy">Dates from Calendar · members/brands from Allocation${missingDday ? ` · ⚠ ${missingDday} row(s) missing D-Day` : ' · deadlines ready'}</div>`;
 }
 function rmSet(prefix, i, f, v) {
   const r = _rmState[prefix][i]; r[f] = f === 'only' ? !!v : v;
@@ -1998,29 +2047,12 @@ async function populateTemplateSel(elId, selectedId) {
 // questions: manual = "I know exactly who and what"; generate = "work it out
 // from the calendar + roster".
 function openCampaignChooser() {
-  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'manager';
-  if (!isAdmin) return;
-  const hasRoster = !!(campaignRoster && campaignRoster.length);
-  const rosterNote = document.getElementById('chooser-roster-note');
-  if (rosterNote) {
-    rosterNote.innerHTML = hasRoster
-      ? ''
-      : `<div class="chooser-warn">No allocation yet — add one in the Allocation tab so campaigns can pre-fill members and brands.</div>`;
-  }
-  document.getElementById('campaign-chooser-overlay').style.display = 'flex';
-}
-
-function closeCampaignChooser(e) {
-  if (e && e.target !== e.currentTarget) return;
-  document.getElementById('campaign-chooser-overlay').style.display = 'none';
-}
-
-function chooseCampaignMode(mode) {
-  // "Generate from calendar" was removed — Bulk Assign is the calendar-driven
-  // path now. Any mode simply opens the manual New Campaign modal.
-  closeCampaignChooser();
+  // There is now one normal creation path: Calendar supplies WHEN and
+  // Allocation supplies WHO/WHAT. Exceptional inputs live under Advanced.
   openNewCampaignModal();
 }
+function closeCampaignChooser() { const el = document.getElementById('campaign-chooser-overlay'); if (el) el.style.display = 'none'; }
+function chooseCampaignMode() { openNewCampaignModal(); }
 
 async function createCampaign() {
   const name  = document.getElementById('new-campaign-name').value.trim();
@@ -2029,11 +2061,13 @@ async function createCampaign() {
 
   const selectedChips = document.querySelectorAll('#member-assign-list .member-chip.selected');
   const assignedUids  = [...selectedChips].map(c => c.dataset.uid);
-  if (assignedUids.length === 0) { showError(errEl, 'Please assign at least one member.'); return; }
+  if (assignedUids.length === 0) { showError(errEl, 'No members matched this campaign. Check Calendar + Allocation, or use Manual member override under Advanced.'); return; }
 
   try {
     const pollId = document.getElementById('modal-overlay').dataset.pollId || null;
     const selectedTemplateId = document.getElementById('campaign-template-sel')?.value || null;
+    const hasAutoAllocation = newCampBulkMatched && Object.keys(newCampBulkMatched).some(uid => assignedUids.includes(uid) && (newCampBulkMatched[uid] || []).length);
+    if (!hasAutoAllocation && !pollId) { showError(errEl, 'No checklist allocation matched. Fix the Allocation tab or use the file override under Advanced.'); return; }
 
     // Entries can come from two optional sources — poll responses and the
     // in-modal Excel upload. Build one { uid: [entries] } map from both; the

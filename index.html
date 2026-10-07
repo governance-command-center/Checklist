@@ -6,7 +6,7 @@
   <title>Trackory</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style_streamlined.css?v=1" />
 </head>
 <body>
 
@@ -523,33 +523,6 @@
        ALL MODALS (unchanged from original)
   ══════════════════════════════════════ -->
 
-  <!-- Campaign Creation Chooser — asks HOW before it asks WHAT -->
-  <div id="campaign-chooser-overlay" style="display:none;" onclick="closeCampaignChooser(event)">
-    <div class="modal" style="max-width:560px;">
-      <div class="modal-header">
-        <h3>New Campaign</h3>
-        <button class="btn-ghost-light" onclick="closeCampaignChooser()">✕</button>
-      </div>
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">
-        How would you like to set this up?
-      </div>
-
-      <div class="chooser-grid">
-        <button class="chooser-card" onclick="chooseCampaignMode('manual')">
-          <span class="chooser-icon">✍️</span>
-          <span class="chooser-title">Create manually</span>
-          <span class="chooser-desc">
-            Name it, pick the members yourself, set the D-Day and deadline.
-            Optionally upload an Excel to pre-fill brands.
-          </span>
-          <span class="chooser-tag">1 campaign</span>
-        </button>
-      </div>
-
-      <div id="chooser-roster-note"></div>
-    </div>
-  </div>
-
   <!-- Campaign Schedule Editor -->
   <div id="cal-sched-overlay" style="display:none;" onclick="closeCalScheduleModal(event)">
     <div class="modal" style="max-width:860px;">
@@ -722,68 +695,73 @@
     </div>
   </div>
 
-  <!-- New Campaign Modal -->
+  <!-- New Campaign Modal — streamlined: Calendar = WHEN, Allocation = WHO/WHAT -->
   <div id="modal-overlay" style="display:none;" onclick="closeModal(event)">
-    <div class="modal">
-      <h3>New Campaign</h3>
-      <div class="field">
-        <label>Campaign Name</label>
-        <input type="text" id="new-campaign-name" oninput="rmNameChanged('new-campaign')" placeholder="e.g. 11.11 Mega Sales" />
-      </div>
-      <div class="field">
-        <label>Checklist Template <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional)</span></label>
-        <select id="campaign-template-sel">
-          <option value="">None (use default checklist)</option>
-        </select>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Assigns this template's checklist to all members of this campaign.</div>
+    <div class="modal campaign-create-modal">
+      <div class="modal-header">
+        <div><h3>New Campaign</h3><div class="campaign-create-sub">Choose the campaign period. Trackory will combine Calendar dates with Brand Allocation automatically.</div></div>
+        <button class="btn-ghost-light" onclick="closeModal()">✕</button>
       </div>
 
-      <!-- ── Per-Region Teasing / D-Day / Deadline (MANUAL) ───────────────
-           One row per region (PH/MY/SG/TH/VN) so the admin can type each
-           region's actual Teasing date, D-Day date, and Checklist Deadline
-           directly, since they can differ by market. Any row left blank
-           just uses the single D-Day/Deadline fields set above for that
-           region. -->
-      <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
-          <label style="margin-bottom:0;">📍 Per-Region Teasing / D-Day / Deadline <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — set actual dates per region when they differ)</span></label>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <label style="font-size:11px;color:var(--text-muted);margin-bottom:0;">Phase</label>
-            <input type="month" id="new-campaign-rm-month" onchange="rmReload('new-campaign')" style="font-size:12px;padding:4px 6px;" title="Month to read from the Calendar" /><select onchange="rmReload('new-campaign')" id="new-campaign-cal-type" style="font-size:12px;padding:4px 8px;" title="Tags this campaign with a phase, used by reminders/alerts">
-              <option value="">Any phase</option>
-              <option value="mid_month">Mid-Month</option>
-              <option value="payday">PayDay</option>
-              <option value="double_digit">Double Digit</option>
-            </select>
-          </div>
+      <div class="campaign-create-core">
+        <div class="field">
+          <label>Month</label>
+          <input type="month" id="new-campaign-rm-month" onchange="rmReload('new-campaign')" />
         </div>
-        <div style="overflow-x:auto;">
-          <table class="region-milestone-grid" id="new-campaign-region-grid">
-            <thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th><th title="Keep on this campaign only; do not change the Calendar">Campaign only</th><th></th></tr></thead>
-            <tbody></tbody>
-          </table>
+        <div class="field">
+          <label>Campaign Phase</label>
+          <select onchange="rmReload('new-campaign')" id="new-campaign-cal-type">
+            <option value="">Select phase</option>
+            <option value="mid_month">Mid-Month</option>
+            <option value="payday">PayDay</option>
+            <option value="double_digit">Double Digit</option>
+          </select>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Dates load from the Calendar for the Phase and Month chosen. Editing a row updates the Calendar (one source of truth); tick Campaign only to keep it on this campaign. Blank deadline = D-Day − 4h. Platform blank = all platforms in that region.</div>
+      </div>
+
+      <div class="field">
+        <label>Campaign Name</label>
+        <input type="text" id="new-campaign-name" oninput="rmNameChanged('new-campaign')" placeholder="Auto-suggested from month + phase; you can edit it" />
       </div>
       <div class="field">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-          <label style="margin-bottom:0;">Assign Members</label>
-          <button type="button" onclick="selectAllChips('member-assign-list')" style="font-size:11px;color:var(--blue);background:transparent;border:none;cursor:pointer;padding:0;font-weight:500;">Select All</button>
+        <label>Checklist Template <span class="field-optional">(optional)</span></label>
+        <select id="campaign-template-sel"><option value="">None (use default checklist)</option></select>
+      </div>
+
+      <div id="new-campaign-ready-summary" class="campaign-ready-card">
+        <div class="campaign-ready-title">Preparing campaign…</div>
+        <div class="campaign-ready-copy">Choose a month and phase to load Calendar dates and match them to Allocation.</div>
+      </div>
+
+      <details class="campaign-advanced" id="new-campaign-advanced">
+        <summary>Advanced overrides <span>Use only when this campaign differs from Calendar or Allocation</span></summary>
+        <div class="campaign-advanced-body">
+          <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
+              <label style="margin-bottom:0;">Campaign dates</label>
+              <span class="field-optional">Calendar-backed; edits write through unless marked Campaign only</span>
+            </div>
+            <div style="overflow-x:auto;"><table class="region-milestone-grid" id="new-campaign-region-grid"><thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th><th>Campaign only</th><th></th></tr></thead><tbody></tbody></table></div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Blank deadline = D-Day − 4h. Platform blank = all platforms in that region.</div>
+          </div>
+
+          <div class="field">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;"><label style="margin-bottom:0;">Manual member override</label><button type="button" onclick="selectAllChips('member-assign-list')" class="link-button">Select All</button></div>
+            <div class="member-list" id="member-assign-list"></div>
+            <div class="field-help">Normally unnecessary: members are selected automatically from Allocation.</div>
+          </div>
+          <div class="field" id="alloc-camp-panel"></div>
+          <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
+            <label>Override Allocation with a file <span class="field-optional">(optional)</span></label>
+            <input type="file" id="new-camp-bulk-file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="font-size:12px;padding:6px;" onchange="handleNewCampBulkFileChange(event)" />
+            <div class="field-help">Use only when this campaign differs from the Allocation tab. Columns: Username/Name, Brand, Platform, Region.</div>
+            <div id="new-camp-bulk-preview" style="margin-top:8px;"></div>
+          </div>
         </div>
-        <div class="member-list" id="member-assign-list"></div>
-      </div>
-      <div class="field" id="alloc-camp-panel" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;"></div>
-      <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
-        <label>📊 Override with a file <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — only if this campaign differs from the Allocation tab)</span></label>
-        <input type="file" id="new-camp-bulk-file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="font-size:12px;padding:6px;" onchange="handleNewCampBulkFileChange(event)" />
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Columns: Username (or Name — first name works too), Brand, Platform, Region. Matched CDMs are auto-checked above and pre-filled with their entries. <a href="#" onclick="downloadBulkAssignTemplate();return false;" style="color:var(--blue);">Download template</a></div>
-        <div id="new-camp-bulk-preview" style="margin-top:8px;"></div>
-      </div>
+      </details>
+
       <div id="modal-error" class="error-msg" style="display:none;"></div>
-      <div class="modal-actions">
-        <button class="btn-ghost-light" onclick="closeModal()">Cancel</button>
-        <button class="btn-primary" style="width:auto;" onclick="createCampaign()">Create Campaign</button>
-      </div>
+      <div class="modal-actions"><button class="btn-ghost-light" onclick="closeModal()">Cancel</button><button class="btn-primary" id="create-campaign-btn" style="width:auto;" onclick="createCampaign()">Create Checklists</button></div>
     </div>
   </div>
 
@@ -1722,7 +1700,7 @@
   <script src="firebase-config.js"></script>
   <script src="checklist-data.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <script src="app.js?v=5"></script>
-  <script src="allocation.js?v=1"></script>
+  <script src="app_streamlined.js?v=5"></script>
+  <script src="allocation_streamlined.js?v=1"></script>
 </body>
 </html>

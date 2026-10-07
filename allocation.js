@@ -492,51 +492,55 @@ function allocInitCampaignPanel() {
   _allocCamp = { regions: new Set(), platforms: new Set(), autoUids: new Set() };
   const host = document.getElementById('alloc-camp-panel');
   if (!host) return;
-  const regs = [...new Set((campaignRoster || []).map(r => r.region).filter(Boolean))];
-  const plats = [...new Set((campaignRoster || []).map(r => r.platform).filter(Boolean))].sort();
-  if (!regs.length) {
-    host.innerHTML = `<label>📇 Brand Allocation</label>
-      <div style="font-size:12px;color:var(--text-muted);">No allocation yet — add one in the Allocation tab and it will pre-fill members and brands here.</div>`;
-    return;
-  }
-  const chip = (kind, v) => `<span class="member-chip" onclick="allocCampToggle('${kind}','${escHtml(v)}',this)">${escHtml(v)}</span>`;
-  host.innerHTML = `
-    <label>📇 Brand Allocation <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(pick region(s) to auto-fill members + brands from the Allocation tab)</span></label>
-    <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin:4px 0;">REGION</div>
-    <div class="member-list" style="max-height:none;">${regs.map(v => chip('region', v)).join('')}</div>
-    <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin:8px 0 4px;">PLATFORM <span style="font-weight:400;">(none selected = all)</span></div>
-    <div class="member-list" style="max-height:none;">${plats.map(v => chip('platform', v)).join('')}</div>
+  host.innerHTML = `<label>📇 Allocation source</label>
+    <div class="field-help">Trackory automatically matches the Region × Platform rows loaded from Calendar to the Brand Allocation tab. No region/platform selection is needed here.</div>
     <div id="alloc-camp-summary" style="margin-top:8px;"></div>`;
+  allocCampRecomputeFromSchedule();
 }
 
-function allocCampToggle(kind, value, el) {
-  const set = kind === 'region' ? _allocCamp.regions : _allocCamp.platforms;
-  if (set.has(value)) { set.delete(value); el.classList.remove('selected'); }
-  else { set.add(value); el.classList.add('selected'); }
-  allocCampRecompute();
-}
+// New Campaign normal path: Calendar determines the active Region × Platform
+// scope, then Allocation determines the members + brand checklist entries.
+// This removes the old second set of region/platform selectors.
+function allocCampRecomputeFromSchedule() {
+  const rows = ((_rmState && _rmState['new-campaign']) || [])
+    .filter(r => r.region && (r.teasing || r.dday || r.deadline));
+  const scoped = {};
+  const seen = new Set();
+  rows.forEach(row => {
+    (campaignRoster || []).forEach(r => {
+      if (!members[r.uid] || r.region !== row.region) return;
+      if (row.platform && String(r.platform).toLowerCase() !== String(row.platform).toLowerCase()) return;
+      const key = [r.uid,r.brand,r.platform,r.region].join('|').toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (!scoped[r.uid]) scoped[r.uid] = [];
+      scoped[r.uid].push({ label:[r.brand,r.platform,r.region].filter(Boolean).join('_'), brand:r.brand, platform:r.platform, region:r.region });
+    });
+  });
 
-function allocCampRecompute() {
-  // un-tick members this panel ticked before, then re-apply for the new scope
+  // Clear only members previously selected automatically; preserve deliberate
+  // manual selections in Advanced Overrides.
   _allocCamp.autoUids.forEach(uid => {
     const c = document.querySelector(`#member-assign-list .member-chip[data-uid="${uid}"]`);
     if (c) c.classList.remove('selected');
   });
   _allocCamp.autoUids = new Set();
-  const sum = document.getElementById('alloc-camp-summary');
-  if (!_allocCamp.regions.size) {
-    newCampBulkMatched = {};
-    if (sum) sum.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Select at least one region.</div>';
-    return;
-  }
-  const matched = allocationForScope([..._allocCamp.regions], [..._allocCamp.platforms]);
-  newCampBulkMatched = matched;
-  Object.keys(matched).forEach(uid => {
+  newCampBulkMatched = scoped;
+  Object.keys(scoped).forEach(uid => {
     const c = document.querySelector(`#member-assign-list .member-chip[data-uid="${uid}"]`);
     if (c) { c.classList.add('selected'); _allocCamp.autoUids.add(uid); }
   });
+
+  const sum = document.getElementById('alloc-camp-summary');
   if (sum) {
-    if (!Object.keys(matched).length) sum.innerHTML = '<div style="font-size:12px;color:#B45309;">Nobody is allocated to that region/platform yet.</div>';
-    else renderBrandAssignmentPreview(sum, matched, [], true);
+    if (!rows.length) sum.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Choose a month + phase above to determine the campaign scope.</div>';
+    else if (!Object.keys(scoped).length) sum.innerHTML = '<div style="font-size:12px;color:#B45309;">⚠ Calendar dates were found, but no matching Brand Allocation rows exist.</div>';
+    else renderBrandAssignmentPreview(sum, scoped, [], true);
   }
+  if (typeof updateNewCampaignReadySummary === 'function') updateNewCampaignReadySummary();
 }
+
+// Kept for compatibility with any older inline handlers/bookmarks.
+function allocCampToggle() { allocCampRecomputeFromSchedule(); }
+function allocCampRecompute() { allocCampRecomputeFromSchedule(); }
+
