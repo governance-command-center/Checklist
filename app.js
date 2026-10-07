@@ -1754,6 +1754,7 @@ function _rmBuildRows(prefix, camp) {
       const x = { ..._rmBlank(), region: r.region.id, platform: r.platform, teasing: _rmDT(r.teasing?.iso), dday: _rmDT(r.dday?.iso),
         deadline: r.deadline && !r.deadline.derived ? _rmDT(r.deadline.iso) : '' };
       x._orig = { teasing: x.teasing, dday: x.dday, deadline: x.deadline };
+      x._ids = { teasing: r.teasing?.id, dday: r.dday?.id, deadline: r.deadline && !r.deadline.derived ? r.deadline.id : undefined };
       rows.push(x);
     });
   }
@@ -3535,43 +3536,57 @@ let calEditingEntry = null; // { entry, isPersonal }
 // Expands a (possibly recurring) entry into concrete { start, end } Date occurrences
 // that overlap the given [rangeStart, rangeEnd] window. Non-recurring entries just
 // return their single occurrence if it overlaps.
+// ISO-date helpers (UTC math so DST can never shift a day).
+function _calDayDiff(a, b) {
+  const p = x => { const [y, m, d] = String(x).slice(0, 10).split('-').map(Number); return Date.UTC(y, m - 1, d); };
+  return Math.round((p(b) - p(a)) / 86400000);
+}
+function _calShiftISO(iso, days) {
+  const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + days));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`;
+}
+
 function _calRecurrenceOccurrences(entry, rangeStart, rangeEnd) {
   const results = [];
   if (!entry.date) return results;
   const baseStart = new Date(`${entry.date}T00:00:00`);
   const baseEnd   = new Date(`${entry.endDate || entry.date}T00:00:00`);
   if (isNaN(baseStart) || isNaN(baseEnd)) return results;
-  const durationDays = Math.round((baseEnd - baseStart) / 86400000);
+  // An end date before the start date used to make the event render nowhere.
+  // Treat it as a single-day event so the record is always visible.
+  const durationDays = Math.max(0, Math.round((baseEnd - baseStart) / 86400000));
   const freq  = entry.recurrence && entry.recurrence.freq;
 
   if (!freq || freq === 'none') {
-    if (baseEnd >= rangeStart && baseStart <= rangeEnd) results.push({ start: baseStart, end: baseEnd });
+    const end = durationDays === 0 ? baseStart : baseEnd;
+    if (end >= rangeStart && baseStart <= rangeEnd) results.push({ start: baseStart, end });
     return results;
   }
 
   const until = entry.recurrence.until ? new Date(`${entry.recurrence.until}T00:00:00`) : null;
-  // Occurrence dates (YYYY-MM-DD) that have been detached from the series —
-  // either edited into their own standalone entry or deleted for that date
-  // only. Skipped during expansion so the series shows a gap there.
   const exceptions = new Set(entry.recurrence.exceptions || []);
   const pad = n => String(n).padStart(2, '0');
-  let cursor = new Date(baseStart);
-  const maxOccurrences = 3660; // generous cap (~10yrs daily) to avoid runaway loops
-  let n = 0;
+  const maxOccurrences = 3660;
+  const by = baseStart.getFullYear(), bm = baseStart.getMonth(), bd = baseStart.getDate();
 
-  while (n < maxOccurrences) {
-    n++;
+  for (let n = 0; n < maxOccurrences; n++) {
+    let cursor;
+    if (freq === 'daily')        cursor = new Date(by, bm, bd + n);
+    else if (freq === 'weekly')  cursor = new Date(by, bm, bd + 7 * n);
+    else if (freq === 'monthly') {
+      // Compute from the BASE date each time (clamped to month length) so a
+      // series starting on the 31st doesn't drift onto the 3rd forever.
+      const dim = new Date(by, bm + n + 1, 0).getDate();
+      cursor = new Date(by, bm + n, Math.min(bd, dim));
+    } else break;
     if (until && cursor > until) break;
     if (cursor > rangeEnd) break;
     const cursorISO = `${cursor.getFullYear()}-${pad(cursor.getMonth() + 1)}-${pad(cursor.getDate())}`;
-    const occEnd = new Date(cursor.getTime() + durationDays * 86400000);
+    const occEnd = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + durationDays);
     if (occEnd >= rangeStart && !exceptions.has(cursorISO)) {
       results.push({ start: new Date(cursor), end: occEnd });
     }
-    if (freq === 'daily')        cursor.setDate(cursor.getDate() + 1);
-    else if (freq === 'weekly')  cursor.setDate(cursor.getDate() + 7);
-    else if (freq === 'monthly') cursor.setMonth(cursor.getMonth() + 1);
-    else break;
   }
   return results;
 }
@@ -3582,11 +3597,25 @@ function _calRecurrenceLabel(entry) {
   return { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }[freq] || '';
 }
 
+// Snapshot of what this browser last loaded/saved (id -> JSON). saveCalendarEntries
+// diffs against it so only THIS session's changes are written, merged onto the
+// latest server copy -- two people saving no longer wipe each other's events.
+let _calSnap = new Map();
+let _calLoadOk = false;   // never save after a failed load (would overwrite with [])
+const _calSnapOf = list => new Map((list || []).filter(e => e && e.id).map(e => [e.id, JSON.stringify(e)]));
+
 async function loadCalendarEntries() {
   try {
     const doc = await db.collection('settings').doc('calendar').get();
     calendarEntries = doc.exists ? (doc.data().entries || []) : [];
-  } catch(e) { calendarEntries = []; }
+    calendarEntries.forEach((e, i) => { if (e && !e.id) e.id = `ce_legacy_${Date.now()}_${i}`; });
+    _calLoadOk = true;
+  } catch(e) {
+    console.error('Calendar load failed:', e);
+    calendarEntries = [];
+    _calLoadOk = false;
+  }
+  _calSnap = _calSnapOf(calendarEntries);   // BEFORE the migration below mutates anything
   // Repair any events still stored in the old 12-hour "hh:mm AM/PM" time
   // format (which made derived deadlines 4h off). Idempotent + best-effort.
   try { _migrateLegacyCalTimes(); } catch(_) {}
@@ -3600,7 +3629,34 @@ async function loadPersonalCalendarEntries(uid) {
 }
 
 async function saveCalendarEntries() {
-  await db.collection('settings').doc('calendar').set({ entries: calendarEntries });
+  if (!_calLoadOk) {
+    // The calendar failed to load, so our in-memory list is NOT the real data.
+    // Saving it would overwrite every event with a near-empty list.
+    await loadCalendarEntries();
+    if (!_calLoadOk) throw new Error('Calendar could not be loaded; refusing to save over it. Refresh and try again.');
+    throw new Error('Calendar was reloaded from the server. Please redo your change.');
+  }
+  const ref = db.collection('settings').doc('calendar');
+  const local = new Map(calendarEntries.filter(e => e && e.id).map(e => [e.id, e]));
+  // Which ids did THIS session add / change / delete?
+  const upserts = [], deletes = [];
+  local.forEach((e, id) => { if (_calSnap.get(id) !== JSON.stringify(e)) upserts.push(e); });
+  _calSnap.forEach((_, id) => { if (!local.has(id)) deletes.push(id); });
+
+  let merged;
+  await db.runTransaction(async tx => {
+    const snap = await tx.get(ref);
+    const remote = snap.exists ? (snap.data().entries || []) : [];
+    const byId = new Map(remote.filter(e => e && e.id).map(e => [e.id, e]));
+    const noId = remote.filter(e => e && !e.id);
+    deletes.forEach(id => byId.delete(id));
+    upserts.forEach(e => byId.set(e.id, e));
+    merged = [...byId.values(), ...noId];
+    tx.set(ref, { entries: merged });
+  });
+  // Adopt the merged result so we also see what other people changed.
+  calendarEntries = merged;
+  _calSnap = _calSnapOf(calendarEntries);
 }
 
 // ── Region roster (Option 2 full-auto): a persisted copy of the last
@@ -4235,8 +4291,8 @@ function _calGroupPanelHtml(dayMap, isAdmin) {
     <table class="cs-table"><thead><tr><th>Region</th><th>Platform</th><th>Milestone</th><th>Time</th><th></th></tr></thead><tbody>
     ${list.map(e => { const r = _calRegionOf(e), p = _calPlatformOf(e), ms = _CAL_MS.find(x => x.id === e.type);
       return `<tr><td>${r ? `<span class="cal-region-badge" style="background:${r.color}">${r.id}</span>` : '—'}</td><td>${p ? p.label : '—'}</td>
-      <td>${ms ? `${_calBadge(ms.id, camp.color)} ${ms.label}` : 'Event'}</td><td>${e.startTime ? _fmtDeadline(`${e.date}T${e.startTime}`) : _calMD(e.date)}</td>
-      <td>${isAdmin ? `<a href="#" onclick="openCalEntryModal('${e.id}',false,null);return false;">Edit</a>` : ''}</td></tr>`; }).join('')}
+      <td>${ms ? `${_calBadge(ms.id, camp.color)} ${ms.label}` : 'Event'}</td><td>${e.startTime ? _fmtDeadline(`${e._occStartISO || e.date}T${e.startTime}`) : _calMD(e._occStartISO || e.date)}</td>
+      <td>${isAdmin ? `<a href="#" onclick="openCalEntryModal('${e.id}',false,${e._occStartISO ? `'${e._occStartISO}'` : 'null'});return false;">Edit</a>` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>`;
 }
 
@@ -4314,6 +4370,7 @@ function _csLoad() {
   _csRows = _calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month, phase).map(r => {
     const x = { region: r.region.id, platform: r.platform, teasing: dt(r.teasing), dday: dt(r.dday), deadline: r.deadline && !r.deadline.derived ? dt(r.deadline) : '' };
     x._orig = { teasing: x.teasing, dday: x.dday, deadline: x.deadline };
+    x._ids = { teasing: r.teasing?.id, dday: r.dday?.id, deadline: r.deadline && !r.deadline.derived ? r.deadline.id : undefined };
     return x;
   });
   if (!_csRows.length) _csRows.push(_csBlank());
@@ -4356,13 +4413,33 @@ function _calUpsertScheduleRows(rows, phase, year, month) {
       const v = r[ms];
       if (!v || v === (r._orig || {})[ms]) return;
       const [date, time] = v.split('T');
-      const idx = calendarEntries.findIndex(e => e.type === ms && !(e.recurrence && e.recurrence.freq)
-        && (_calRegionOf(e) || {}).id === r.region && ((_calPlatformOf(e) || {}).id || '') === r.platform
-        && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase) && String(e.date).slice(0, 7) === monthStr);
-      const data = { title: _calBuildTitle(phase, r.region, r.platform, ms), date, endDate: date, type: ms, region: r.region, platform: r.platform,
-        campaignType: phase, startTime: time || null, endTime: null, color, updatedAt: new Date().toISOString() };
-      if (idx >= 0) calendarEntries[idx] = { ...calendarEntries[idx], ...data };
-      else calendarEntries.push({ id: `ce_${Date.now()}_${n++}`, ...data, description: '', recurrence: null, assignedUids: [], campaignId: null, createdBy: currentUser?.uid || '' });
+      // 1) Prefer the exact entry the grid displayed (by id) so we edit the record
+      //    the admin actually saw, not just the first array match.
+      let idx = -1;
+      const wantId = (r._ids || {})[ms];
+      if (wantId) idx = calendarEntries.findIndex(e => e.id === wantId);
+      // 2) Otherwise the EARLIEST matching entry -- same tie-break the grid uses.
+      if (idx < 0) {
+        const cands = [];
+        calendarEntries.forEach((e, i) => {
+          if (e.type === ms && !(e.recurrence && e.recurrence.freq)
+            && (_calRegionOf(e) || {}).id === r.region && ((_calPlatformOf(e) || {}).id || '') === r.platform
+            && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase) && String(e.date).slice(0, 7) === monthStr) cands.push(i);
+        });
+        cands.sort((a, b) => `${calendarEntries[a].date}T${calendarEntries[a].startTime || ''}`.localeCompare(`${calendarEntries[b].date}T${calendarEntries[b].startTime || ''}`));
+        if (cands.length) idx = cands[0];
+      }
+      const data = { title: _calBuildTitle(phase, r.region, r.platform, ms), date, type: ms, region: r.region, platform: r.platform,
+        campaignType: phase, startTime: time || null, color, updatedAt: new Date().toISOString() };
+      if (idx >= 0) {
+        const old = calendarEntries[idx];
+        // Keep the event's span and end time: the grid only edits the start, and
+        // used to reset endDate to the start and wipe endTime.
+        const span = Math.max(0, _calDayDiff(old.date, old.endDate || old.date));
+        calendarEntries[idx] = { ...old, ...data, endDate: _calShiftISO(date, span), endTime: old.endTime || null };
+      } else {
+        calendarEntries.push({ id: `ce_${Date.now()}_${n++}`, ...data, endDate: date, endTime: null, description: '', recurrence: null, assignedUids: [], campaignId: null, createdBy: currentUser?.uid || '' });
+      }
       changed++;
     });
   });
@@ -4710,8 +4787,21 @@ function _setCalTimeFields(prefix, timeStr) {
   const meridiem = h24 >= 12 ? 'PM' : 'AM';
   const h12 = h24 % 12 || 12;
   hEl.value = String(h12).padStart(2, '0');
+  // A stored minute that isn't one of 00/15/30/45 (e.g. legacy "20:10") has no
+  // matching <option>, which blanked the select and silently dropped the time
+  // on the next save. Add it so the stored value survives.
+  if (![...mEl.options].some(o => o.value === m)) {
+    const opt = document.createElement('option'); opt.value = m; opt.textContent = m; mEl.appendChild(opt);
+  }
   mEl.value = m;
   aEl.value = meridiem;
+}
+
+// true when SOME but not all of HH / MM / AM-PM are chosen (would be silently dropped).
+function _calTimePartial(prefix) {
+  const v = ['hour', 'minute', 'ampm'].map(k => document.getElementById(`cal-entry-${prefix}-${k}`)?.value || '');
+  const n = v.filter(Boolean).length;
+  return n > 0 && n < 3;
 }
 
 function _getCalTimeField(prefix) {
@@ -4879,6 +4969,7 @@ function openCalEntryModal(entryId, isPersonal, occurrenceDate) {
     if (_titleInput) _titleInput.readOnly = true;
   }
 
+  _calSyncDates('open');
   // Populate start time fields
   _setCalTimeFields('start', entry.startTime || '');
   // Populate end time fields
@@ -4981,6 +5072,9 @@ function _calValidateEntry() {
   if (!platform)  missing.push('Platform');
   if (!date)      missing.push('Start Date');
   if (!startTime) missing.push('Start Time');
+  if (_calTimePartial('end')) missing.push('End Time (set HH, MM and AM/PM, or clear all three)');
+  const _endD = document.getElementById('cal-entry-enddate')?.value || '';
+  if (date && _endD && _endD < date) missing.push('End Date (before start date)');
   // D-Day/Deadline events are what buildRegionDeadlineMap() reads to generate
   // per-region checklist deadlines, and it filters them by Campaign phase
   // (Mid-Month/PayDay/Double Digit). The Campaign select defaults to "Other",
@@ -5012,6 +5106,23 @@ function _calValidateEntry() {
 
 // Select All / Clear on the "Visible to" member checklist in the calendar
 // entry modal, so admins don't have to click every member one by one.
+// Keeps End Date >= Start Date. Moving the start date carries the end date with
+// it (same span); picking an end before the start snaps it to the start. An end
+// date earlier than the start used to save fine and then render nowhere.
+function _calSyncDates(src) {
+  const sEl = document.getElementById('cal-entry-date');
+  const eEl = document.getElementById('cal-entry-enddate');
+  if (!sEl || !eEl) return;
+  const start = sEl.value, prev = sEl.dataset.prev || '';
+  if (src === 'start' && start && eEl.value && prev && eEl.value >= prev) {
+    eEl.value = _calShiftISO(eEl.value, _calDayDiff(prev, start));
+  }
+  eEl.min = start || '';
+  if (start && eEl.value && eEl.value < start) eEl.value = start;
+  sEl.dataset.prev = start;
+  _calValidateEntry();
+}
+
 function _calToggleAllMembers(checkedState) {
   document.querySelectorAll('.cal-member-cb').forEach(cb => { cb.checked = checkedState; });
 }
@@ -5046,6 +5157,9 @@ async function saveCalEntry() {
 
   if (!title) { showError(errEl, 'Title is required.'); return; }
   if (!date)  { showError(errEl, 'Start date is required.'); return; }
+  if (endDate && endDate < date) { showError(errEl, 'End date cannot be before the start date.'); return; }
+  if (_calTimePartial('start')) { showError(errEl, 'Start time is incomplete: set HH, MM and AM/PM, or clear all three.'); return; }
+  if (_calTimePartial('end'))   { showError(errEl, 'End time is incomplete: set HH, MM and AM/PM, or clear all three.'); return; }
   if (recurrenceFreq !== 'none' && recurrenceUntil && recurrenceUntil < date) {
     showError(errEl, '"Repeat Until" must be on or after the start date.'); return;
   }
@@ -5068,7 +5182,19 @@ async function saveCalEntry() {
   // Gather assigned UIDs (admin or team lead shared entries only)
   let assignedUids = [];
   if (!personalMode && (currentUser?.role === 'admin' || currentUser?.role === 'manager' || currentUser?.role === 'team_lead')) {
-    assignedUids = [...document.querySelectorAll('.cal-member-cb:checked')].map(cb => cb.value);
+    const allCbs = [...document.querySelectorAll('.cal-member-cb')];
+    assignedUids = allCbs.filter(cb => cb.checked).map(cb => cb.value);
+    if (currentUser?.role === 'team_lead') {
+      // A team lead only sees their own bucket; keep anyone else already assigned
+      // instead of silently removing them on save.
+      const shown = new Set(allCbs.map(cb => cb.value));
+      const keep = ((calEditingEntry?.entry?.assignedUids) || []).filter(u => !shown.has(u));
+      assignedUids = [...assignedUids, ...keep];
+    } else if (allCbs.length && assignedUids.length === allCbs.length) {
+      // Everyone ticked == "all members". Store [] so members added LATER can
+      // still see it (an explicit list of today's members would exclude them).
+      assignedUids = [];
+    }
   }
 
   // Duplicate guard: if an identical entry already exists (same title, dates,
@@ -5116,7 +5242,8 @@ async function saveCalEntry() {
     // Link-to-Campaign was removed from the form; preserve any value an entry
     // already had so nothing that relied on it silently drops.
     campaignId: (calEditingEntry?.entry?.campaignId) || null,
-    createdBy: currentUser?.uid || '',
+    // Keep the ORIGINAL creator on edit (team-lead visibility/edit rights hang off it).
+    createdBy: calEditingEntry?.entry?.createdBy || currentUser?.uid || '',
     updatedAt: new Date().toISOString(),
   };
 
@@ -5144,23 +5271,31 @@ async function saveCalEntry() {
 
         if (scope === 'all') {
           const idx = calendarEntries.findIndex(e => e.id === parent.id);
-          // Keep the series' base date/endDate; only the recurrence RULE and
-          // the shared fields (title, region, times, etc.) propagate. Editing
-          // "all" from one occurrence shouldn't move the whole series onto
-          // that occurrence's date.
+          // The form shows the clicked occurrence's dates. If the admin changed
+          // them, shift the whole series by the same amount (previously the
+          // typed dates were thrown away and the series kept its old base date).
+          const occISO0 = calEditingEntry.occurrenceDate || parent.date;
+          const delta   = _calDayDiff(occISO0, date);
+          const span    = _calDayDiff(date, entryData.endDate);
+          const newBase = delta ? _calShiftISO(parent.date, delta) : parent.date;
+          const newEnd  = _calShiftISO(newBase, Math.max(0, span));
+          const exc     = (parent.recurrence.exceptions || []).map(x => delta ? _calShiftISO(x, delta) : x);
           if (idx >= 0) {
             calendarEntries[idx] = {
               ...calendarEntries[idx],
               ...entryData,
-              date: parent.date,
-              endDate: parent.endDate || parent.date,
+              date: newBase,
+              endDate: newEnd,
               recurrence: entryData.recurrence
-                ? { ...entryData.recurrence, exceptions: (parent.recurrence.exceptions || []) }
+                ? { ...entryData.recurrence, exceptions: exc }
                 : null,
             };
           }
         } else {
           // scope === 'one' → detach this occurrence.
+          if ((entryData.recurrence?.freq || 'none') !== (parent.recurrence?.freq || 'none')) {
+            alert('Repeat settings only apply when you edit the whole series, so this single event will not repeat.');
+          }
           const occISO = calEditingEntry.occurrenceDate || parent.date;
           // 1) add the exception to the parent series so the instance vanishes
           const idx = calendarEntries.findIndex(e => e.id === parent.id);
