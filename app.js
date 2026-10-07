@@ -1668,10 +1668,6 @@ function openNewCampaignModal() {
         `<div class="member-chip" data-uid="${m.uid}" onclick="toggleChip(this)">${m.name || m.username}${m.role === 'team_lead' ? ' <span style="font-size:9px;opacity:0.75;">(Team Lead)</span>' : ''}</div>`
       ).join('');
   document.getElementById('new-campaign-name').value          = '';
-  document.getElementById('new-campaign-dday').value          = '';
-  document.getElementById('new-campaign-dday-time').value     = '';
-  document.getElementById('new-campaign-deadline').value      = '';
-  document.getElementById('new-campaign-deadline-time').value = '';
   document.getElementById('modal-error').style.display   = 'none';
   newCampBulkMatched = {};
   document.getElementById('new-camp-bulk-file').value = '';
@@ -2082,8 +2078,8 @@ async function createCampaign() {
       uids:       assignedUids,
       entries:    prefillData,
       templateId: selectedTemplateId,
-      dday:       combineDatetime('new-campaign-dday', 'new-campaign-dday-time'),
-      deadline:   combineDatetime('new-campaign-deadline', 'new-campaign-deadline-time'),
+      dday:       null,
+      deadline:   null,
       regionDeadlines,
       regionMilestones,
       platformMilestones,
