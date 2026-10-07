@@ -2601,3 +2601,19 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 .campaign-ready-actions .btn-outline { width:auto; padding:5px 10px; font-size:11px; }
 #create-campaign-btn:disabled { opacity:.55; cursor:not-allowed; }
 @media (max-width:720px) { .campaign-readiness-issue { grid-template-columns:1fr; gap:2px; } }
+
+
+/* ═══════════════════════════════════════════
+   CALENDAR — operational views (Campaign / Region / Action)
+═══════════════════════════════════════════ */
+.cs-campaign-card,.cs-region-card{background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--c,var(--r));border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow)}
+.cs-campaign-head,.cs-region-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 15px;background:var(--surface2);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.cs-campaign-name{font-size:15px;font-weight:700;color:var(--c)}
+.cs-campaign-meta{font-size:11px;color:var(--text-muted);margin-top:2px}
+.cs-campaign-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cs-health{font-size:11px;font-weight:700;padding:4px 9px;border-radius:99px;white-space:nowrap}.cs-health.ready{background:#D1FAE5;color:#047857}.cs-health.warn{background:#FEF3C7;color:#92400E}.cs-health.block{background:#FEE2E2;color:#B91C1C}
+.cs-schedule-table{width:100%;border-collapse:collapse;font-size:12px}.cs-schedule-table th{text-align:left;color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:.035em;font-weight:700;padding:8px 12px;border-bottom:1px solid var(--border);white-space:nowrap}.cs-schedule-table td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap}.cs-schedule-table tbody tr:last-child td{border-bottom:0}.cs-schedule-table tbody tr:hover{background:var(--surface2)}
+.cs-missing{color:#B45309;font-weight:600}.cs-auto{font-size:9px;color:var(--text-muted);background:var(--surface3);padding:1px 5px;border-radius:99px}.cs-row-ready{color:#047857;font-weight:700}.cs-row-warn{color:#B45309;font-weight:700}.cs-row-block{color:#B91C1C;font-weight:700}.cs-row-gap{background:#FFF7F7}
+.cs-region-head>div:first-child{display:flex;align-items:center;gap:8px}.cs-region-head strong{font-size:14px;color:var(--text)}.cs-region-head>div:first-child>span:last-child{font-size:11px;color:var(--text-muted)}.cs-phase-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px}
+.cs-action-list{display:flex;flex-direction:column;gap:7px}.cs-action{display:grid;grid-template-columns:72px minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 13px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}.cs-action:hover{background:var(--surface2)}.cs-action.past{opacity:.55}.cs-action.alert{border-left:4px solid #D97706;background:#FFFBEB}.cs-action-date{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase}.cs-action-main{display:flex;flex-direction:column;min-width:0}.cs-action-main strong{font-size:12px;color:var(--text)}.cs-action-main span{font-size:11px;color:var(--text-muted);margin-top:2px}.cs-action-time{font-size:11px;font-weight:600;color:var(--text-muted);white-space:nowrap}.cs-action-btn{width:auto!important;padding:6px 12px!important;font-size:11px!important}
+@media(max-width:760px){.cs-action{grid-template-columns:58px 1fr}.cs-action-time,.cs-action>button{grid-column:2}.cs-campaign-actions{width:100%}.cs-schedule-table{min-width:650px}}
