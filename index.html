@@ -79,6 +79,10 @@
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><circle cx="7" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M2 17c0-3 2.5-5 5-5s5 2 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="15" cy="7" r="2.3" stroke="currentColor" stroke-width="1.5"/><path d="M12.5 17c.2-2.4 1.8-4 3.7-4 2 0 3.6 1.5 3.8 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Members</span>
         </button>
+        <button class="nav-item" id="navbtn-allocation" onclick="switchAdminTab('allocation')" title="Allocation">
+          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M2 8h16M2 12.5h16M7.5 8v9" stroke="currentColor" stroke-width="1.5"/></svg>
+          <span class="nav-label">Allocation</span>
+        </button>
 
         <div class="nav-divider"></div>
 
@@ -364,6 +368,16 @@
             <div id="data-regular-members-list" class="data-inner-list"></div>
           </div>
         </div>
+      </div>
+      <!-- Allocation tab -->
+      <div id="admin-tab-allocation" style="display:none;">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">Allocation</h1>
+            <p class="page-sub">Which CDM handles which brand, platform and region — drives campaign checklists</p>
+          </div>
+        </div>
+        <div id="admin-allocation-host"></div>
       </div>
       <div id="admin-tab-alerts" style="display:none;">
         <div class="page-header">
@@ -758,8 +772,9 @@
         </div>
         <div class="member-list" id="member-assign-list"></div>
       </div>
+      <div class="field" id="alloc-camp-panel" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;"></div>
       <div class="field" style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;">
-        <label>📊 Bulk Assign Brands <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — upload Excel/CSV instead of doing it per-member)</span></label>
+        <label>📊 Override with a file <span style="font-weight:400;color:var(--text-muted);font-size:12px;">(optional — only if this campaign differs from the Allocation tab)</span></label>
         <input type="file" id="new-camp-bulk-file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="font-size:12px;padding:6px;" onchange="handleNewCampBulkFileChange(event)" />
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Columns: Username (or Name — first name works too), Brand, Platform, Region. Matched CDMs are auto-checked above and pre-filled with their entries. <a href="#" onclick="downloadBulkAssignTemplate();return false;" style="color:var(--blue);">Download template</a></div>
         <div id="new-camp-bulk-preview" style="margin-top:8px;"></div>
@@ -1374,6 +1389,10 @@
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M7 10l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><rect x="2" y="2" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/></svg>
           <span class="nav-label">My Checklist</span>
         </button>
+        <button class="nav-item" id="tl-navbtn-allocation" onclick="showTlTab('allocation')" title="Allocation">
+          <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M2 8h16M2 12.5h16M7.5 8v9" stroke="currentColor" stroke-width="1.5"/></svg>
+          <span class="nav-label">Allocation</span>
+        </button>
         <button class="nav-item" id="tl-navbtn-broadcasts" onclick="openBroadcastFeed()" title="Messages" style="position:relative;">
           <svg class="nav-icon" viewBox="0 0 20 20" fill="none"><path d="M16 3L4 8v4l12 5V3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M4 10h-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <span class="nav-label">Messages</span>
@@ -1475,6 +1494,17 @@
 
       <!-- Calendar view -->
       <div id="tl-calendar-view" style="display:none;"></div>
+
+      <!-- Allocation view -->
+      <div id="tl-allocation-view" style="display:none;">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">Allocation</h1>
+            <p class="page-sub">Brand, platform and region allocation for your team</p>
+          </div>
+        </div>
+        <div id="tl-allocation-host"></div>
+      </div>
 
       <!-- My Checklist view (team lead's own checklist) -->
       <div id="tl-checklist-view" style="display:none;">
@@ -1692,6 +1722,7 @@
   <script src="firebase-config.js"></script>
   <script src="checklist-data.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
+  <script src="allocation.js?v=1"></script>
 </body>
 </html>

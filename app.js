@@ -1676,6 +1676,7 @@ function openNewCampaignModal() {
   if (typeSel) typeSel.value = '';
   populateCampaignTemplateSel();
   initRegionMilestoneGrid('new-campaign', null);
+  if (typeof allocInitCampaignPanel === 'function') allocInitCampaignPanel();
   document.getElementById('modal-overlay').style.display = 'flex';
 }
 
@@ -2003,7 +2004,7 @@ function openCampaignChooser() {
   if (rosterNote) {
     rosterNote.innerHTML = hasRoster
       ? ''
-      : `<div class="chooser-warn">No roster uploaded yet — generating from the calendar needs a Bulk Assign sheet first.</div>`;
+      : `<div class="chooser-warn">No allocation yet — add one in the Allocation tab so campaigns can pre-fill members and brands.</div>`;
   }
   document.getElementById('campaign-chooser-overlay').style.display = 'flex';
 }
@@ -2473,9 +2474,10 @@ function showTlTab(tab) {
   const dashView = document.getElementById('tl-dashboard-view');
   const calView  = document.getElementById('tl-calendar-view');
   const clView   = document.getElementById('tl-checklist-view');
+  const alView   = document.getElementById('tl-allocation-view');
 
   // Update sidebar nav active state
-  ['dashboard','calendar','checklist'].forEach(t => {
+  ['dashboard','calendar','checklist','allocation'].forEach(t => {
     const btn = document.getElementById('tl-navbtn-' + t);
     if (btn) btn.classList.toggle('active', t === tab);
   });
@@ -2484,8 +2486,12 @@ function showTlTab(tab) {
   if (dashView) dashView.style.display = 'none';
   if (calView)  calView.style.display  = 'none';
   if (clView)   clView.style.display   = 'none';
+  if (alView)   alView.style.display   = 'none';
 
-  if (tab === 'calendar') {
+  if (tab === 'allocation') {
+    if (alView) alView.style.display = 'block';
+    renderAllocationTab();
+  } else if (tab === 'calendar') {
     if (calView) calView.style.display = 'block';
     renderCalendarView(calView);
   } else if (tab === 'checklist') {
@@ -5280,7 +5286,7 @@ function switchAdminTab(tab) {
   const managerRestricted = ['data', 'members', 'alerts', 'checklist'];
   if (currentUser?.role === 'manager' && managerRestricted.includes(tab)) tab = 'dashboard';
 
-  const tabs = ['dashboard', 'calendar', 'data', 'members', 'reports', 'alerts', 'checklist'];
+  const tabs = ['dashboard', 'calendar', 'data', 'members', 'allocation', 'reports', 'alerts', 'checklist'];
   tabs.forEach(t => {
     const el = document.getElementById('admin-tab-' + t);
     if (el) el.style.display = t === tab ? 'block' : 'none';
@@ -5307,6 +5313,9 @@ function switchAdminTab(tab) {
   }
   if (tab === 'members') {
     renderMembersTab();
+  }
+  if (tab === 'allocation') {
+    renderAllocationTab();
   }
   if (tab === 'alerts') {
     renderAlertsTab();
@@ -9048,7 +9057,7 @@ function _parseBulkAssignRows(rows, errEl) {
   bulkAssignBadRegions = [...badRegionSet];
   // Keep a reusable roster so the calendar's per-region generator can slice it
   // later without re-uploading the sheet.
-  _persistRosterFromMatched(bulkAssignMatched);
+  // (Allocation tab is now the source of truth — uploads here no longer overwrite it.)
   _renderBulkAssignPreview();
 }
 
@@ -9322,7 +9331,6 @@ function handleNewCampBulkFileChange(e) {
     const { matched, unmatched, error } = parseBrandAssignmentRows(rows);
     if (error) { previewEl.innerHTML = `<div class="error-msg" style="display:block;">${escHtml(error)}</div>`; return; }
     newCampBulkMatched = matched;
-    _persistRosterFromMatched(matched);
     renderBrandAssignmentPreview(previewEl, matched, unmatched, true);
     // Auto-check matched members in the assign list above
     Object.keys(matched).forEach(uid => {
