@@ -1896,7 +1896,7 @@ function _rmRender(prefix) {
   const regs = CAL_REGIONS.filter(r => r.id !== 'LAZ');
   const opt = (list, v, ph) => `<option value="">${ph}</option>` + list.map(o => `<option value="${o.id}" ${o.id === v ? 'selected' : ''}>${o.label}</option>`).join('');
   tbody.innerHTML = (_rmHint[prefix] ? `<tr><td colspan="7" class="cs-hint-warn">${_rmHint[prefix]}</td></tr>` : '') + _rmState[prefix].map((r, i) => {
-    const auto = !r.deadline && _deadlineFromDday(r.dday);
+    const auto = !r._deadlineManual && r.deadline && _deadlineFromDday(r.dday) === r.deadline;
     const inp = f => `<td><input type="datetime-local" value="${r[f]}" style="font-size:12px;width:100%;" onchange="rmSet('${prefix}',${i},'${f}',this.value)" /></td>`;
     return `<tr><td><select style="font-size:12px;" onchange="rmSet('${prefix}',${i},'region',this.value)">${opt(regs, r.region, 'Region')}</select></td>
       <td><select style="font-size:12px;" onchange="rmSet('${prefix}',${i},'platform',this.value)">${opt(CAL_PLATFORMS, r.platform, 'All platforms')}</select></td>
@@ -4445,7 +4445,11 @@ function _csLoad() {
   if (!year) return;
   const dt = m => m ? (m.iso.length === 10 ? `${m.iso}T00:00` : m.iso) : '';
   _csRows = _calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month, phase).map(r => {
-    const x = { region: r.region.id, platform: r.platform, teasing: dt(r.teasing), teasingNA: !!r.teasingNA, dday: dt(r.dday), deadline: r.deadline && !r.deadline.derived ? dt(r.deadline) : '' };
+    const ddayVal = dt(r.dday);
+    const deadlineVal = dt(r.deadline);
+    const computedDeadline = _deadlineFromDday(ddayVal) || '';
+    const x = { region: r.region.id, platform: r.platform, teasing: dt(r.teasing), teasingNA: !!r.teasingNA, dday: ddayVal, deadline: deadlineVal,
+      _deadlineManual: !!deadlineVal && deadlineVal !== computedDeadline };
     x._orig = { teasing: x.teasing, teasingNA: x.teasingNA, dday: x.dday, deadline: x.deadline };
     x._ids = { teasing: r.teasing?.id, teasingNA: r.teasingNAId, dday: r.dday?.id, deadline: r.deadline && !r.deadline.derived ? r.deadline.id : undefined };
     return x;
@@ -4456,13 +4460,13 @@ function _csLoad() {
 function csAddRow() { _csRows.push(_csBlank()); _csRender(); }
 function csDelRow(i) { _csRows.splice(i, 1); if (!_csRows.length) _csRows.push(_csBlank()); _csRender(); }
 function csSet(i, f, v) {
-  _csRows[i][f] = f === 'teasingNA' ? !!v : v;
-  if (f === 'teasingNA' && v) _csRows[i].teasing = '';
-  if (f === 'teasing' && v) _csRows[i].teasingNA = false;
-  if (f === 'dday' || f === 'deadline') {
-    const el = document.getElementById(`cs-hint-${i}`), auto = !_csRows[i].deadline && _deadlineFromDday(_csRows[i].dday);
-    if (el) el.textContent = auto ? `auto: ${_fmtDeadline(auto)} (D-Day − 4h)` : '';
-  }
+  const row = _csRows[i];
+  row[f] = f === 'teasingNA' ? !!v : v;
+  if (f === 'teasingNA' && v) row.teasing = '';
+  if (f === 'teasing' && v) row.teasingNA = false;
+  // Deadline follows D-Day − 4 hours until the user explicitly edits it.
+  if (f === 'dday' && !row._deadlineManual) row.deadline = _deadlineFromDday(row.dday) || '';
+  if (f === 'deadline') row._deadlineManual = true;
 }
 function _csRender() {
   const regs = CAL_REGIONS.filter(r => r.id !== 'LAZ');
@@ -4472,8 +4476,8 @@ function _csRender() {
     return `<tr><td><select onchange="csSet(${i},'region',this.value)">${opt(regs, r.region, 'Region')}</select></td>
       <td><select onchange="csSet(${i},'platform',this.value)">${opt(CAL_PLATFORMS, r.platform, 'Platform')}</select></td>
       <td><div class="cs-teasing-field"><input type="datetime-local" value="${r.teasing}" ${r.teasingNA ? 'disabled' : ''} onchange="csSet(${i},'teasing',this.value);_csRender()"><label class="cs-na-toggle"><input type="checkbox" ${r.teasingNA ? 'checked' : ''} onchange="csSet(${i},'teasingNA',this.checked);_csRender()"> N/A</label></div></td>
-      <td><input type="datetime-local" value="${r.dday}" onchange="csSet(${i},'dday',this.value)"></td>
-      <td><input type="datetime-local" value="${r.deadline}" onchange="csSet(${i},'deadline',this.value)"><div class="cs-hint" id="cs-hint-${i}">${auto ? `auto: ${_fmtDeadline(auto)} (D-Day − 4h)` : ''}</div></td>
+      <td><input type="datetime-local" value="${r.dday}" onchange="csSet(${i},'dday',this.value);_csRender()"></td>
+      <td><input type="datetime-local" value="${r.deadline}" onchange="csSet(${i},'deadline',this.value);_csRender()"><div class="cs-hint" id="cs-hint-${i}">${auto ? 'Auto · D-Day − 4h' : (r._deadlineManual ? 'Custom deadline' : '')}</div></td>
       <td><button class="btn-ghost-light" onclick="csDelRow(${i})" title="Remove row">✕</button></td></tr>`;
   }).join('');
 }

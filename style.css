@@ -2626,3 +2626,26 @@ thead tr.sub-head th.col-freeze-item2 { background: var(--navy); }
 .cs-teasing-field > input:disabled { opacity:.45;background:var(--surface2); }
 .cs-na-toggle { display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:11px;font-weight:600;color:var(--text-muted);cursor:pointer; }
 .cs-na-toggle input { width:14px;height:14px;accent-color:var(--navy); }
+
+
+/* Calendar polish — compact operational tables + schedule editor alignment */
+.cs-schedule-table { table-layout: fixed; }
+.cs-schedule-table th:nth-child(1), .cs-schedule-table td:nth-child(1) { width: 9%; }
+.cs-schedule-table th:nth-child(2), .cs-schedule-table td:nth-child(2) { width: 15%; }
+.cs-schedule-table th:nth-child(3), .cs-schedule-table td:nth-child(3) { width: 20%; }
+.cs-schedule-table th:nth-child(4), .cs-schedule-table td:nth-child(4) { width: 20%; }
+.cs-schedule-table th:nth-child(5), .cs-schedule-table td:nth-child(5) { width: 21%; }
+.cs-schedule-table th:nth-child(6), .cs-schedule-table td:nth-child(6) { width: 15%; }
+#cs-grid { table-layout: fixed; min-width: 920px; }
+#cs-grid th:nth-child(1), #cs-grid td:nth-child(1) { width: 90px; }
+#cs-grid th:nth-child(2), #cs-grid td:nth-child(2) { width: 100px; }
+#cs-grid th:nth-child(3), #cs-grid td:nth-child(3) { width: 270px; }
+#cs-grid th:nth-child(4), #cs-grid td:nth-child(4) { width: 205px; }
+#cs-grid th:nth-child(5), #cs-grid td:nth-child(5) { width: 220px; }
+#cs-grid th:nth-child(6), #cs-grid td:nth-child(6) { width: 42px; }
+#cs-grid select, #cs-grid input[type="datetime-local"] { width:100%; min-width:0; }
+#cs-grid .cs-teasing-field { min-width:0; width:100%; }
+#cs-grid .cs-teasing-field > input[type="datetime-local"] { min-width:0; }
+#cs-grid .cs-na-toggle { padding:4px 7px; border:1px solid var(--border); border-radius:6px; background:var(--surface2); }
+#cs-grid .cs-hint { font-size:9px; color:var(--text-muted); margin-top:2px; white-space:nowrap; }
+@media(max-width:900px){ .cs-schedule-table{min-width:760px;} }
