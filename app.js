@@ -1713,7 +1713,7 @@ const MANUAL_REGIONS = [
 //  platformMilestones / regionDeadlines) that the resolver reads, unchanged.
 // ══════════════════════════════════════════════════════════════════
 const _rmState = {};   // prefix -> rows[]
-const _rmBlank = () => ({ region: '', platform: '', teasing: '', dday: '', deadline: '', only: false, _orig: {} });
+const _rmBlank = () => ({ region: '', platform: '', teasing: '', teasingNA: false, dday: '', deadline: '', only: false, _orig: {} });
 const _rmDT = iso => !iso ? '' : (iso.length === 10 ? `${iso}T00:00` : iso);
 
 function _rmScope(prefix) {
@@ -1755,9 +1755,9 @@ function _rmBuildRows(prefix, camp) {
   const find = (r, p) => rows.find(x => x.region === r && x.platform === p);
   if (phase && year) {
     _calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month, phase).forEach(r => {
-      const x = { ..._rmBlank(), region: r.region.id, platform: r.platform, teasing: _rmDT(r.teasing?.iso), dday: _rmDT(r.dday?.iso),
+      const x = { ..._rmBlank(), region: r.region.id, platform: r.platform, teasing: _rmDT(r.teasing?.iso), teasingNA: !!r.teasingNA, dday: _rmDT(r.dday?.iso),
         deadline: r.deadline && !r.deadline.derived ? _rmDT(r.deadline.iso) : '' };
-      x._orig = { teasing: x.teasing, dday: x.dday, deadline: x.deadline };
+      x._orig = { teasing: x.teasing, teasingNA: x.teasingNA, dday: x.dday, deadline: x.deadline };
       x._ids = { teasing: r.teasing?.id, dday: r.dday?.id, deadline: r.deadline && !r.deadline.derived ? r.deadline.id : undefined };
       rows.push(x);
     });
@@ -1819,7 +1819,7 @@ function updateNewCampaignReadySummary() {
   const createBtn = document.getElementById('create-campaign-btn');
   if (!host) return;
   const scope = _rmScope('new-campaign');
-  const rows = ((_rmState && _rmState['new-campaign']) || []).filter(r => r.region && (r.teasing || r.dday || r.deadline));
+  const rows = ((_rmState && _rmState['new-campaign']) || []).filter(r => r.region && (r.teasing || r.teasingNA || r.dday || r.deadline));
   const matched = newCampBulkMatched || {};
   const uids = Object.keys(matched);
   const entries = uids.reduce((n, uid) => n + (matched[uid] || []).length, 0);
@@ -1832,7 +1832,7 @@ function updateNewCampaignReadySummary() {
   });
   const allocationGaps = rows.filter(row => rosterMatchesRow(row).length === 0);
   const missingDday = rows.filter(r => !r.dday);
-  const missingTeasing = rows.filter(r => !r.teasing);
+  const missingTeasing = rows.filter(r => !r.teasing && !r.teasingNA);
   const blockers = allocationGaps.length + missingDday.length;
 
   const setButton = (ready, label = 'Create Checklists') => {
@@ -1877,7 +1877,7 @@ function updateNewCampaignReadySummary() {
   host.className = 'campaign-ready-card';
   host.innerHTML = `<div class="campaign-ready-title">✓ Ready to generate</div>
     <div class="campaign-ready-metrics"><span><strong>${regions}</strong> regions</span><span><strong>${platforms || '—'}</strong> platforms</span><span><strong>${uids.length}</strong> members</span><span><strong>${entries}</strong> checklist entries</span></div>
-    <div class="campaign-ready-copy">Calendar complete · Allocation matched · deadlines ready${missingTeasing.length ? ` · ⚠ ${missingTeasing.length} teasing date warning${missingTeasing.length === 1 ? '' : 's'}` : ''}</div>
+    <div class="campaign-ready-copy">Core dates ready · Allocation matched · deadlines ready${missingTeasing.length ? ` · ⚠ ${missingTeasing.length} teasing date warning${missingTeasing.length === 1 ? '' : 's'}` : ''}</div>
     ${missingTeasing.length ? `<div class="campaign-readiness-list">${issueRows.join('')}</div>` : ''}`;
 }
 function rmSet(prefix, i, f, v) {
@@ -4261,7 +4261,7 @@ function _calCreatorLabel(entry) {
 //  is DERIVED from the same teasing/dday/deadline entries that
 //  buildRegionDeadlineMap() reads; nothing is stored separately.
 // ══════════════════════════════════════════════════════════════════
-let calViewMode = 'campaign';          // 'campaign' | 'region' | 'action' | 'month'
+let calViewMode = 'campaign';          // 'campaign' | 'region' | 'action' — operational views only
 let calOpenGroup = '';                 // overview: expanded "y-m-d|campId"
 const calExpanded = new Set();         // region view: expanded "campId|REGION"
 const _CAL_MS = [
@@ -4291,7 +4291,7 @@ function _calScheduleRows(entries, year, month, phase) {
     if (camp.id === 'other' || (want && _canonicalPhase(camp.id) !== want)) return;
     const r = _calRegionOf(e); if (!r) return;
     const p = _calPlatformOf(e);
-    const m = ['teasing', 'dday', 'deadline'].includes(e.type) ? e.type : ((e.type === 'other' || !e.type) ? 'ddayFb' : null);
+    const m = ['teasing', 'dday', 'deadline'].includes(e.type) ? e.type : (e.type === 'teasing_na' ? 'teasingNA' : ((e.type === 'other' || !e.type) ? 'ddayFb' : null));
     if (!m) return;
     const row = map[`${camp.id}|${r.id}|${p ? p.id : ''}`] ||= { camp, region: r, platform: p ? p.id : '' };
     const iso = e.startTime ? `${d}T${e.startTime}` : d;
@@ -4301,7 +4301,7 @@ function _calScheduleRows(entries, year, month, phase) {
     const dday = row.dday || row.ddayFb || null;
     const auto = dday && _deadlineFromDday(dday.iso);
     const dl = row.deadline || (auto ? { iso: auto, derived: true } : null);
-    return { camp: row.camp, region: row.region, platform: row.platform, teasing: row.teasing || null, dday, deadline: dl };
+    return { camp: row.camp, region: row.region, platform: row.platform, teasing: row.teasing || null, teasingNA: !!row.teasingNA, teasingNAId: row.teasingNA?.id || null, dday, deadline: dl };
   }).sort((a, b) => CAL_CAMPAIGN_TYPES.indexOf(a.camp) - CAL_CAMPAIGN_TYPES.indexOf(b.camp)
     || CAL_REGIONS.indexOf(a.region) - CAL_REGIONS.indexOf(b.region) || a.platform.localeCompare(b.platform));
 }
@@ -4330,7 +4330,7 @@ const _calBadge = (ms, col, derived) => {
 const _calPlatLabel = id => (CAL_PLATFORM_MAP[id] || {}).label || 'All platforms';
 
 function _calToolbarHtml() {
-  const tabs = [['campaign', 'Campaign Timeline'], ['region', 'By Region'], ['action', 'Action Timeline'], ['month', 'Month Grid']];
+  const tabs = [['campaign', 'Campaign Timeline'], ['region', 'By Region'], ['action', 'Action Timeline']];
   return `<div class="cs-toolbar">
     <div class="cs-tabs">${tabs.map(([id, l]) => `<button class="cs-tab ${calViewMode === id ? 'on' : ''}" onclick="calSetView('${id}')">${l}</button>`).join('')}</div>
     <div class="cs-chips">${[['', 'ALL'], ...CAL_REGIONS.filter(r => r.id !== 'LAZ').map(r => [r.id, r.id])].map(([v, l]) =>
@@ -4339,7 +4339,7 @@ function _calToolbarHtml() {
 }
 
 function _calScheduleHealth(rows) {
-  const missingTeasing = rows.filter(r => !r.teasing);
+  const missingTeasing = rows.filter(r => !r.teasing && !r.teasingNA);
   const missingDday = rows.filter(r => !r.dday);
   return { missingTeasing, missingDday, ready: missingDday.length === 0 };
 }
@@ -4362,7 +4362,7 @@ function _calCampaignTimelineHtml(rows, year, month, isAdmin) {
         <div class="cs-campaign-actions">${status}${isAdmin ? `<button class="btn-ghost-light" onclick="openCalScheduleModal()">Edit schedule</button>` : ''}</div>
       </div>
       <div class="cs-scroll"><table class="cs-schedule-table"><thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist deadline</th><th>Status</th></tr></thead><tbody>
-        ${list.map(r => { const ok = !!r.dday; return `<tr class="${ok ? '' : 'cs-row-gap'}"><td><span class="cal-region-badge" style="background:${r.region.color}">${r.region.id}</span></td><td>${escHtml(_calPlatLabel(r.platform))}</td><td>${r.teasing ? _fmtDeadline(r.teasing.iso) : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.dday ? _fmtDeadline(r.dday.iso) : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.deadline ? `${_fmtDeadline(r.deadline.iso)}${r.deadline.derived ? ' <small class="cs-auto">auto</small>' : ''}` : '<span class="cs-missing">—</span>'}</td><td>${ok ? (r.teasing ? '<span class="cs-row-ready">✓ Ready</span>' : '<span class="cs-row-warn">⚠ Teasing</span>') : '<span class="cs-row-block">Needs D-Day</span>'}</td></tr>`; }).join('')}
+        ${list.map(r => { const ok = !!r.dday; return `<tr class="${ok ? '' : 'cs-row-gap'}"><td><span class="cal-region-badge" style="background:${r.region.color}">${r.region.id}</span></td><td>${escHtml(_calPlatLabel(r.platform))}</td><td>${r.teasing ? _fmtDeadline(r.teasing.iso) : r.teasingNA ? '<span class="cs-na">N/A</span>' : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.dday ? _fmtDeadline(r.dday.iso) : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.deadline ? `${_fmtDeadline(r.deadline.iso)}${r.deadline.derived ? ' <small class="cs-auto">auto</small>' : ''}` : '<span class="cs-missing">—</span>'}</td><td>${ok ? (r.teasing || r.teasingNA ? '<span class="cs-row-ready">✓ Ready</span>' : '<span class="cs-row-warn">⚠ Teasing</span>') : '<span class="cs-row-block">Needs D-Day</span>'}</td></tr>`; }).join('')}
       </tbody></table></div>
     </div>`;
   }).join('');
@@ -4378,7 +4378,7 @@ function _calRegionMatrixHtml(rows) {
     return `<div class="cs-region-card" style="--r:${reg.color}">
       <div class="cs-region-head"><div><span class="cal-region-badge" style="background:${reg.color}">${rid}</span><strong>${rid}</strong><span>${list.length} schedule${list.length!==1?'s':''}</span></div>${health.missingDday.length ? `<span class="cs-health block">⚠ ${health.missingDday.length} needs D-Day</span>` : health.missingTeasing.length ? `<span class="cs-health warn">⚠ ${health.missingTeasing.length} teasing missing</span>` : '<span class="cs-health ready">✓ Complete</span>'}</div>
       <div class="cs-scroll"><table class="cs-schedule-table"><thead><tr><th>Campaign</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Deadline</th></tr></thead><tbody>
-      ${list.sort((a,b) => CAL_CAMPAIGN_TYPES.indexOf(a.camp)-CAL_CAMPAIGN_TYPES.indexOf(b.camp) || a.platform.localeCompare(b.platform)).map(r => `<tr><td><span class="cs-phase-dot" style="background:${r.camp.color}"></span>${r.camp.label}</td><td>${escHtml(_calPlatLabel(r.platform))}</td><td>${r.teasing ? _fmtDeadline(r.teasing.iso) : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.dday ? _fmtDeadline(r.dday.iso) : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.deadline ? `${_fmtDeadline(r.deadline.iso)}${r.deadline.derived ? ' <small class="cs-auto">auto</small>' : ''}` : '—'}</td></tr>`).join('')}
+      ${list.sort((a,b) => CAL_CAMPAIGN_TYPES.indexOf(a.camp)-CAL_CAMPAIGN_TYPES.indexOf(b.camp) || a.platform.localeCompare(b.platform)).map(r => `<tr><td><span class="cs-phase-dot" style="background:${r.camp.color}"></span>${r.camp.label}</td><td>${escHtml(_calPlatLabel(r.platform))}</td><td>${r.teasing ? _fmtDeadline(r.teasing.iso) : r.teasingNA ? '<span class="cs-na">N/A</span>' : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.dday ? _fmtDeadline(r.dday.iso) : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.deadline ? `${_fmtDeadline(r.deadline.iso)}${r.deadline.derived ? ' <small class="cs-auto">auto</small>' : ''}` : '—'}</td></tr>`).join('')}
       </tbody></table></div></div>`;
   }).join('');
 }
@@ -4439,15 +4439,15 @@ function _csScope() {
   const [y, m] = (document.getElementById('cs-month').value || '').split('-').map(Number);
   return { phase: document.getElementById('cs-campaign').value, year: y, month: m - 1 };
 }
-const _csBlank = () => ({ region: '', platform: '', teasing: '', dday: '', deadline: '', _orig: {} });
+const _csBlank = () => ({ region: '', platform: '', teasing: '', teasingNA: false, dday: '', deadline: '', _orig: {} });
 function _csLoad() {
   const { phase, year, month } = _csScope();
   if (!year) return;
   const dt = m => m ? (m.iso.length === 10 ? `${m.iso}T00:00` : m.iso) : '';
   _csRows = _calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month, phase).map(r => {
-    const x = { region: r.region.id, platform: r.platform, teasing: dt(r.teasing), dday: dt(r.dday), deadline: r.deadline && !r.deadline.derived ? dt(r.deadline) : '' };
-    x._orig = { teasing: x.teasing, dday: x.dday, deadline: x.deadline };
-    x._ids = { teasing: r.teasing?.id, dday: r.dday?.id, deadline: r.deadline && !r.deadline.derived ? r.deadline.id : undefined };
+    const x = { region: r.region.id, platform: r.platform, teasing: dt(r.teasing), teasingNA: !!r.teasingNA, dday: dt(r.dday), deadline: r.deadline && !r.deadline.derived ? dt(r.deadline) : '' };
+    x._orig = { teasing: x.teasing, teasingNA: x.teasingNA, dday: x.dday, deadline: x.deadline };
+    x._ids = { teasing: r.teasing?.id, teasingNA: r.teasingNAId, dday: r.dday?.id, deadline: r.deadline && !r.deadline.derived ? r.deadline.id : undefined };
     return x;
   });
   if (!_csRows.length) _csRows.push(_csBlank());
@@ -4456,7 +4456,9 @@ function _csLoad() {
 function csAddRow() { _csRows.push(_csBlank()); _csRender(); }
 function csDelRow(i) { _csRows.splice(i, 1); if (!_csRows.length) _csRows.push(_csBlank()); _csRender(); }
 function csSet(i, f, v) {
-  _csRows[i][f] = v;
+  _csRows[i][f] = f === 'teasingNA' ? !!v : v;
+  if (f === 'teasingNA' && v) _csRows[i].teasing = '';
+  if (f === 'teasing' && v) _csRows[i].teasingNA = false;
   if (f === 'dday' || f === 'deadline') {
     const el = document.getElementById(`cs-hint-${i}`), auto = !_csRows[i].deadline && _deadlineFromDday(_csRows[i].dday);
     if (el) el.textContent = auto ? `auto: ${_fmtDeadline(auto)} (D-Day − 4h)` : '';
@@ -4469,7 +4471,7 @@ function _csRender() {
     const auto = !r.deadline && _deadlineFromDday(r.dday);
     return `<tr><td><select onchange="csSet(${i},'region',this.value)">${opt(regs, r.region, 'Region')}</select></td>
       <td><select onchange="csSet(${i},'platform',this.value)">${opt(CAL_PLATFORMS, r.platform, 'Platform')}</select></td>
-      <td><input type="datetime-local" value="${r.teasing}" onchange="csSet(${i},'teasing',this.value)"></td>
+      <td><div class="cs-teasing-field"><input type="datetime-local" value="${r.teasing}" ${r.teasingNA ? 'disabled' : ''} onchange="csSet(${i},'teasing',this.value);_csRender()"><label class="cs-na-toggle"><input type="checkbox" ${r.teasingNA ? 'checked' : ''} onchange="csSet(${i},'teasingNA',this.checked);_csRender()"> N/A</label></div></td>
       <td><input type="datetime-local" value="${r.dday}" onchange="csSet(${i},'dday',this.value)"></td>
       <td><input type="datetime-local" value="${r.deadline}" onchange="csSet(${i},'deadline',this.value)"><div class="cs-hint" id="cs-hint-${i}">${auto ? `auto: ${_fmtDeadline(auto)} (D-Day − 4h)` : ''}</div></td>
       <td><button class="btn-ghost-light" onclick="csDelRow(${i})" title="Remove row">✕</button></td></tr>`;
@@ -4486,8 +4488,41 @@ function _calUpsertScheduleRows(rows, phase, year, month) {
   let n = 0, changed = 0;
   rows.forEach(r => {
     if (!r.region || !r.platform) return;
+
+    // Teasing can be explicitly marked N/A. Store a lightweight marker in the
+    // same calendar collection so Calendar remains the single source of truth.
+    const naMatches = [];
+    calendarEntries.forEach((e, i) => {
+      if (e.type === 'teasing_na' && (_calRegionOf(e) || {}).id === r.region
+        && ((_calPlatformOf(e) || {}).id || '') === r.platform
+        && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase)
+        && String(e.date || '').slice(0, 7) === monthStr) naMatches.push(i);
+    });
+    const hadNA = naMatches.length > 0;
+    if (r.teasingNA && !hadNA) {
+      calendarEntries.push({ id: `ce_${Date.now()}_na_${n++}`, title: _calBuildTitle(phase, r.region, r.platform, 'teasing') + ' · N/A',
+        date: `${monthStr}-01`, endDate: `${monthStr}-01`, type: 'teasing_na', region: r.region, platform: r.platform,
+        campaignType: phase, startTime: null, endTime: null, color, description: 'Teasing not applicable', recurrence: null,
+        assignedUids: [], campaignId: null, createdBy: currentUser?.uid || '', updatedAt: new Date().toISOString() });
+      changed++;
+    } else if (!r.teasingNA && hadNA) {
+      naMatches.sort((a,b)=>b-a).forEach(i => calendarEntries.splice(i,1));
+      changed++;
+    }
+    if (r.teasingNA) {
+      // N/A is intentional: remove any dated teasing event for this exact scope
+      // so the schedule cannot simultaneously say both a date and N/A.
+      for (let i = calendarEntries.length - 1; i >= 0; i--) {
+        const e = calendarEntries[i];
+        if (e.type === 'teasing' && (_calRegionOf(e) || {}).id === r.region
+          && ((_calPlatformOf(e) || {}).id || '') === r.platform
+          && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase)
+          && String(e.date || '').slice(0, 7) === monthStr) { calendarEntries.splice(i,1); changed++; }
+      }
+    }
     ['teasing', 'dday', 'deadline'].forEach(ms => {
       const v = r[ms];
+      if (ms === 'teasing' && r.teasingNA) return;
       if (!v || v === (r._orig || {})[ms]) return;
       const [date, time] = v.split('T');
       // 1) Prefer the exact entry the grid displayed (by id) so we edit the record
@@ -4677,8 +4712,8 @@ function renderCalendarView(targetEl) {
     </div>
 
     ${_calToolbarHtml()}
-    ${calViewMode === 'month' ? '' : _calAltViewHtml(allVisible, year, month, isAdmin)}
-    <div class="cal-grid-wrap" ${calViewMode !== 'month' ? 'style="display:none"' : ''}>
+    ${_calAltViewHtml(allVisible, year, month, isAdmin)}
+    <div class="cal-grid-wrap" style="display:none">
       <div class="cal-weekdays">
         ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => `<div class="cal-wd">${d}</div>`).join('')}
       </div>
@@ -4750,7 +4785,7 @@ function renderCalendarView(targetEl) {
   }
 
   html += `</div></div>`; // cal-grid, cal-grid-wrap
-  if (calViewMode === 'month') html += _calGroupPanelHtml(dayMap, isAdmin);
+  // Traditional month grid removed from the operational Calendar UI.
 
   // Upcoming events list (expand recurring entries into their next occurrences).
   // Regular members ("All User" view) see events scoped to whichever month is
@@ -4774,7 +4809,7 @@ function renderCalendarView(targetEl) {
   upcoming = upcoming.sort((a,b) => a._occStart - b._occStart);
   if (!isMemberView) upcoming = upcoming.slice(0, 8);
 
-  if (upcoming.length > 0 && calViewMode === 'month') {
+  if (false && upcoming.length > 0) {
     html += `<div class="cal-upcoming">
       <div class="section-label" style="margin-bottom:10px;">Upcoming${isMemberView ? ` — ${monthName}` : ''}</div>
       <div class="cal-upcoming-list">`;

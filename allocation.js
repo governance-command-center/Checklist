@@ -503,7 +503,7 @@ function allocInitCampaignPanel() {
 // This removes the old second set of region/platform selectors.
 function allocCampRecomputeFromSchedule() {
   const rows = ((_rmState && _rmState['new-campaign']) || [])
-    .filter(r => r.region && (r.teasing || r.dday || r.deadline));
+    .filter(r => r.region && (r.teasing || r.teasingNA || r.dday || r.deadline));
   const scoped = {};
   const seen = new Set();
   rows.forEach(row => {

@@ -531,9 +531,9 @@
         <div class="field"><label>Campaign / Phase</label><select id="cs-campaign" onchange="_csLoad()"></select></div>
         <div class="field"><label>Month</label><input type="month" id="cs-month" onchange="_csLoad()" /></div>
       </div>
-      <div class="cs-scroll"><table class="region-milestone-grid" id="cs-grid"><thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="cs-scroll"><table class="region-milestone-grid" id="cs-grid"><thead><tr><th>Region</th><th>Platform</th><th>Teasing / N/A</th><th>D-Day</th><th>Checklist Deadline</th><th></th></tr></thead><tbody></tbody></table></div>
       <button class="btn-outline" style="font-size:12px;margin-top:8px;" onclick="csAddRow()">+ Add Row</button>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">One row per region and platform. Leave Deadline blank to use D-Day − 4 hours. Saving updates the shared calendar events; clearing a date does not delete the existing event.</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px;">One row per region and platform. If a campaign has no teasing period, tick N/A so Trackory treats it as intentionally not required. Leave Deadline blank to use D-Day − 4 hours.</div>
       <div id="cs-error" class="error-msg" style="display:none;"></div>
       <div class="modal-actions"><button class="btn-outline" onclick="closeCalScheduleModal()">Cancel</button><button class="btn-primary" onclick="saveCalSchedule()">Save schedule</button></div>
     </div>
@@ -741,7 +741,7 @@
               <label style="margin-bottom:0;">Campaign dates</label>
               <span class="field-optional">Calendar-backed; edits write through unless marked Campaign only</span>
             </div>
-            <div style="overflow-x:auto;"><table class="region-milestone-grid" id="new-campaign-region-grid"><thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th><th>Campaign only</th><th></th></tr></thead><tbody></tbody></table></div>
+            <div style="overflow-x:auto;"><table class="region-milestone-grid" id="new-campaign-region-grid"><thead><tr><th>Region</th><th>Platform</th><th>Teasing / N/A</th><th>D-Day</th><th>Checklist Deadline</th><th>Campaign only</th><th></th></tr></thead><tbody></tbody></table></div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Blank deadline = D-Day − 4h. Platform blank = all platforms in that region.</div>
           </div>
 
@@ -1234,7 +1234,7 @@
         </div>
         <div style="overflow-x:auto;">
           <table class="region-milestone-grid" id="edit-campaign-region-grid">
-            <thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist Deadline</th><th title="Keep on this campaign only; do not change the Calendar">Campaign only</th><th></th></tr></thead>
+            <thead><tr><th>Region</th><th>Platform</th><th>Teasing / N/A</th><th>D-Day</th><th>Checklist Deadline</th><th title="Keep on this campaign only; do not change the Calendar">Campaign only</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
