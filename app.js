@@ -1816,6 +1816,7 @@ function suggestNewCampaignName() {
 
 function updateNewCampaignReadySummary() {
   const host = document.getElementById('new-campaign-ready-summary');
+  const createBtn = document.getElementById('create-campaign-btn');
   if (!host) return;
   const scope = _rmScope('new-campaign');
   const rows = ((_rmState && _rmState['new-campaign']) || []).filter(r => r.region && (r.teasing || r.dday || r.deadline));
@@ -1824,20 +1825,60 @@ function updateNewCampaignReadySummary() {
   const entries = uids.reduce((n, uid) => n + (matched[uid] || []).length, 0);
   const regions = new Set(rows.map(r => r.region)).size;
   const platforms = new Set(rows.map(r => r.platform).filter(Boolean)).size;
-  const missingDday = rows.filter(r => !r.dday).length;
+
+  const rosterMatchesRow = row => (campaignRoster || []).filter(r => {
+    if (!members[r.uid] || r.region !== row.region) return false;
+    return !row.platform || String(r.platform || '').toLowerCase() === String(row.platform).toLowerCase();
+  });
+  const allocationGaps = rows.filter(row => rosterMatchesRow(row).length === 0);
+  const missingDday = rows.filter(r => !r.dday);
+  const missingTeasing = rows.filter(r => !r.teasing);
+  const blockers = allocationGaps.length + missingDday.length;
+
+  const setButton = (ready, label = 'Create Checklists') => {
+    if (!createBtn) return;
+    createBtn.disabled = !ready;
+    createBtn.textContent = ready ? label : 'Resolve gaps first';
+    createBtn.title = ready ? '' : 'Complete the Calendar and Allocation gaps shown above before generating.';
+  };
+  const scopeLabel = row => `${escHtml(row.region)}${row.platform ? ` · ${escHtml(row.platform)}` : ' · All platforms'}`;
+  const issueRows = [];
+  allocationGaps.forEach(r => issueRows.push(`<div class="campaign-readiness-issue"><span>Allocation</span><strong>${scopeLabel(r)}</strong><em>No matching CDM / brand allocation</em></div>`));
+  missingDday.forEach(r => issueRows.push(`<div class="campaign-readiness-issue"><span>Calendar</span><strong>${scopeLabel(r)}</strong><em>D-Day missing</em></div>`));
+  // Teasing is useful for the teasing checklist, but some campaign setups may
+  // intentionally have no teasing phase, so surface it as a warning rather than a blocker.
+  missingTeasing.forEach(r => issueRows.push(`<div class="campaign-readiness-issue campaign-readiness-note"><span>Calendar</span><strong>${scopeLabel(r)}</strong><em>Teasing date missing</em></div>`));
+
   if (!scope.year || !scope.phase) {
+    setButton(false);
+    host.className = 'campaign-ready-card campaign-ready-neutral';
     host.innerHTML = `<div class="campaign-ready-title">Choose Month + Campaign Phase</div><div class="campaign-ready-copy">Trackory will load dates from Calendar, then match CDMs, brands and platforms from Allocation.</div>`;
     return;
   }
   if (!rows.length) {
-    host.innerHTML = `<div class="campaign-ready-title campaign-ready-warn">⚠ No Calendar schedule found</div><div class="campaign-ready-copy">Add the ${escHtml(_phaseLabel(scope.phase))} schedule for this month in Calendar, or open Advanced overrides to enter campaign-only dates.</div>`;
+    setButton(false);
+    host.className = 'campaign-ready-card campaign-ready-blocked';
+    host.innerHTML = `<div class="campaign-ready-title campaign-ready-warn">⚠ Not ready — Calendar setup needed</div><div class="campaign-ready-copy">No ${escHtml(_phaseLabel(scope.phase))} schedule was found for this month.</div><div class="campaign-ready-actions"><button type="button" class="btn-outline" onclick="closeModal();switchAdminTab('calendar')">Open Calendar</button></div>`;
     return;
   }
-  if (!uids.length) {
-    host.innerHTML = `<div class="campaign-ready-title campaign-ready-warn">⚠ Allocation gap</div><div class="campaign-ready-copy">${regions} region(s) and ${platforms || 'all'} platform scope(s) found in Calendar, but none match the Brand Allocation tab.</div>`;
+  if (!uids.length || blockers) {
+    setButton(false);
+    host.className = 'campaign-ready-card campaign-ready-blocked';
+    const title = !uids.length && allocationGaps.length === rows.length ? '⚠ Not ready — Allocation setup needed' : `⚠ Not ready — ${blockers} blocker${blockers === 1 ? '' : 's'}`;
+    host.innerHTML = `<div class="campaign-ready-title campaign-ready-warn">${title}</div>
+      <div class="campaign-ready-metrics"><span><strong>${regions}</strong> regions</span><span><strong>${platforms || '—'}</strong> platforms</span><span><strong>${uids.length}</strong> members matched</span><span><strong>${entries}</strong> checklist entries</span></div>
+      <div class="campaign-ready-copy">Fix the source data below, then reopen or refresh this campaign setup.</div>
+      <div class="campaign-readiness-list">${issueRows.join('')}</div>
+      <div class="campaign-ready-actions"><button type="button" class="btn-outline" onclick="closeModal();switchAdminTab('calendar')">Open Calendar</button><button type="button" class="btn-outline" onclick="closeModal();switchAdminTab('allocation')">Open Allocation</button></div>`;
     return;
   }
-  host.innerHTML = `<div class="campaign-ready-title">✓ Ready to generate</div><div class="campaign-ready-metrics"><span><strong>${regions}</strong> regions</span><span><strong>${platforms}</strong> platforms</span><span><strong>${uids.length}</strong> members</span><span><strong>${entries}</strong> checklist entries</span></div><div class="campaign-ready-copy">Dates from Calendar · members/brands from Allocation${missingDday ? ` · ⚠ ${missingDday} row(s) missing D-Day` : ' · deadlines ready'}</div>`;
+
+  setButton(true);
+  host.className = 'campaign-ready-card';
+  host.innerHTML = `<div class="campaign-ready-title">✓ Ready to generate</div>
+    <div class="campaign-ready-metrics"><span><strong>${regions}</strong> regions</span><span><strong>${platforms || '—'}</strong> platforms</span><span><strong>${uids.length}</strong> members</span><span><strong>${entries}</strong> checklist entries</span></div>
+    <div class="campaign-ready-copy">Calendar complete · Allocation matched · deadlines ready${missingTeasing.length ? ` · ⚠ ${missingTeasing.length} teasing date warning${missingTeasing.length === 1 ? '' : 's'}` : ''}</div>
+    ${missingTeasing.length ? `<div class="campaign-readiness-list">${issueRows.join('')}</div>` : ''}`;
 }
 function rmSet(prefix, i, f, v) {
   const r = _rmState[prefix][i]; r[f] = f === 'only' ? !!v : v;
