@@ -4261,7 +4261,7 @@ function _calCreatorLabel(entry) {
 //  is DERIVED from the same teasing/dday/deadline entries that
 //  buildRegionDeadlineMap() reads; nothing is stored separately.
 // ══════════════════════════════════════════════════════════════════
-let calViewMode = 'campaign';          // 'campaign' | 'region' | 'action' — operational views only
+let calViewMode = 'campaign';          // 'campaign' | 'region' — operational views only
 let calOpenGroup = '';                 // overview: expanded "y-m-d|campId"
 const calExpanded = new Set();         // region view: expanded "campId|REGION"
 const _CAL_MS = [
@@ -4269,7 +4269,7 @@ const _CAL_MS = [
   { id: 'dday',     letter: 'D', label: 'D-Day Check' },
   { id: 'deadline', letter: 'E', label: 'Checklist Deadline' },
 ];
-function calSetView(v)  { calViewMode = v; calOpenGroup = ''; renderCalendarView(getCalTarget()); }
+function calSetView(v)  { calViewMode = v === 'region' ? 'region' : 'campaign'; calOpenGroup = ''; renderCalendarView(getCalTarget()); }
 function calToggleGroup(k) { calOpenGroup = calOpenGroup === k ? '' : k; renderCalendarView(getCalTarget()); }
 function calToggleRegionRow(k) { calExpanded.has(k) ? calExpanded.delete(k) : calExpanded.add(k); renderCalendarView(getCalTarget()); }
 const _calMD = iso => { const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number); return `${_MONTH_LABELS[m - 1].slice(0, 3)} ${d}`; };
@@ -4330,7 +4330,7 @@ const _calBadge = (ms, col, derived) => {
 const _calPlatLabel = id => (CAL_PLATFORM_MAP[id] || {}).label || 'All platforms';
 
 function _calToolbarHtml() {
-  const tabs = [['campaign', 'Campaign Timeline'], ['region', 'By Region'], ['action', 'Action Timeline']];
+  const tabs = [['campaign', 'Campaign Timeline'], ['region', 'By Region']];
   return `<div class="cs-toolbar">
     <div class="cs-tabs">${tabs.map(([id, l]) => `<button class="cs-tab ${calViewMode === id ? 'on' : ''}" onclick="calSetView('${id}')">${l}</button>`).join('')}</div>
     <div class="cs-chips">${[['', 'ALL'], ...CAL_REGIONS.filter(r => r.id !== 'LAZ').map(r => [r.id, r.id])].map(([v, l]) =>
@@ -4344,25 +4344,74 @@ function _calScheduleHealth(rows) {
   return { missingTeasing, missingDday, ready: missingDday.length === 0 };
 }
 
-function _calCampaignTimelineHtml(rows, year, month, isAdmin) {
+// Regions every campaign is expected to cover each month, alphabetical, so a
+// missing market shows up as an incomplete row instead of silently not existing.
+const CAL_DEFAULT_REGION_IDS = ['MY', 'PH', 'SG', 'TH', 'VN'];
+
+// A row is complete only when every field from Region → Checklist deadline is
+// filled. Teasing may be a date or an explicit N/A; the deadline may be the
+// auto-derived one (it is a real, shown value).
+function _calRowMissing(r) {
+  const missing = [];
+  if (r.placeholder) missing.push('region');
+  if (!r.platform && r.placeholder) missing.push('platform');
+  if (!r.teasing && !r.teasingNA) missing.push('teasing');
+  if (!r.dday) missing.push('dday');
+  if (!r.deadline) missing.push('deadline');
+  return missing;
+}
+
+// Build the per-campaign row lists for the timeline: every campaign for the
+// month (respecting the campaign filter) × default regions, with placeholder
+// rows for regions that have no schedule yet. Rows sorted by region A→Z.
+function _calCampaignTimelineGroups(rows) {
   const byCamp = {};
   rows.forEach(r => (byCamp[r.camp.id] ||= []).push(r));
-  return Object.values(byCamp).map(list => {
-    const camp = list[0].camp, health = _calScheduleHealth(list);
-    const regs = new Set(list.map(r => r.region.id));
+  const camps = CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other' && (!calFilterCampaign || calFilterCampaign === c.id));
+  // keep any non-default campaign type that actually has rows (e.g. 'other')
+  Object.keys(byCamp).forEach(id => { if (!camps.some(c => c.id === id)) camps.push(byCamp[id][0].camp); });
+  const regionIds = calFilterRegion ? [calFilterRegion] : CAL_DEFAULT_REGION_IDS;
+  return camps.map(camp => {
+    const list = (byCamp[camp.id] || []).slice();
+    if (camp.id !== 'other') {
+      const have = new Set(list.map(r => r.region.id));
+      const plats = calFilterPlatform ? [calFilterPlatform] : [...new Set(list.map(r => r.platform))];
+      if (!plats.length) plats.push('');
+      regionIds.forEach(rid => {
+        if (have.has(rid) || !CAL_REGION_MAP[rid]) return;
+        plats.forEach(pl => list.push({ camp, region: CAL_REGION_MAP[rid], platform: pl, teasing: null, teasingNA: false, teasingNAId: null, dday: null, deadline: null, placeholder: true }));
+      });
+    }
+    list.sort((a, b) => a.region.id.localeCompare(b.region.id) || a.platform.localeCompare(b.platform));
+    return { camp, list };
+  }).filter(g => g.list.length);
+}
+
+function _calCampaignTimelineHtml(rows, year, month, isAdmin) {
+  return _calCampaignTimelineGroups(rows).map(({ camp, list }) => {
+    const incomplete = list.filter(r => _calRowMissing(r).length);
+    const ready = incomplete.length === 0;
+    const regs = new Set(list.filter(r => !r.placeholder).map(r => r.region.id));
     const plats = new Set(list.map(r => r.platform).filter(Boolean));
     const allDates = list.flatMap(r => [r.teasing, r.dday, r.deadline].filter(Boolean).map(x => x.iso.slice(0,10))).sort();
     const lo = allDates[0], hi = allDates[allDates.length - 1];
-    const status = health.ready
-      ? (health.missingTeasing.length ? `<span class="cs-health warn">⚠ ${health.missingTeasing.length} teasing date${health.missingTeasing.length > 1 ? 's' : ''} missing</span>` : '<span class="cs-health ready">✓ Ready for checklist</span>')
-      : `<span class="cs-health block">⚠ ${health.missingDday.length} D-Day date${health.missingDday.length > 1 ? 's' : ''} missing</span>`;
+    const canon = _canonicalPhase(camp.id);
+    const info = _CANON_PHASE_INFO[canon];
+    const checklistExists = !!canon && Object.values(campaigns || {}).some(c => _campaignCoversPhaseMonth(c, canon, year, month));
+    const status = ready
+      ? '<span class="cs-health ready">✓ Ready for checklist</span>'
+      : `<span class="cs-health warn" title="${incomplete.length} region row${incomplete.length !== 1 ? 's' : ''} incomplete">⚠ For completion</span>`;
+    const createBtn = ready && isAdmin && info && !checklistExists
+      ? `<button class="btn-primary cs-action-btn" onclick="_startCampaignFromAlert('${info.uiValue}',${year},${month})">+ Create checklist</button>` : '';
+    const created = ready && checklistExists ? '<span class="cs-health ready">✓ Checklist created</span>' : '';
+    const miss = '<span class="cs-missing">⚠ Missing</span>';
     return `<div class="cs-campaign-card" style="--c:${camp.color}">
       <div class="cs-campaign-head">
         <div><div class="cs-campaign-name">${camp.label}</div><div class="cs-campaign-meta">${regs.size} region${regs.size!==1?'s':''} · ${plats.size} platform${plats.size!==1?'s':''}${lo ? ` · ${_calMD(lo)}${hi && hi !== lo ? ` – ${_calMD(hi)}` : ''}` : ''}</div></div>
-        <div class="cs-campaign-actions">${status}${isAdmin ? `<button class="btn-ghost-light" onclick="openCalScheduleModal()">Edit schedule</button>` : ''}</div>
+        <div class="cs-campaign-actions">${status}${created}${createBtn}${isAdmin ? `<button class="btn-ghost-light" onclick="openCalScheduleModal()">Edit schedule</button>` : ''}</div>
       </div>
       <div class="cs-scroll"><table class="cs-schedule-table"><thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist deadline</th><th>Status</th></tr></thead><tbody>
-        ${list.map(r => { const ok = !!r.dday; return `<tr class="${ok ? '' : 'cs-row-gap'}"><td><span class="cal-region-badge" style="background:${r.region.color}">${r.region.id}</span></td><td>${escHtml(_calPlatLabel(r.platform))}</td><td>${r.teasing ? _fmtDeadline(r.teasing.iso) : r.teasingNA ? '<span class="cs-na">N/A</span>' : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.dday ? _fmtDeadline(r.dday.iso) : '<span class="cs-missing">⚠ Missing</span>'}</td><td>${r.deadline ? `${_fmtDeadline(r.deadline.iso)}${r.deadline.derived ? ' <small class="cs-auto">auto</small>' : ''}` : '<span class="cs-missing">—</span>'}</td><td>${ok ? (r.teasing || r.teasingNA ? '<span class="cs-row-ready">✓ Ready</span>' : '<span class="cs-row-warn">⚠ Teasing</span>') : '<span class="cs-row-block">Needs D-Day</span>'}</td></tr>`; }).join('')}
+        ${list.map(r => { const ok = !_calRowMissing(r).length; return `<tr class="${ok ? '' : 'cs-row-gap'}"><td><span class="cal-region-badge" style="background:${r.region.color}">${r.region.id}</span></td><td>${r.placeholder && !r.platform ? miss : escHtml(_calPlatLabel(r.platform))}</td><td>${r.teasing ? _fmtDeadline(r.teasing.iso) : r.teasingNA ? '<span class="cs-na">N/A</span>' : miss}</td><td>${r.dday ? _fmtDeadline(r.dday.iso) : miss}</td><td>${r.deadline ? `${_fmtDeadline(r.deadline.iso)}${r.deadline.derived ? ' <small class="cs-auto">auto</small>' : ''}` : miss}</td><td>${ok ? '<span class="cs-row-ready">✓ Ready</span>' : '<span class="cs-row-warn">⚠ For completion</span>'}</td></tr>`; }).join('')}
       </tbody></table></div>
     </div>`;
   }).join('');
@@ -4383,39 +4432,13 @@ function _calRegionMatrixHtml(rows) {
   }).join('');
 }
 
-function _calActionTimelineHtml(rows, year, month, isAdmin) {
-  const now = Date.now();
-  const ts = iso => new Date(iso.length === 10 ? `${iso}T23:59` : iso).getTime();
-  const phaseState = {};
-  rows.forEach(r => {
-    const g = phaseState[r.camp.id] ||= { camp:r.camp, rows:[] };
-    g.rows.push(r);
-  });
-  const actions = [];
-  Object.values(phaseState).forEach(g => {
-    const canon = _canonicalPhase(g.camp.id);
-    const checklistExists = Object.values(campaigns || {}).some(c => _campaignCoversPhaseMonth(c, canon, year, month));
-    const health = _calScheduleHealth(g.rows);
-    if (!health.ready) actions.push({ iso: g.rows.map(r=>r.dday?.iso).filter(Boolean).sort()[0] || `${year}-${String(month+1).padStart(2,'0')}-01`, priority:0, html:`<div class="cs-action alert"><div class="cs-action-date">SETUP</div><div class="cs-action-main"><strong>${g.camp.label}</strong><span>${health.missingDday.length} Region × Platform schedule${health.missingDday.length!==1?'s':''} missing D-Day</span></div>${isAdmin ? '<button class="btn-ghost-light" onclick="openCalScheduleModal()">Fix Calendar</button>' : ''}</div>` });
-    if (health.ready && !checklistExists) {
-      const first = g.rows.flatMap(r=>[r.teasing,r.dday].filter(Boolean).map(x=>x.iso)).sort()[0] || `${year}-${String(month+1).padStart(2,'0')}-01`;
-      const info = _CANON_PHASE_INFO[canon];
-      actions.push({ iso:first, priority:1, html:`<div class="cs-action alert"><div class="cs-action-date">READY</div><div class="cs-action-main"><strong>${g.camp.label}</strong><span>Schedule ready · checklist not created yet</span></div>${isAdmin && info ? `<button class="btn-primary cs-action-btn" onclick="_startCampaignFromAlert('${info.uiValue}',${year},${month})">Create Checklist</button>` : ''}</div>` });
-    }
-    g.rows.forEach(r => _CAL_MS.forEach(m => { const x=r[m.id]; if(!x) return; actions.push({ iso:x.iso, priority:2, html:`<div class="cs-action ${ts(x.iso)<now?'past':''}"><div class="cs-action-date">${_calMD(x.iso)}</div><div class="cs-action-main"><strong>${m.label}</strong><span><span class="cal-region-badge" style="background:${r.region.color}">${r.region.id}</span> ${escHtml(_calPlatLabel(r.platform))} · ${g.camp.label}${x.derived?' · auto deadline':''}</span></div><div class="cs-action-time">${_fmtDeadline(x.iso)}</div></div>` }); }));
-  });
-  actions.sort((a,b)=>ts(a.iso)-ts(b.iso) || a.priority-b.priority);
-  return actions.length ? `<div class="cs-action-list">${actions.map(a=>a.html).join('')}</div>` : '<div class="cs-empty">No checklist actions for this month.</div>';
-}
-
 function _calAltViewHtml(entries, year, month, isAdmin) {
   const rows = _calScheduleRows(entries, year, month);
   const action = isAdmin ? `<button class="btn-outline" style="font-size:12px;" onclick="openCalScheduleModal()">Edit schedule</button>` : '';
-  if (!rows.length) return `<div class="cs-empty">No campaign milestones for this month${calFilterRegion || calFilterPlatform || calFilterCampaign ? ' with the current filters' : ''}. ${action}</div>`;
+  if (!rows.length && calViewMode !== 'campaign') return `<div class="cs-empty">No campaign milestones for this month${calFilterRegion || calFilterPlatform || calFilterCampaign ? ' with the current filters' : ''}. ${action}</div>`;
   let body = '';
   if (calViewMode === 'campaign') body = _calCampaignTimelineHtml(rows, year, month, isAdmin);
   else if (calViewMode === 'region') body = _calRegionMatrixHtml(rows);
-  else if (calViewMode === 'action') body = _calActionTimelineHtml(rows, year, month, isAdmin);
   return `<div class="cs-body">${body}</div>`;
 }
 
