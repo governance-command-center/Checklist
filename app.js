@@ -619,10 +619,11 @@ function renderCampaignAlertBanner() {
 // computed from and can just confirm + assign members.
 function _startCampaignFromAlert(phaseValue, year, month) {
   openNewCampaignModal();
-  const nameEl = document.getElementById('new-campaign-name');
-  if (nameEl) nameEl.value = `${_phaseLabel(phaseValue)} — ${_MONTH_LABELS[month]} ${year}`;
+  const monthEl = document.getElementById('new-campaign-rm-month');
+  if (monthEl) monthEl.value = `${year}-${String(month + 1).padStart(2, '0')}`;
   const typeSel = document.getElementById('new-campaign-cal-type');
   if (typeSel) typeSel.value = phaseValue;
+  rmReload('new-campaign');   // rebuilds the dates grid and sets the suggested name
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1668,7 +1669,7 @@ function openNewCampaignModal() {
         `<div class="member-chip" data-uid="${m.uid}" onclick="toggleChip(this)">${m.name || m.username}${m.role === 'team_lead' ? ' <span style="font-size:9px;opacity:0.75;">(Team Lead)</span>' : ''}</div>`
       ).join('');
   document.getElementById('new-campaign-name').value          = '';
-  document.getElementById('new-campaign-name').dataset.userEdited = '0';
+  document.getElementById('new-campaign-name').dataset.autoName = '';
   document.getElementById('modal-error').style.display   = 'none';
   newCampBulkMatched = {};
   document.getElementById('new-camp-bulk-file').value = '';
@@ -1677,6 +1678,7 @@ function openNewCampaignModal() {
   if (typeSel) typeSel.value = '';
   populateCampaignTemplateSel();
   initRegionMilestoneGrid('new-campaign', null);
+  suggestNewCampaignName();   // phase may have been auto-picked from the Calendar
   if (typeof allocInitCampaignPanel === 'function') allocInitCampaignPanel();
   updateNewCampaignReadySummary();
   document.getElementById('modal-overlay').style.display = 'flex';
@@ -1730,7 +1732,9 @@ function _rmAutoPhase(prefix) {
   const { year, month } = _rmScope(prefix);
   if (!sel || sel.value || !year) return;
   const setIf = id => { const o = [...sel.options].find(o => o.value && _canonicalPhase(o.value) === _canonicalPhase(id)); if (o) sel.value = o.value; return !!o; };
-  const inf = inferGenScopeFromName(document.getElementById(`${prefix}-name`)?.value || '');
+  const nm = document.getElementById(`${prefix}-name`);
+  const typed = nm && nm.value.trim() && nm.value.trim() !== (nm.dataset.autoName || '') ? nm.value : '';
+  const inf = inferGenScopeFromName(typed);
   if (inf.campaignType && setIf(inf.campaignType)) return;
   const ph = [...new Map(_calScheduleRows(calendarEntries.map(e => ({ ...e, _type: 'shared' })), year, month).map(r => [r.camp.id, r.camp.label])).entries()];
   if (ph.length === 1 && setIf(ph[0][0])) return;
@@ -1739,7 +1743,6 @@ function _rmAutoPhase(prefix) {
 // Typing the campaign name (e.g. "10.10 Sale") updates month/phase and reloads — only when they actually change.
 function rmNameChanged(prefix) {
   const nameEl = document.getElementById(`${prefix}-name`);
-  if (prefix === 'new-campaign' && document.activeElement === nameEl) nameEl.dataset.userEdited = '1';
   const inf = inferGenScopeFromName(document.getElementById(`${prefix}-name`)?.value || '');
   const mEl = document.getElementById(`${prefix}-rm-month`);
   if (mEl && inf.year != null && inf.month != null) mEl.value = `${inf.year}-${String(inf.month + 1).padStart(2, '0')}`;
@@ -1791,12 +1794,18 @@ function initRegionMilestoneGrid(prefix, existing, camp) {
 }
 function rmReload(prefix) {
   const camp = prefix === 'edit-campaign' ? campaigns[document.getElementById('edit-campaign-overlay')?.dataset.campId] : null;
-  _rmState[prefix] = _rmBuildRows(prefix, camp);
-  _rmRender(prefix);
+  try {
+    _rmState[prefix] = _rmBuildRows(prefix, camp);
+    _rmRender(prefix);
+  } catch (e) {
+    console.error('rmReload: could not rebuild the dates grid', e);
+  }
   if (prefix === 'new-campaign') {
     suggestNewCampaignName();
-    if (typeof allocCampRecomputeFromSchedule === 'function') allocCampRecomputeFromSchedule();
-    else updateNewCampaignReadySummary();
+    try {
+      if (typeof allocCampRecomputeFromSchedule === 'function') allocCampRecomputeFromSchedule();
+      else updateNewCampaignReadySummary();
+    } catch (e) { console.error('rmReload: summary refresh failed', e); }
   }
 }
 
@@ -1805,13 +1814,19 @@ function suggestNewCampaignName() {
   const monthEl = document.getElementById('new-campaign-rm-month');
   const phaseEl = document.getElementById('new-campaign-cal-type');
   if (!nameEl || !monthEl?.value || !phaseEl?.value) return;
-  // Don't overwrite a name the admin deliberately edited.
-  if (nameEl.dataset.userEdited === '1') return;
+  // Only skip when the admin typed a name of their own. A name counts as typed
+  // when it is non-empty AND differs from the last name we generated; clearing
+  // the box (or leaving our own suggestion in it) re-enables auto-naming.
+  const cur = nameEl.value.trim();
+  if (cur && cur !== (nameEl.dataset.autoName || '')) return;
   const [year, month] = monthEl.value.split('-').map(Number);
+  if (!year || !month) return;
   const phase = phaseEl.value;
   let label = _phaseLabel(phase);
   if (phase === 'double_digit') label = `${month}.${month} Double Digit`;
-  nameEl.value = `${label} — ${_MONTH_LABELS[month - 1]} ${year}`;
+  const name = `${label} — ${_MONTH_LABELS[month - 1]} ${year}`;
+  nameEl.value = name;
+  nameEl.dataset.autoName = name;
 }
 
 function updateNewCampaignReadySummary() {
