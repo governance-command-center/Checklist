@@ -1971,7 +1971,7 @@ function combineDatetime(dateId, timeId) {
 
 // Split a stored "YYYY-MM-DDTHH:MM" (or "YYYY-MM-DD") back into [dateStr, timeStr]
 function splitDatetime(value) {
-  if (!value) return ['', ''];
+  if (!value || typeof value !== 'string') return ['', ''];
   if (value.includes('T')) {
     const [d, t] = value.split('T');
     return [d, t.slice(0, 5)]; // strip seconds if any
@@ -2218,48 +2218,69 @@ async function duplicateCampaign(campId) {
 // ─── Admin: Edit Campaign ─────────────────────────────────────
 async function openEditCampaignModal(campId) {
   const camp = campaigns[campId];
-  if (!camp) return;
-
-  // Ensure templates are loaded
-  if (!checklistTemplates || checklistTemplates.length === 0) {
-    await loadChecklistTemplates();
-  }
+  if (!camp) { showToast('Campaign not found. Refresh and try again.', 'warn'); return; }
 
   const overlay = document.getElementById('edit-campaign-overlay');
+  if (!overlay) { showToast('Edit dialog is missing from the page. Hard-refresh (Ctrl+F5) and try again.', 'warn'); return; }
   overlay.dataset.campId = campId;
 
-  document.getElementById('edit-campaign-name').value     = camp.name;
-  // Populate date + time fields from stored ISO-like values
-  const [ddayDate, ddayTime]         = splitDatetime(camp.dday);
-  const [deadlineDate, deadlineTime] = splitDatetime(camp.deadline);
-  document.getElementById('edit-campaign-dday').value          = ddayDate;
-  document.getElementById('edit-campaign-dday-time').value     = ddayTime;
-  document.getElementById('edit-campaign-deadline').value      = deadlineDate;
-  document.getElementById('edit-campaign-deadline-time').value = deadlineTime;
-  document.getElementById('edit-campaign-error').style.display = 'none';
-  const editTypeSel = document.getElementById('edit-campaign-cal-type');
-  if (editTypeSel) editTypeSel.value = camp.campaignType || '';
-  initRegionMilestoneGrid('edit-campaign', camp.regionMilestones || null, camp);
+  // Ensure templates are loaded (never let a failure here block the dialog)
+  try {
+    if (!checklistTemplates || checklistTemplates.length === 0) await loadChecklistTemplates();
+  } catch (e) { console.warn('Template load failed', e); }
 
-  // Build template selector
-  const tmplSel = document.getElementById('edit-campaign-template-sel');
-  tmplSel.innerHTML = `<option value="">None (use default checklist)</option>`;
-  (checklistTemplates || []).forEach(t => {
-    tmplSel.innerHTML += `<option value="${t.id}" ${camp.checklistTemplateId === t.id ? 'selected' : ''}>${escHtml(t.name)}</option>`;
-  });
+  try {
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    const asStr = v => (typeof v === 'string' ? v : (v && typeof v.toDate === 'function' ? v.toDate().toISOString().slice(0, 16) : ''));
 
-  // Build member chips
-  const nonAdmins = Object.values(members).filter(m => m.role !== 'admin');
-  const list = document.getElementById('edit-member-assign-list');
-  list.innerHTML = nonAdmins.length === 0
-    ? '<div style="color:var(--text-muted);font-size:13px;">No members yet.</div>'
-    : nonAdmins.map(m => {
-        const sel = (camp.assignedUids || []).includes(m.uid) ? 'selected' : '';
-        const tag = m.role === 'team_lead' ? ' <span style="font-size:9px;opacity:0.75;">(Team Lead)</span>' : '';
-        return `<div class="member-chip ${sel}" data-uid="${m.uid}" onclick="toggleChip(this)">${m.name || m.username}${tag}</div>`;
-      }).join('');
+    setVal('edit-campaign-name', camp.name || '');
+    // Populate date + time fields from stored ISO-like values
+    const [ddayDate, ddayTime]         = splitDatetime(asStr(camp.dday));
+    const [deadlineDate, deadlineTime] = splitDatetime(asStr(camp.deadline));
+    setVal('edit-campaign-dday', ddayDate);
+    setVal('edit-campaign-dday-time', ddayTime);
+    setVal('edit-campaign-deadline', deadlineDate);
+    setVal('edit-campaign-deadline-time', deadlineTime);
+    const errEl = document.getElementById('edit-campaign-error');
+    if (errEl) errEl.style.display = 'none';
+    setVal('edit-campaign-cal-type', camp.campaignType || '');
 
+    // Build template selector
+    const tmplSel = document.getElementById('edit-campaign-template-sel');
+    if (tmplSel) {
+      tmplSel.innerHTML = `<option value="">None (use default checklist)</option>`;
+      (checklistTemplates || []).forEach(t => {
+        tmplSel.innerHTML += `<option value="${t.id}" ${camp.checklistTemplateId === t.id ? 'selected' : ''}>${escHtml(t.name)}</option>`;
+      });
+    }
+
+    // Build member chips
+    const nonAdmins = Object.values(members || {}).filter(m => m.role !== 'admin');
+    const list = document.getElementById('edit-member-assign-list');
+    if (list) {
+      list.innerHTML = nonAdmins.length === 0
+        ? '<div style="color:var(--text-muted);font-size:13px;">No members yet.</div>'
+        : nonAdmins.map(m => {
+            const sel = (camp.assignedUids || []).includes(m.uid) ? 'selected' : '';
+            const tag = m.role === 'team_lead' ? ' <span style="font-size:9px;opacity:0.75;">(Team Lead)</span>' : '';
+            return `<div class="member-chip ${sel}" data-uid="${m.uid}" onclick="toggleChip(this)">${escHtml(m.name || m.username || m.uid)}${tag}</div>`;
+          }).join('');
+    }
+  } catch (e) {
+    console.error('openEditCampaignModal: form fill failed', e);
+    showToast('Could not load all campaign fields: ' + (e.message || e), 'warn');
+  }
+
+  // Show the dialog BEFORE the calendar-backed date grid, so a problem in the
+  // grid can never stop the Edit dialog from opening.
   overlay.style.display = 'flex';
+
+  try {
+    initRegionMilestoneGrid('edit-campaign', camp.regionMilestones || null, camp);
+  } catch (e) {
+    console.error('openEditCampaignModal: date grid failed', e);
+    showToast('Per-region dates could not be loaded: ' + (e.message || e), 'warn');
+  }
 }
 
 function closeEditCampaignModal(e) {
@@ -4405,16 +4426,58 @@ function _calCampaignTimelineHtml(rows, year, month, isAdmin) {
       ? `<button class="btn-primary cs-action-btn" onclick="_startCampaignFromAlert('${info.uiValue}',${year},${month})">+ Create checklist</button>` : '';
     const created = ready && checklistExists ? '<span class="cs-health ready">✓ Checklist created</span>' : '';
     const miss = '<span class="cs-missing">⚠ Missing</span>';
+    const isSuper = currentUser?.role === 'admin';
+    const hasSchedule = list.some(r => !r.placeholder);
+    const linked = isSuper && canon ? Object.values(campaigns || {}).filter(c => _campaignCoversPhaseMonth(c, canon, year, month)) : [];
+    const adminBtns = isSuper ? `${hasSchedule ? `<button class="btn-ghost-light" onclick="openCalScheduleModal('${camp.id}')" title="Edit this campaign's dates">✏️ Edit</button><button class="btn-ghost-light" style="color:#D97706;border-color:#fde68a;" onclick="calRemoveCampaignSchedule('${camp.id}',${year},${month})" title="Remove this campaign's dates from the Calendar for this month">✕ Remove</button>` : ''}${linked.map(c => `<button class="btn-ghost-light" onclick="openEditCampaignModal('${c.id}')" title="Edit checklist campaign: ${escHtml(c.name)}">✏️ Edit checklist${linked.length > 1 ? ' · ' + escHtml(c.name) : ''}</button><button class="btn-ghost-light" style="color:#DC2626;border-color:#FCA5A5;" onclick="calDeleteLinkedCampaign('${c.id}')" title="Delete checklist campaign: ${escHtml(c.name)}">🗑 Delete${linked.length > 1 ? ' · ' + escHtml(c.name) : ''}</button>`).join('')}` : '';
     return `<div class="cs-campaign-card" style="--c:${camp.color}">
       <div class="cs-campaign-head">
         <div><div class="cs-campaign-name">${camp.label}</div><div class="cs-campaign-meta">${regs.size} region${regs.size!==1?'s':''} · ${plats.size} platform${plats.size!==1?'s':''}${lo ? ` · ${_calMD(lo)}${hi && hi !== lo ? ` – ${_calMD(hi)}` : ''}` : ''}</div></div>
-        <div class="cs-campaign-actions">${status}${created}${createBtn}${isAdmin ? `<button class="btn-ghost-light" onclick="openCalScheduleModal()">Edit schedule</button>` : ''}</div>
+        <div class="cs-campaign-actions">${status}${created}${createBtn}${isAdmin && !isSuper ? `<button class="btn-ghost-light" onclick="openCalScheduleModal('${camp.id}')">Edit schedule</button>` : ''}${adminBtns}</div>
       </div>
       <div class="cs-scroll"><table class="cs-schedule-table"><thead><tr><th>Region</th><th>Platform</th><th>Teasing</th><th>D-Day</th><th>Checklist deadline</th><th>Status</th></tr></thead><tbody>
         ${list.map(r => { const ok = !_calRowMissing(r).length; return `<tr class="${ok ? '' : 'cs-row-gap'}"><td><span class="cal-region-badge" style="background:${r.region.color}">${r.region.id}</span></td><td>${r.placeholder && !r.platform ? miss : escHtml(_calPlatLabel(r.platform))}</td><td>${r.teasing ? _fmtDeadline(r.teasing.iso) : r.teasingNA ? '<span class="cs-na">N/A</span>' : miss}</td><td>${r.dday ? _fmtDeadline(r.dday.iso) : miss}</td><td>${r.deadline ? `${_fmtDeadline(r.deadline.iso)}${r.deadline.derived ? ' <small class="cs-auto">auto</small>' : ''}` : miss}</td><td>${ok ? '<span class="cs-row-ready">✓ Ready</span>' : '<span class="cs-row-warn">⚠ For completion</span>'}</td></tr>`; }).join('')}
       </tbody></table></div>
     </div>`;
   }).join('');
+}
+
+// Admin: remove one campaign phase's dates (teasing / D-Day / deadline events)
+// from the shared Calendar for the month shown. Checklist campaigns are untouched.
+async function calRemoveCampaignSchedule(phaseId, year, month) {
+  if (currentUser?.role !== 'admin') return;
+  const label = (CAL_CAMPAIGN_TYPES.find(c => c.id === phaseId) || {}).label || 'campaign';
+  const monthStr = `${year}-${_csPad(month + 1)}`;
+  const want = phaseId === 'other' ? null : _canonicalPhase(phaseId);
+  const hits = calendarEntries.filter(e => {
+    if (!e || e._type === 'personal' || !e.date || String(e.date).slice(0, 7) !== monthStr) return false;
+    if (!['teasing', 'dday', 'deadline', 'teasing_na', 'other'].includes(e.type) && e.type) return false;
+    const ct = _calCampaignType(e);
+    if (want ? _canonicalPhase(ct.id) !== want : ct.id !== 'other') return false;
+    return !!_calRegionOf(e);
+  });
+  if (!hits.length) { showToast('Nothing to remove for this campaign.', 'warn'); return; }
+  if (!confirm(`Remove the ${label} schedule for ${_MONTH_LABELS[month]} ${year}?\n\nThis deletes ${hits.length} calendar date${hits.length !== 1 ? 's' : ''} (teasing, D-Day, deadline). Checklist campaigns are not deleted.`)) return;
+  const ids = new Set(hits);
+  for (let i = calendarEntries.length - 1; i >= 0; i--) if (ids.has(calendarEntries[i])) calendarEntries.splice(i, 1);
+  try {
+    await saveCalendarEntries();
+    renderCalendarView(getCalTarget());
+    showToast(`✅ ${label} schedule removed.`, 'success');
+  } catch (e) {
+    console.error(e);
+    showToast('Failed to remove schedule. Refresh and try again.', 'warn');
+    try { await loadCalendarEntries(); renderCalendarView(getCalTarget()); } catch (_) {}
+  }
+}
+
+// Admin: delete the checklist campaign linked to a Calendar phase/month.
+async function calDeleteLinkedCampaign(campId) {
+  if (currentUser?.role !== 'admin') return;
+  const c = campaigns[campId];
+  if (!c) return;
+  await deleteCampaign(campId, c.name);
+  try { renderCalendarView(getCalTarget()); } catch (_) {}
 }
 
 function _calRegionMatrixHtml(rows) {
@@ -4445,10 +4508,11 @@ function _calAltViewHtml(entries, year, month, isAdmin) {
 // ── Bulk campaign schedule editor ─────────────────────────────────
 let _csRows = [];
 const _csPad = n => String(n).padStart(2, '0');
-function openCalScheduleModal() {
+function openCalScheduleModal(phaseId) {
   const sel = document.getElementById('cs-campaign');
   sel.innerHTML = CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other').map(c => `<option value="${c.id}">${c.label}</option>`).join('');
-  if (calFilterCampaign && sel.querySelector(`[value="${calFilterCampaign}"]`)) sel.value = calFilterCampaign;
+  const want = (typeof phaseId === 'string' && phaseId) || calFilterCampaign;
+  if (want && sel.querySelector(`[value="${want}"]`)) sel.value = want;
   document.getElementById('cs-month').value = `${calCurrentYear}-${_csPad(calCurrentMonth + 1)}`;
   document.getElementById('cs-error').style.display = 'none';
   _csLoad();
