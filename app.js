@@ -8870,7 +8870,7 @@ async function renderReportTab() {
                     const regHtml  = regLines.length === 0 ? '—'
                       : regLines.length <= 2 ? regLines.join('<br>')
                       : `<div><span>${escHtml(regLines[0])}</span><span id="${regId}-more" style="display:none;">${regLines.slice(1).map(l=>'<br>'+escHtml(l)).join('')}</span><br><button onclick="toggleRegList('${regId}')" id="${regId}-btn" style="font-size:10px;color:var(--blue);background:none;border:none;cursor:pointer;padding:0;margin-top:2px;">+${regLines.length-1} more</button></div>`;
-                    return `<tr data-report-status="${r.isComplete ? 'completed' : r.overallPct > 0 ? 'in-progress' : 'pending'}" data-report-timing="${r.deadlineStatus === 'on-time' ? 'on-time' : r.deadlineStatus === 'late' ? 'late' : 'other'}" style="${isAtRisk ? 'background:rgba(220,38,38,0.03);' : ''}">
+                    return `<tr data-report-status="${r.isComplete ? 'completed' : r.overallPct > 0 ? 'in-progress' : 'pending'}" data-report-timing="${r.deadlineStatus === 'on-time' ? 'on-time' : (r.deadlineStatus === 'late' || r.deadlineStatus === 'overdue') ? 'late' : 'other'}" style="${isAtRisk ? 'background:rgba(220,38,38,0.03);' : ''}">
                       <td>
                         <strong>${escHtml(r.member.name || r.member.username)}</strong><br>
                         <span style="font-size:11px;color:var(--text-muted)">@${escHtml(r.member.username)}</span>
