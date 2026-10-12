@@ -8668,6 +8668,8 @@ async function renderReportTab() {
 
     const today     = new Date(); today.setHours(0,0,0,0);
     const fmtDate   = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+    // Hour:minute (12h, local time) — shown under the completion date so admins can see the actual completion moment
+    const fmtTime   = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
     const daysDiff  = (isoA, isoB) => Math.ceil((new Date(isoA) - new Date(isoB)) / 86400000);
 
     let html = '';
@@ -8868,7 +8870,7 @@ async function renderReportTab() {
                     const regHtml  = regLines.length === 0 ? '—'
                       : regLines.length <= 2 ? regLines.join('<br>')
                       : `<div><span>${escHtml(regLines[0])}</span><span id="${regId}-more" style="display:none;">${regLines.slice(1).map(l=>'<br>'+escHtml(l)).join('')}</span><br><button onclick="toggleRegList('${regId}')" id="${regId}-btn" style="font-size:10px;color:var(--blue);background:none;border:none;cursor:pointer;padding:0;margin-top:2px;">+${regLines.length-1} more</button></div>`;
-                    return `<tr data-report-status="${r.isComplete ? 'completed' : r.overallPct > 0 ? 'in-progress' : 'pending'}" style="${isAtRisk ? 'background:rgba(220,38,38,0.03);' : ''}">
+                    return `<tr data-report-status="${r.isComplete ? 'completed' : r.overallPct > 0 ? 'in-progress' : 'pending'}" data-report-timing="${r.deadlineStatus === 'on-time' ? 'on-time' : r.deadlineStatus === 'late' ? 'late' : 'other'}" style="${isAtRisk ? 'background:rgba(220,38,38,0.03);' : ''}">
                       <td>
                         <strong>${escHtml(r.member.name || r.member.username)}</strong><br>
                         <span style="font-size:11px;color:var(--text-muted)">@${escHtml(r.member.username)}</span>
@@ -8879,7 +8881,7 @@ async function renderReportTab() {
                       <td><span class="badge ${r.statusCls}">${r.status}</span></td>
                       <td style="font-size:12px;color:var(--text-muted)">${r.startedAt ? fmtDate(r.startedAt) : r.overallPct > 0 ? fmtDate(r.lastActive) : '—'}</td>
                       <td style="font-size:12px;color:var(--text-muted)">${r.lastActive ? fmtDate(r.lastActive) : '—'}</td>
-                      <td style="font-size:12px;">${r.isComplete ? `<span style="color:#059669;font-weight:600;">${r.completedAt ? fmtDate(r.completedAt) : '✅ Done'}</span>` : '<span style="color:var(--text-faint);">—</span>'}</td>
+                      <td style="font-size:12px;">${r.isComplete ? `<span style="color:#059669;font-weight:600;">${r.completedAt ? fmtDate(r.completedAt) : '✅ Done'}</span>${r.completedAt ? `<br><span style="font-size:11px;color:var(--text-muted);">🕒 ${fmtTime(r.completedAt)}</span>` : ''}` : '<span style="color:var(--text-faint);">—</span>'}</td>
                       ${deadline ? `<td>${deadlineBadge(r)}</td>` : ''}
                       <td style="font-size:12px;">${regHtml}</td>
                     </tr>`;
@@ -8923,7 +8925,17 @@ let _reportStatusFilter = 'all';
 
 function filterReportByStatus(btn, status) {
   _reportStatusFilter = status;
-  document.querySelectorAll('#report-status-filter-row .status-filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#report-status-filter-row > .status-filter-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  applyReportStatusFilter();
+}
+
+// ── Timing filter (On time / Late) — combines with the status filter ──
+let _reportTimingFilter = 'all';
+
+function filterReportByTiming(btn, timing) {
+  _reportTimingFilter = timing;
+  document.querySelectorAll('#report-timing-filter-row .status-filter-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   applyReportStatusFilter();
 }
@@ -8931,8 +8943,9 @@ function filterReportByStatus(btn, status) {
 function applyReportStatusFilter() {
   const rows = document.querySelectorAll('#report-tab-content tr[data-report-status]');
   rows.forEach(tr => {
-    const show = _reportStatusFilter === 'all' || tr.dataset.reportStatus === _reportStatusFilter;
-    tr.style.display = show ? '' : 'none';
+    const statusOk = _reportStatusFilter === 'all' || tr.dataset.reportStatus === _reportStatusFilter;
+    const timingOk = _reportTimingFilter === 'all' || tr.dataset.reportTiming === _reportTimingFilter;
+    tr.style.display = (statusOk && timingOk) ? '' : 'none';
   });
 }
 
@@ -8948,7 +8961,7 @@ async function exportReportToExcel() {
   const rows = [['Campaign', 'D-Day', 'Deadline', 'Member', 'Username',
     'Teasing Done', 'Teasing Total', 'Teasing %',
     'D-Day Done', 'D-Day Total', 'D-Day %',
-    'Overall %', 'Status', 'Started', 'Last Active', 'Completed',
+    'Overall %', 'Status', 'Started', 'Last Active', 'Completed', 'Completed Time',
     'vs Deadline', 'Deadline Status', 'Brand/Platform/Region']];
 
   campList.forEach(camp => {
@@ -9006,6 +9019,7 @@ async function exportReportToExcel() {
         fmtDate(cl.startedAt || (overallPct > 0 ? cl.lastActive : '')),
         fmtDate(cl.lastActive),
         fmtDate(cl.completedAt),
+        cl.completedAt ? new Date(cl.completedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '',
         vsDead, deadlineStatus, entries,
       ]);
     });

@@ -255,6 +255,13 @@
           <button class="status-filter-btn completed" data-status="completed" onclick="filterReportByStatus(this,'completed')">✓ Completed</button>
           <button class="status-filter-btn in-progress" data-status="in-progress" onclick="filterReportByStatus(this,'in-progress')">⟳ In Progress</button>
           <button class="status-filter-btn pending" data-status="pending" onclick="filterReportByStatus(this,'pending')">— Pending</button>
+          <span style="width:1px;height:18px;background:var(--border);margin:0 6px;"></span>
+          <span id="report-timing-filter-row" style="display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span style="font-size:12px;color:var(--text-muted);font-weight:500;">Timing:</span>
+            <button class="status-filter-btn active" data-status="all" onclick="filterReportByTiming(this,'all')">All</button>
+            <button class="status-filter-btn completed" data-status="on-time" onclick="filterReportByTiming(this,'on-time')">✓ On time</button>
+            <button class="status-filter-btn pending" data-status="late" onclick="filterReportByTiming(this,'late')">✕ Late</button>
+          </span>
         </div>
         <div id="report-tab-content"></div>
       </div>
