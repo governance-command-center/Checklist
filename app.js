@@ -4404,18 +4404,22 @@ function _calCampaignTimelineGroups(rows) {
   const byCamp = {};
   rows.forEach(r => (byCamp[r.camp.id] ||= []).push(r));
   const camps = CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other' && (!calFilterCampaign || calFilterCampaign === c.id));
-  // keep any non-default campaign type that actually has rows (e.g. 'other')
+  // Keep non-default campaign types that actually have schedules.
   Object.keys(byCamp).forEach(id => { if (!camps.some(c => c.id === id)) camps.push(byCamp[id][0].camp); });
   const regionIds = calFilterRegion ? [calFilterRegion] : CAL_DEFAULT_REGION_IDS;
   return camps.map(camp => {
     const list = (byCamp[camp.id] || []).slice();
     if (camp.id !== 'other') {
-      const have = new Set(list.map(r => r.region.id));
-      const plats = calFilterPlatform ? [calFilterPlatform] : [...new Set(list.map(r => r.platform))];
-      if (!plats.length) plats.push('');
+      // Always display both marketplaces in each region. Missing schedules
+      // become visible placeholders, without creating or changing saved dates.
+      const plats = calFilterPlatform ? [calFilterPlatform] : ['lazada', 'shopee'];
+      const existing = new Set(list.map(r => r.region.id + '|' + r.platform.toLowerCase()));
       regionIds.forEach(rid => {
-        if (have.has(rid) || !CAL_REGION_MAP[rid]) return;
-        plats.forEach(pl => list.push({ camp, region: CAL_REGION_MAP[rid], platform: pl, teasing: null, teasingNA: false, teasingNAId: null, dday: null, deadline: null, placeholder: true }));
+        if (!CAL_REGION_MAP[rid]) return;
+        plats.forEach(pl => {
+          if (existing.has(rid + '|' + pl)) return;
+          list.push({ camp, region: CAL_REGION_MAP[rid], platform: pl, teasing: null, teasingNA: false, teasingNAId: null, dday: null, deadline: null, placeholder: true });
+        });
       });
     }
     list.sort((a, b) => a.region.id.localeCompare(b.region.id) || a.platform.localeCompare(b.platform));
