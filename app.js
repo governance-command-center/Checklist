@@ -3518,6 +3518,10 @@ async function loadChecklistV2(uid, campaignId) {
   // Preserve all readable status documents and surface a recovery warning.
   if (data.writeState === 'pending') {
     _v2Dirty.set(checklistV2Key(uid, campaignId), true);
+    // A partial save cannot be assumed complete after a refresh. Force the
+    // next save to replay every visible status rather than diffing against
+    // the partially committed snapshot that was just loaded.
+    _v2SavedSnapshots.delete(checklistV2Key(uid, campaignId));
     _v2LoadWarnings.set(checklistV2Key(uid, campaignId),
       'A previous save was interrupted. Some changes may not be present; review your checklist and save again.');
   } else {
@@ -3578,6 +3582,14 @@ async function saveChecklistV2(uid, campaignId, campaignData, expectedPrevious =
   const currentKeys = new Set(current.map(row => row.tab + ':' + row.key));
   const removed = checklistV2Flatten(expectedPrevious)
     .filter(row => !currentKeys.has(row.tab + ':' + row.key));
+  // If the prior save was interrupted, the loaded Firestore state may
+  // contain only a subset of a multi-batch write. Replaying all current
+  // statuses is safer than treating that partial state as a committed diff.
+  // This does not reconstruct changes that never reached Firestore; the UI
+  // continues to warn the member to review their checklist after a refresh.
+  if (_v2Dirty.has(checklistV2Key(uid, campaignId))) {
+    changed.splice(0, changed.length, ...current);
+  }
   const stamp = new Date().toISOString();
   const metadata = {
     entries: next.entries || [], lastActive: next.lastActive || stamp,
