@@ -225,6 +225,12 @@ async function loadMemberData(uid) {
 
   const checkSnap = await db.collection('checklists').doc(uid).get();
   userChecklist = checkSnap.exists ? checkSnap.data() : {};
+  for (const camp of Object.values(campaigns)) {
+    if (Number(camp.storageVersion) !== 2) continue;
+    const data = await loadChecklistCompatible(uid, camp.id, userChecklist, campaigns);
+    userChecklist[camp.id] = data;
+    _v2SavedSnapshots.set(checklistV2Key(uid, camp.id), checklistV2Clone(data));
+  }
 
   populateUserCampaignSelect();
   await loadChecklistOverrides();
@@ -271,13 +277,10 @@ let _dashCache = { checklists: null, taskChecks: null, taskCheckResponses: null 
 async function loadAdminDashboardCache(force) {
   if (!force && _dashCache.checklists && _dashCache.taskChecks && _dashCache.taskCheckResponses) return;
 
-  const [checkSnap, tcSnap] = await Promise.all([
-    db.collection('checklists').get(),
+  const [allChecklists, tcSnap] = await Promise.all([
+    loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members)),
     db.collection('taskChecks').get(),
   ]);
-
-  const allChecklists = {};
-  checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
 
   const taskChecks = [];
   tcSnap.forEach(doc => taskChecks.push({ id: doc.id, ...doc.data() }));
@@ -1389,7 +1392,7 @@ async function openReviewModal(uid, campId) {
   const { sections, hasD5 } = await resolveCampaignSections(camp);
 
   const checkSnap = await db.collection('checklists').doc(uid).get();
-  const cl = checkSnap.exists ? (checkSnap.data()[campId] || {}) : {};
+  const cl = await loadChecklistCompatible(uid, campId, checkSnap.exists ? checkSnap.data() : {}, { [campId]: camp });
   const d5Data = cl.d5 || {};
   const d1Data = cl.d1 || {};
   const entries = cl.entries || [{ brand: '', platform: '', region: '' }];
@@ -1545,7 +1548,12 @@ function closeDeleteClModal(e) {
 async function confirmDeleteChecklist(uid, campId) {
   const errEl = document.getElementById('delete-cl-error');
   errEl.style.display = 'none';
+  if (checklistV2Enabled(campId)) {
+    showError(errEl, 'V2 records are protected. Archive the campaign instead; deletion requires a separate reviewed cleanup procedure.');
+    return;
+  }
   try {
+    // Legacy-only removal; do not touch any V2 subcollections.
     // Load the member's full checklist doc, remove only the campaign key, then save
     const snap = await db.collection('checklists').doc(uid).get();
     if (snap.exists) {
@@ -1574,6 +1582,12 @@ function closeDeleteAllChecklistsModal(e) {
 }
 
 async function confirmDeleteAllChecklists() {
+  if ([...Object.values(campaigns), ...Object.values(archivedCampaigns)]
+      .some(c => Number(c.storageVersion) === 2)) {
+    showError(document.getElementById('delete-all-cl-error'),
+      'Bulk deletion is disabled while V2 campaigns exist. No records have been changed.');
+    return;
+  }
   const errEl = document.getElementById('delete-all-cl-error');
   errEl.style.display = 'none';
   const pwd = document.getElementById('delete-all-cl-password').value;
@@ -2049,6 +2063,7 @@ async function createCampaignWithChecklists({
     regionDeadlines:     regionDeadlines || null,
     regionMilestones:    regionMilestones || null,
     platformMilestones:  platformMilestones || null,
+    storageVersion: 2, // New campaigns only. Legacy 11.11 stays unchanged.
   });
   const campaignId = ref.id;
 
@@ -2056,20 +2071,17 @@ async function createCampaignWithChecklists({
   const withEntries = Object.entries(entries).filter(([uid, en]) => uids.includes(uid) && en && en.length);
   if (withEntries.length > 0) {
     await Promise.all(withEntries.map(async ([uid, newEntries]) => {
-      const docRef = db.collection('checklists').doc(uid);
-      const snap   = await docRef.get();
-      const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
-      const existingEntries  = existingCampData.entries || [];
-      const newOnes = newEntries.filter(en =>
-        !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
-      );
-      await docRef.set({
-        [campaignId]: {
-          ...existingCampData,
-          entries: [...existingEntries, ...newOnes],
-          lastActive: new Date().toISOString(),
-        }
-      }, { merge: true });
+      // New campaigns use V2 metadata; status documents remain independent.
+      const docRef = checklistV2CampaignRef(uid, campaignId);
+      await db.runTransaction(async tx => {
+        const snap = await tx.get(docRef);
+        const existingEntries = snap.exists ? (snap.data().entries || []) : [];
+        const newOnes = newEntries.filter(en =>
+          !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+        );
+        tx.set(docRef, { entries: [...existingEntries, ...newOnes],
+          storageVersion: 2, writeState: 'complete', lastActive: new Date().toISOString() }, { merge: true });
+      });
     }));
   }
 
@@ -2352,6 +2364,10 @@ async function saveEditCampaign() {
 
 // ─── Admin: Delete single Campaign ───────────────────────────
 async function deleteCampaign(campId, campName) {
+  if (checklistV2Enabled(campId)) {
+    showToast('This campaign uses V2 storage. Archive it instead; permanent deletion is disabled.', 'warn');
+    return;
+  }
   if (!confirm(`Delete campaign "${campName}"?\n\nThis will remove the campaign and all assigned members' checklist progress for it. This cannot be undone.`)) return;
   try {
     // Delete the campaign document
@@ -2393,9 +2409,7 @@ async function deleteCampaign(campId, campName) {
 // success so callers can decide whether to proceed with archiving.
 async function exportCampaignSummaryCSV(camp) {
   try {
-    const checkSnap     = await db.collection('checklists').get();
-    const allChecklists = {};
-    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const allChecklists = await loadChecklistCompatibilityMap([camp], camp.assignedUids || []);
     const totalItemsMap = await resolveCampaignTotalItems([camp]);
     const campInfo       = totalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null, hasD5: true };
     const hasD5           = campInfo.hasD5 !== false;
@@ -2482,6 +2496,10 @@ async function restoreCampaign(campId, campName) {
 }
 
 async function permanentlyDeleteArchivedCampaign(campId, campName) {
+  if (checklistV2Enabled(campId)) {
+    showToast('V2 campaign data is protected; permanent deletion is disabled.', 'warn');
+    return;
+  }
   if (!confirm(`Permanently delete archived campaign "${campName}"?\n\nThis removes the campaign and all assigned members' checklist progress for it for good. This cannot be undone — make sure you've kept the downloaded summary if you need it.`)) return;
   try {
     await db.collection('campaigns').doc(campId).delete();
@@ -2656,6 +2674,21 @@ async function loadUserChecklist() {
   ensureEntries();
   renderUserChecklist();
   updateUserProgress();
+  const saveState = document.getElementById('checklist-save-state');
+  if (saveState) saveState.textContent = '';
+  const warning = _v2LoadWarnings.get(checklistV2Key(currentUser.uid, selectedCampaignId));
+  if (warning) {
+    const state = document.getElementById('checklist-save-state');
+    if (state) {
+      state.style.color = '#dc2626';
+      state.textContent = warning + ' ';
+      const retry = document.createElement('button');
+      retry.textContent = 'Retry save';
+      retry.className = 'btn-ghost-light btn-sm';
+      retry.onclick = () => saveChecklist();
+      state.appendChild(retry);
+    }
+  }
 }
 
 function ensureEntries() {
@@ -2699,7 +2732,24 @@ function buildEntryLabel(entry, index) {
 function removeEntry(index) {
   ensureEntries();
   if (userChecklist[selectedCampaignId].entries.length <= 1) return;
-  userChecklist[selectedCampaignId].entries.splice(index, 1);
+  const campData = userChecklist[selectedCampaignId];
+  campData.entries.splice(index, 1);
+  // Re-map following entries to their shifted column indices. Keep the
+  // V2 historical item documents (no deletion), but ignore obsolete keys
+  // in progress calculations because only live entry indices count.
+  for (const tab of ['d1', 'd5']) {
+    const before = campData[tab] || {};
+    const after = {};
+    for (const [key, value] of Object.entries(before)) {
+      const match = key.match(/^(.*)_e(\d+)$/);
+      const originalIndex = match ? Number(match[2]) : 0;
+      if (originalIndex === index) continue;
+      const newIndex = originalIndex > index ? originalIndex - 1 : originalIndex;
+      const base = match ? match[1] : key;
+      after[newIndex ? base + '_e' + newIndex : base] = value;
+    }
+    campData[tab] = after;
+  }
   renderUserChecklist();
   updateUserProgress();
   saveChecklist();
@@ -3353,9 +3403,11 @@ function updateUserProgress() {
 
   const campData = userChecklist[selectedCampaignId] || {};
   const hasD5    = getHasD5();
-  const d5Done   = hasD5 ? countDone(campData.d5 || {}, ids) : 0;
-  const d1Done   = countDone(campData.d1 || {}, ids);
   const entries  = getEntries();
+  const d5Done   = hasD5 ? entries.reduce((sum, _entry, index) =>
+    sum + countDoneForEntryIdx(campData.d5 || {}, index, ids), 0) : 0;
+  const d1Done   = entries.reduce((sum, _entry, index) =>
+    sum + countDoneForEntryIdx(campData.d1 || {}, index, ids), 0);
   // Overall completion is based on D-Day inputs alone for every user — Done
   // and N/A are treated the same, and Teasing (when present) is informational
   // only and never factors into the overall percentage.
@@ -3413,54 +3465,261 @@ function updateUserProgress() {
   updateUserSidebarProgress();
 }
 
+// ─────────────────────────────────────────────────────────────
+// CHECKLIST STORAGE V2 — opt-in by campaign.storageVersion === 2.
+// No existing campaign is converted automatically. In particular, 11.11
+// remains on the legacy document unless explicitly migrated later.
+// Each status is its own Firestore document; legacy data is never deleted.
+// -----------------------------------------------------------------
+const CHECKLIST_V2_MAX_BATCH_WRITES = 400;
+const _v2SavedSnapshots = new Map();
+const _v2Dirty = new Map();
+const _v2LoadWarnings = new Map();
+
+function checklistV2CampaignRef(uid, campaignId) {
+  return db.collection('checklists').doc(uid).collection('campaigns').doc(campaignId);
+}
+
+function checklistV2ItemDocId(tab, key) {
+  return encodeURIComponent(tab) + '__' + encodeURIComponent(key);
+}
+
+function checklistV2Flatten(campaignData) {
+  const rows = [];
+  for (const tab of ['d1', 'd5']) {
+    for (const [key, value] of Object.entries((campaignData || {})[tab] || {})) {
+      rows.push({ tab, key, value: value || {} });
+    }
+  }
+  return rows;
+}
+
+function checklistV2Key(uid, campId) { return uid + ':' + campId; }
+function checklistV2Clone(data) { return JSON.parse(JSON.stringify(data || {})); }
+function checklistV2Enabled(campId, source) {
+  const camp = (source && source[campId]) || campaigns[campId] ||
+    (typeof tlOwnCampaigns !== 'undefined' && tlOwnCampaigns[campId]) ||
+    (typeof tlCampaigns !== 'undefined' && tlCampaigns[campId]) ||
+    archivedCampaigns[campId];
+  return Number(camp?.storageVersion) === 2;
+}
+
+async function loadChecklistV2(uid, campaignId) {
+  const ref = checklistV2CampaignRef(uid, campaignId);
+  const [meta, items] = await Promise.all([ref.get(), ref.collection('items').get()]);
+  if (!meta.exists) return null;
+  const data = { ...meta.data(), d1: {}, d5: {} };
+  items.forEach(doc => {
+    const row = doc.data();
+    if ((row.tab === 'd1' || row.tab === 'd5') && row.key && row.active !== false)
+      data[row.tab][row.key] = row.value || {};
+  });
+  // A failed multi-batch save is NOT silently presented as fully saved.
+  // Preserve all readable status documents and surface a recovery warning.
+  if (data.writeState === 'pending') {
+    _v2Dirty.set(checklistV2Key(uid, campaignId), true);
+    // A partial save cannot be assumed complete after a refresh. Force the
+    // next save to replay every visible status rather than diffing against
+    // the partially committed snapshot that was just loaded.
+    _v2SavedSnapshots.delete(checklistV2Key(uid, campaignId));
+    _v2LoadWarnings.set(checklistV2Key(uid, campaignId),
+      'A previous save was interrupted. Some changes may not be present; review your checklist and save again.');
+  } else {
+    _v2LoadWarnings.delete(checklistV2Key(uid, campaignId));
+  }
+  return data;
+}
+
+// Read either format, without copying legacy data or altering existing docs.
+async function loadChecklistCompatible(uid, campId, legacyData, source) {
+  const legacy = (legacyData || {})[campId] || {};
+  if (!checklistV2Enabled(campId, source)) return legacy;
+  const v2 = await loadChecklistV2(uid, campId);
+  if (v2) return v2;
+  // A brand-new V2 campaign can have no metadata yet; fall back to any
+  // historical legacy data rather than treating a partial migration as empty.
+  return legacy;
+}
+
+// Returns the same {uid:{campId:{entries,d1,d5}}} structure dashboards use.
+// Only requested V2 campaign/UID pairs are read, never all archived items.
+async function loadChecklistCompatibilityMap(campList, uidList) {
+  const legacySnap = await db.collection('checklists').get();
+  const map = {};
+  legacySnap.forEach(doc => { map[doc.id] = doc.data() || {}; });
+  const allowed = uidList ? new Set(uidList) : null;
+  const jobs = [];
+  const campById = Object.fromEntries((campList || []).map(c => [c.id, c]));
+  for (const camp of campList || []) {
+    if (Number(camp?.storageVersion) !== 2) continue;
+    for (const uid of camp.assignedUids || []) {
+      if (allowed && !allowed.has(uid)) continue;
+      jobs.push([uid, camp.id]);
+    }
+  }
+  // Bound concurrent Firestore reads to avoid overwhelming the client.
+  for (let i = 0; i < jobs.length; i += 12) {
+    await Promise.all(jobs.slice(i, i + 12).map(async ([uid, campId]) => {
+      if (!map[uid]) map[uid] = {};
+      map[uid][campId] = await loadChecklistCompatible(uid, campId, map[uid], campById);
+    }));
+  }
+  return map;
+}
+
+// Uses per-item upserts only: a removed UI row never deletes historical
+// Firestore records. The entries array determines which rows are displayed.
+// A write-state marker allows detection and retry after an interrupted batch.
+async function saveChecklistV2(uid, campaignId, campaignData, expectedPrevious = {}) {
+  if (!uid || !campaignId) throw new Error('Missing checklist owner or campaign');
+  const ref = checklistV2CampaignRef(uid, campaignId);
+  const next = checklistV2Clone(campaignData);
+  const previous = new Map(checklistV2Flatten(expectedPrevious)
+    .map(row => [row.tab + ':' + row.key, JSON.stringify(row.value)]));
+  const current = checklistV2Flatten(next);
+  const changed = current.filter(row =>
+    previous.get(row.tab + ':' + row.key) !== JSON.stringify(row.value));
+  const currentKeys = new Set(current.map(row => row.tab + ':' + row.key));
+  const removed = checklistV2Flatten(expectedPrevious)
+    .filter(row => !currentKeys.has(row.tab + ':' + row.key));
+  // If the prior save was interrupted, the loaded Firestore state may
+  // contain only a subset of a multi-batch write. Replaying all current
+  // statuses is safer than treating that partial state as a committed diff.
+  // This does not reconstruct changes that never reached Firestore; the UI
+  // continues to warn the member to review their checklist after a refresh.
+  if (_v2Dirty.has(checklistV2Key(uid, campaignId))) {
+    changed.splice(0, changed.length, ...current);
+  }
+  const stamp = new Date().toISOString();
+  const metadata = {
+    entries: next.entries || [], lastActive: next.lastActive || stamp,
+    startedAt: next.startedAt || null, completedAt: next.completedAt || null,
+    storageVersion: 2
+  };
+  // Mark pending first. On refresh the view warns instead of falsely
+  // claiming a partly committed multi-batch write is complete.
+  await ref.set({ ...metadata, writeState: 'pending', pendingAt: stamp }, { merge: true });
+  const operations = [
+    ...changed.map(row => ({ ...row, active: true })),
+    ...removed.map(row => ({ ...row, active: false }))
+  ];
+  for (let i = 0; i < operations.length; i += CHECKLIST_V2_MAX_BATCH_WRITES) {
+    const batch = db.batch();
+    operations.slice(i, i + CHECKLIST_V2_MAX_BATCH_WRITES).forEach(row => {
+      batch.set(ref.collection('items').doc(checklistV2ItemDocId(row.tab, row.key)),
+        { tab: row.tab, key: row.key, value: row.value, active: row.active });
+    });
+    await batch.commit();
+  }
+  await ref.set({ ...metadata, writeState: 'complete',
+    committedAt: new Date().toISOString() }, { merge: true });
+  _v2LoadWarnings.delete(checklistV2Key(uid, campaignId));
+  return next;
+}
+
+// Explicit, COPY-ONLY legacy migration for a future, intentionally opted-in
+// campaign. Do not call this automatically or use for an active 11.11 campaign.
+// The original checklists/{uid}[campId] remains completely unchanged.
+async function migrateChecklistCopyToV2(uid, campId, options = {}) {
+  if (!options.confirmCopy) throw new Error('Migration requires explicit confirmCopy.');
+  if (!checklistV2Enabled(campId)) throw new Error('Only opted-in V2 campaigns can be migrated.');
+  const legacySnap = await db.collection('checklists').doc(uid).get();
+  const legacy = legacySnap.exists ? legacySnap.data()[campId] : null;
+  if (!legacy) throw new Error('No legacy campaign records to copy.');
+  const ref = checklistV2CampaignRef(uid, campId);
+  const [existing, existingItems] = await Promise.all([ref.get(), ref.collection('items').get()]);
+  const meta = existing.exists ? existing.data() : {};
+  const resuming = meta.migrationState === 'copying' && meta.migrationSource === 'legacy';
+  if (meta.migrationState === 'complete')
+    throw new Error('Migration already completed. Original records remain preserved.');
+  if (!existingItems.empty && !resuming)
+    throw new Error('V2 status items already exist. Refusing to overwrite existing records.');
+  if ((meta.entries || []).length &&
+      JSON.stringify(meta.entries) !== JSON.stringify(legacy.entries || [])) {
+    throw new Error('V2 assignments differ from legacy. Manual reconciliation required before migration.');
+  }
+  // Copy marker persists across multi-batch failures. Retrying the same
+  // explicit migration replays source records without deleting the original.
+  if (!resuming) await ref.set({ migrationSource: 'legacy', migrationState: 'copying' }, { merge: true });
+  await saveChecklistV2(uid, campId, legacy, {});
+  const verified = await loadChecklistV2(uid, campId);
+  for (const tab of ['d1', 'd5']) {
+    const source = legacy[tab] || {};
+    const destination = verified[tab] || {};
+    for (const key of Object.keys(source)) {
+      if (JSON.stringify(source[key]) !== JSON.stringify(destination[key])) {
+        throw new Error('Migration verification failed for ' + tab + ':' + key);
+      }
+    }
+  }
+  await ref.set({ migrationState: 'complete', migratedAt: new Date().toISOString() }, { merge: true });
+  return { copied: true, legacyPreserved: true, resumed: resuming,
+    records: checklistV2Flatten(legacy).length };
+}
+
 // Serialize saves per signed-in account so older network writes cannot land
 // after newer ones. Only write the selected campaign field, never a stale
 // copy of every campaign in the member document.
-let saveTimer = null;
+const _checklistSaveTimers = new Map();
 let _checklistSaveQueue = Promise.resolve();
 let _checklistSaveGeneration = 0;
 function saveChecklist() {
-  clearTimeout(saveTimer);
   const uid = currentUser?.uid;
   const campId = selectedCampaignId;
   if (!uid || !campId) return;
+  const key = checklistV2Key(uid, campId);
+  clearTimeout(_checklistSaveTimers.get(key));
   const generation = ++_checklistSaveGeneration;
-  saveTimer = setTimeout(() => {
-    const campData = JSON.parse(JSON.stringify(userChecklist[campId] || {}));
+  // Capture campaign-specific counts BEFORE changing tabs or templates.
+  const campData = checklistV2Clone(userChecklist[campId]);
+  const validIds = getCurrentValidItemIds();
+  const total = getTotalItems() * ((campData.entries || []).length || 1);
+  const done = (campData.entries || []).reduce((sum, _entry, index) =>
+    sum + countDoneForEntryIdx(campData.d1 || {}, index, validIds), 0);
+  const timer = setTimeout(() => {
+    _checklistSaveTimers.delete(key);
     campData.lastActive = new Date().toISOString();
     if (!campData.startedAt) campData.startedAt = campData.lastActive;
-    const validIds = getCurrentValidItemIds();
-    const done = countDone(campData.d1 || {}, validIds);
-    const total = getTotalItems() * ((campData.entries || []).length || 1);
-    if (total > 0 && done >= total && !campData.completedAt) {
-      campData.completedAt = campData.lastActive;
-    }
-    const banner = document.getElementById('checklist-save-state');
-    if (banner) { banner.textContent = 'Saving…'; banner.style.color = '#64748b'; }
+    if (total > 0 && done >= total && !campData.completedAt) campData.completedAt = campData.lastActive;
+    const el = document.getElementById('checklist-save-state');
+    if (el) { el.textContent = 'Saving…'; el.style.color = '#64748b'; }
     _checklistSaveQueue = _checklistSaveQueue.catch(() => {}).then(async () => {
-      // Firestore update() changes only this campaign, avoiding overwrites
-      // of unrelated campaigns. set() with merge is used only for a missing
-      // user document.
-      const ref = db.collection('checklists').doc(uid);
-      const snap = await ref.get();
-      if (snap.exists) {
-        await ref.update(new firebase.firestore.FieldPath(campId), campData);
+      if (checklistV2Enabled(campId)) {
+        const key = checklistV2Key(uid, campId);
+        // Retain the last fully committed snapshot on failure. Retrying
+        // replays BOTH changed items and tombstones after a partial batch.
+        const previous = _v2SavedSnapshots.get(key) || {};
+        const saved = await saveChecklistV2(uid, campId, campData, previous);
+        _v2SavedSnapshots.set(key, saved);
+        _v2Dirty.delete(key);
+        if (currentUser?.uid === uid && userChecklist[campId]) {
+          // Persist start/completion dates locally without replacing changes
+          // made to checklist statuses while the network write was pending.
+          if (!userChecklist[campId].startedAt) userChecklist[campId].startedAt = saved.startedAt;
+          if (!userChecklist[campId].completedAt && saved.completedAt)
+            userChecklist[campId].completedAt = saved.completedAt;
+        }
       } else {
-        await ref.set({ [campId]: campData }, { merge: true });
+        const ref = db.collection('checklists').doc(uid);
+        const snap = await ref.get();
+        if (snap.exists) await ref.update(new firebase.firestore.FieldPath(campId), campData);
+        else await ref.set({ [campId]: campData }, { merge: true });
       }
       if (currentUser?.uid === uid && selectedCampaignId === campId && generation === _checklistSaveGeneration) {
-        const el = document.getElementById('checklist-save-state');
-        if (el) { el.textContent = 'Saved ✓'; el.style.color = '#059669'; }
+        const state = document.getElementById('checklist-save-state');
+        if (state) { state.textContent = 'Saved ✓'; state.style.color = '#059669'; }
       }
     }).catch(err => {
+      if (checklistV2Enabled(campId)) _v2Dirty.set(checklistV2Key(uid, campId), true);
       console.error('Checklist save failed', { uid, campId, error: err });
       if (currentUser?.uid === uid && selectedCampaignId === campId) {
-        const el = document.getElementById('checklist-save-state');
-        if (el) { el.textContent = 'Save failed — changes may not persist. Please do not refresh.'; el.style.color = '#dc2626'; }
+        const state = document.getElementById('checklist-save-state');
+        if (state) { state.textContent = 'Save failed — changes may not persist. Please do not refresh.'; state.style.color = '#dc2626'; }
         showToast('Checklist save failed. Please report this to your administrator.', 'warn');
       }
     });
   }, 800);
+  _checklistSaveTimers.set(key, timer);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -5732,8 +5991,7 @@ async function renderMembersTab() {
     // Fetch checklist data for TL compliance dashboard
     let allChecklists = {};
     try {
-      const checkSnap = await db.collection('checklists').get();
-      checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+      allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
     } catch(e) {}
 
     // Campaigns can use a non-default checklist template — resolve each
@@ -5973,9 +6231,7 @@ async function renderDataTab() {
   // ── Checklists list ──
   const clEl = document.getElementById('data-checklists-list');
   try {
-    const checkSnap = await db.collection('checklists').get();
-    const allChecklists = {};
-    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
 
     // Campaigns can use a non-default checklist template — resolve each
     // campaign's real total item count (see resolveCampaignTotalItems).
@@ -6557,9 +6813,7 @@ async function renderUserDashboard() {
 
   try {
     // Fetch all checklists so we can compute team-wide stats
-    const checkSnap = await db.collection('checklists').get();
-    const allChecklists = {};
-    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
 
     // Only include campaigns this user can see
     // Team leads use tlCampaigns (scoped to their team); members use global campaigns
@@ -8675,9 +8929,7 @@ async function renderReportTab() {
   const filterCamp = filterSel ? filterSel.value : '';
 
   try {
-    const checkSnap = await db.collection('checklists').get();
-    const allChecklists = {};
-    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
 
     const campList = filterCamp
       ? [campaigns[filterCamp]].filter(Boolean)
@@ -8935,10 +9187,8 @@ async function renderReportTab() {
         // Overall completion is based on D-Day inputs alone for every user.
         const overallPct = Math.round((d1Done / (campInfo.total * entryCount)) * 100);
         if (overallPct === 100 && !cl.completedAt) {
-          const updateData = {};
-          updateData[`${camp.id}.completedAt`] = cl.lastActive || new Date().toISOString();
-          if (!cl.startedAt) updateData[`${camp.id}.startedAt`] = cl.lastActive || new Date().toISOString();
-          db.collection('checklists').doc(uid).update(updateData).catch(() => {});
+          // Read-only report: completion timestamps are persisted by the
+          // member's own save, not by opening an admin report.
         }
       });
     });
@@ -9080,6 +9330,12 @@ function closeDeleteAllCampaignsModal(e) {
 }
 
 async function confirmDeleteAllCampaigns() {
+  if ([...Object.values(campaigns), ...Object.values(archivedCampaigns)]
+      .some(c => Number(c.storageVersion) === 2)) {
+    showError(document.getElementById('delete-all-camps-error'),
+      'Bulk deletion is disabled while V2 campaigns exist. No records have been changed.');
+    return;
+  }
   const errEl = document.getElementById('delete-all-camps-error');
   errEl.style.display = 'none';
   const pwd = document.getElementById('delete-all-camps-password').value;
@@ -9568,6 +9824,7 @@ async function confirmBulkAssign() {
         deadline: _campWideDeadline,
         regionDeadlines: _hasDeadlines ? regionDeadlines : null,
         platformMilestones: _hasPlatMs ? _platMs : null,
+        storageVersion: 2,
       });
       campaignId = ref.id;
     } else {
@@ -9584,17 +9841,30 @@ async function confirmBulkAssign() {
     // append new ones, skip exact duplicates of brand+platform+region,
     // and never touch their existing progress/status on current entries.
     await Promise.all(uids.map(async uid => {
-      const docRef = db.collection('checklists').doc(uid);
-      const snap = await docRef.get();
-      const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
-      const existingEntries = existingCampData.entries || [];
-      const newOnes = bulkAssignMatched[uid].filter(en =>
-        !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
-      );
-      const mergedEntries = [...existingEntries, ...newOnes];
-      await docRef.set({
-        [campaignId]: { ...existingCampData, entries: mergedEntries, lastActive: new Date().toISOString() }
-      }, { merge: true });
+      if (checklistV2Enabled(campaignId, {
+        [campaignId]: { storageVersion: isNew ? 2 : campaigns[campaignId]?.storageVersion }
+      })) {
+        const ref = checklistV2CampaignRef(uid, campaignId);
+        await db.runTransaction(async tx => {
+          const snap = await tx.get(ref);
+          const oldEntries = snap.exists ? (snap.data().entries || []) : [];
+          const added = bulkAssignMatched[uid].filter(en =>
+            !oldEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+          );
+          tx.set(ref, { entries: [...oldEntries, ...added],
+            storageVersion: 2, lastActive: new Date().toISOString() }, { merge: true });
+        });
+      } else {
+        // Existing legacy campaigns intentionally stay in their original format.
+        const ref = db.collection('checklists').doc(uid);
+        const snap = await ref.get();
+        const old = (snap.exists && snap.data()[campaignId]) || {};
+        const added = bulkAssignMatched[uid].filter(en =>
+          !(old.entries || []).some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+        );
+        await ref.set({ [campaignId]: { ...old,
+          entries: [...(old.entries || []), ...added], lastActive: new Date().toISOString() } }, { merge: true });
+      }
     }));
 
     await db.collection('broadcasts').add({
@@ -10242,7 +10512,7 @@ async function tcLoadEntriesForCampaign(campId) {
     const uniqueEntries = [];
     for (const uid of assignedUids) {
       const clDoc = await db.collection('checklists').doc(uid).get();
-      const cl = clDoc.exists ? (clDoc.data()[campId] || {}) : {};
+      const cl = await loadChecklistCompatible(uid, campId, clDoc.exists ? clDoc.data() : {}, campaigns);
       const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
       entries.forEach(e => {
         const label = buildEntryLabel(e, uniqueEntries.length);
@@ -10849,6 +11119,12 @@ async function loadTeamLeadData() {
   // Load the team lead's own checklist progress
   const checkSnap = await db.collection('checklists').doc(currentUser.uid).get();
   userChecklist = checkSnap.exists ? checkSnap.data() : {};
+  for (const camp of Object.values(tlOwnCampaigns)) {
+    if (Number(camp.storageVersion) !== 2) continue;
+    const data = await loadChecklistCompatible(currentUser.uid, camp.id, userChecklist, tlOwnCampaigns);
+    userChecklist[camp.id] = data;
+    _v2SavedSnapshots.set(checklistV2Key(currentUser.uid, camp.id), checklistV2Clone(data));
+  }
   populateTlCampaignSelect();
 
   // Populate campaign filter
@@ -10923,6 +11199,21 @@ async function loadTlChecklist() {
   ensureEntries();
   renderUserChecklist();
   updateUserProgress();
+  const saveState = document.getElementById('checklist-save-state');
+  if (saveState) saveState.textContent = '';
+  const warning = _v2LoadWarnings.get(checklistV2Key(currentUser.uid, selectedCampaignId));
+  if (warning) {
+    const state = document.getElementById('checklist-save-state');
+    if (state) {
+      state.style.color = '#dc2626';
+      state.textContent = warning + ' ';
+      const retry = document.createElement('button');
+      retry.textContent = 'Retry save';
+      retry.className = 'btn-ghost-light btn-sm';
+      retry.onclick = () => saveChecklist();
+      state.appendChild(retry);
+    }
+  }
 }
 
 // Called when the team lead opens the "My Checklist" tab — refreshes their
@@ -10996,9 +11287,17 @@ async function renderTeamLeadView() {
   await Promise.all(managedUids.map(async uid => {
     const snap = await db.collection('checklists').doc(uid).get();
     checklistData[uid] = snap.exists ? snap.data() : {};
+    for (const camp of Object.values(tlCampaigns)) {
+      if (Number(camp.storageVersion) === 2 && (camp.assignedUids || []).includes(uid))
+        checklistData[uid][camp.id] = await loadChecklistCompatible(uid, camp.id, checklistData[uid], tlCampaigns);
+    }
   }));
   const ownClSnap = await db.collection('checklists').doc(currentUser.uid).get();
   checklistData[currentUser.uid] = ownClSnap.exists ? ownClSnap.data() : {};
+  for (const camp of Object.values(tlOwnCampaigns)) {
+    if (Number(camp.storageVersion) === 2)
+      checklistData[currentUser.uid][camp.id] = await loadChecklistCompatible(currentUser.uid, camp.id, checklistData[currentUser.uid], tlOwnCampaigns);
+  }
   const teamUids = [...managedUids, currentUser.uid];
 
   // Campaigns can use a non-default checklist template — resolve each
