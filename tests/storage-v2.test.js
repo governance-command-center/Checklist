@@ -224,3 +224,20 @@ test('interrupted copy-only migration can be resumed from unchanged legacy sourc
   assert.equal(f.documents.get('checklists/uid/campaigns/oldCamp').migrationState, 'complete');
   assert.deepEqual(f.documents.get('checklists/uid'), legacy);
 });
+
+test('interrupted save after reload replays every visible status rather than a partial diff', async () => {
+  const f = fixture();
+  const data = highVolumeChecklist();
+  f.state.failBatch = 2;
+  await assert.rejects(f.api.saveChecklistV2('uid', 'future', data, {}), /Simulated/);
+  const partial = await f.api.loadChecklistV2('uid', 'future');
+  assert.equal(partial.writeState, 'pending');
+  const visibleCount = Object.keys(partial.d1).length;
+  assert.ok(visibleCount > 0 && visibleCount < 825);
+  f.state.failBatch = null;
+  const writesBefore = f.state.writes;
+  await f.api.saveChecklistV2('uid', 'future', partial, partial);
+  assert.ok(f.state.writes - writesBefore >= visibleCount + 2,
+    'retry must replay all visible statuses even when previous snapshot matches');
+  assert.equal((await f.api.loadChecklistV2('uid', 'future')).writeState, 'complete');
+});
