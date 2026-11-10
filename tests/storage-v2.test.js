@@ -165,7 +165,7 @@ test('copy-only migration verifies status data, refuses repeat migration, preser
   assert.equal(result.legacyPreserved, true);
   assert.equal((await f.api.loadChecklistV2('uid', 'oldCamp')).d1.item0.status, 'done');
   assert.deepEqual(f.documents.get('checklists/uid'), legacy);
-  await assert.rejects(f.api.migrateChecklistCopyToV2('uid', 'oldCamp', { confirmCopy: true }), /already exist/);
+  await assert.rejects(f.api.migrateChecklistCopyToV2('uid', 'oldCamp', { confirmCopy: true }), /already completed/);
 });
 
 test('member saves use per-campaign V2 and survive an immediate campaign switch', async () => {
@@ -206,4 +206,21 @@ test('team lead own checklist routes through V2 despite an empty member campaign
   await vm.runInContext('_checklistSaveQueue', f.context);
   assert.equal((await f.api.loadChecklistV2('lead', 'leadCamp')).d1.item0.status, 'done');
   assert.equal(f.documents.has('checklists/lead'), false);
+});
+
+test('interrupted copy-only migration can be resumed from unchanged legacy source', async () => {
+  const f = fixture();
+  const legacy = { oldCamp: highVolumeChecklist() };
+  f.documents.set('checklists/uid', f.clone(legacy));
+  f.setContext({ oldCamp: { id: 'oldCamp', storageVersion: 2, assignedUids: ['uid'] } },
+    { uid: { uid: 'uid' } });
+  f.state.failBatch = 2;
+  await assert.rejects(f.api.migrateChecklistCopyToV2('uid', 'oldCamp', { confirmCopy: true }), /Simulated/);
+  assert.equal(f.documents.get('checklists/uid/campaigns/oldCamp').migrationState, 'copying');
+  f.state.failBatch = null;
+  const result = await f.api.migrateChecklistCopyToV2('uid', 'oldCamp', { confirmCopy: true });
+  assert.equal(result.resumed, true);
+  assert.equal(Object.keys((await f.api.loadChecklistV2('uid', 'oldCamp')).d1).length, 825);
+  assert.equal(f.documents.get('checklists/uid/campaigns/oldCamp').migrationState, 'complete');
+  assert.deepEqual(f.documents.get('checklists/uid'), legacy);
 });
