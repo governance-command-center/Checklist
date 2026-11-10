@@ -3365,6 +3365,15 @@ function updateUserProgress() {
   const d5Pct    = hasD5 && (ti * entries.length) > 0 ? Math.round((d5Done / (ti * entries.length)) * 100) : 0;
   const d1Pct    = (ti * entries.length) > 0 ? Math.round((d1Done / (ti * entries.length)) * 100) : 0;
 
+  // Persistent save feedback next to the checklist progress banner.
+  const progressWrap = document.getElementById(`${uiPrefix}-progress-banner`);
+  if (progressWrap && !document.getElementById('checklist-save-state')) {
+    const saveState = document.createElement('div');
+    saveState.id = 'checklist-save-state';
+    saveState.style.cssText = 'font-size:12px;font-weight:600;margin:5px 0;';
+    progressWrap.insertAdjacentElement('afterend', saveState);
+  }
+
   // Inline progress banner above checklist
   const banner = document.getElementById(`${uiPrefix}-progress-banner`);
   if (banner) {
@@ -3404,33 +3413,53 @@ function updateUserProgress() {
   updateUserSidebarProgress();
 }
 
+// Serialize saves per signed-in account so older network writes cannot land
+// after newer ones. Only write the selected campaign field, never a stale
+// copy of every campaign in the member document.
 let saveTimer = null;
+let _checklistSaveQueue = Promise.resolve();
+let _checklistSaveGeneration = 0;
 function saveChecklist() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    if (!currentUser || !selectedCampaignId) return;
-    const saveData = { ...userChecklist };
-    if (!saveData[selectedCampaignId]) saveData[selectedCampaignId] = {};
-    saveData[selectedCampaignId].lastActive = new Date().toISOString();
-
-    // Record startedAt on the very first save for this campaign
-    if (!saveData[selectedCampaignId].startedAt) {
-      saveData[selectedCampaignId].startedAt = new Date().toISOString();
+  const uid = currentUser?.uid;
+  const campId = selectedCampaignId;
+  if (!uid || !campId) return;
+  const generation = ++_checklistSaveGeneration;
+  saveTimer = setTimeout(() => {
+    const campData = JSON.parse(JSON.stringify(userChecklist[campId] || {}));
+    campData.lastActive = new Date().toISOString();
+    if (!campData.startedAt) campData.startedAt = campData.lastActive;
+    const validIds = getCurrentValidItemIds();
+    const done = countDone(campData.d1 || {}, validIds);
+    const total = getTotalItems() * ((campData.entries || []).length || 1);
+    if (total > 0 && done >= total && !campData.completedAt) {
+      campData.completedAt = campData.lastActive;
     }
-
-    // Record completedAt if just hit 100% (based on D-Day inputs alone —
-    // Done and N/A are treated the same, for every user).
-    const campData   = saveData[selectedCampaignId];
-    const validIds   = getCurrentValidItemIds();
-    const d1Done     = countDone(campData.d1 || {}, validIds);
-    const entries    = (campData.entries || [{ brand:'',platform:'',region:'' }]);
-    const totalItems = getTotalItems() * entries.length;
-    const isNowComplete = totalItems > 0 && d1Done >= totalItems;
-    if (isNowComplete && !campData.completedAt) {
-      saveData[selectedCampaignId].completedAt = new Date().toISOString();
-    }
-
-    await db.collection('checklists').doc(currentUser.uid).set(saveData, { merge: true });
+    const banner = document.getElementById('checklist-save-state');
+    if (banner) { banner.textContent = 'Saving…'; banner.style.color = '#64748b'; }
+    _checklistSaveQueue = _checklistSaveQueue.catch(() => {}).then(async () => {
+      // Firestore update() changes only this campaign, avoiding overwrites
+      // of unrelated campaigns. set() with merge is used only for a missing
+      // user document.
+      const ref = db.collection('checklists').doc(uid);
+      const snap = await ref.get();
+      if (snap.exists) {
+        await ref.update(new firebase.firestore.FieldPath(campId), campData);
+      } else {
+        await ref.set({ [campId]: campData }, { merge: true });
+      }
+      if (currentUser?.uid === uid && selectedCampaignId === campId && generation === _checklistSaveGeneration) {
+        const el = document.getElementById('checklist-save-state');
+        if (el) { el.textContent = 'Saved ✓'; el.style.color = '#059669'; }
+      }
+    }).catch(err => {
+      console.error('Checklist save failed', { uid, campId, error: err });
+      if (currentUser?.uid === uid && selectedCampaignId === campId) {
+        const el = document.getElementById('checklist-save-state');
+        if (el) { el.textContent = 'Save failed — changes may not persist. Please do not refresh.'; el.style.color = '#dc2626'; }
+        showToast('Checklist save failed. Please report this to your administrator.', 'warn');
+      }
+    });
   }, 800);
 }
 
