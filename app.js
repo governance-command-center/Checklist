@@ -4322,8 +4322,7 @@ function _calScheduleRows(entries, year, month, phase) {
   entries.forEach(e => {
     if (e._type === 'personal' || !e.date) return;
     const d = String(e.date).slice(0, 10);
-    const scopeMonth = e.scheduleMonth || String(e.date).slice(0, 7);
-    if (scopeMonth !== ms.slice(0, 7)) return;
+    if (d < ms || d > me) return;
     const camp = _calCampaignType(e);
     if (camp.id === 'other' || (want && _canonicalPhase(camp.id) !== want)) return;
     const r = _calRegionOf(e); if (!r) return;
@@ -4405,22 +4404,18 @@ function _calCampaignTimelineGroups(rows) {
   const byCamp = {};
   rows.forEach(r => (byCamp[r.camp.id] ||= []).push(r));
   const camps = CAL_CAMPAIGN_TYPES.filter(c => c.id !== 'other' && (!calFilterCampaign || calFilterCampaign === c.id));
-  // Keep non-default campaign types that actually have schedules.
+  // keep any non-default campaign type that actually has rows (e.g. 'other')
   Object.keys(byCamp).forEach(id => { if (!camps.some(c => c.id === id)) camps.push(byCamp[id][0].camp); });
   const regionIds = calFilterRegion ? [calFilterRegion] : CAL_DEFAULT_REGION_IDS;
   return camps.map(camp => {
     const list = (byCamp[camp.id] || []).slice();
     if (camp.id !== 'other') {
-      // Always display both marketplaces in each region. Missing schedules
-      // become visible placeholders, without creating or changing saved dates.
-      const plats = calFilterPlatform ? [calFilterPlatform] : ['lazada', 'shopee'];
-      const existing = new Set(list.map(r => r.region.id + '|' + r.platform.toLowerCase()));
+      const have = new Set(list.map(r => r.region.id));
+      const plats = calFilterPlatform ? [calFilterPlatform] : [...new Set(list.map(r => r.platform))];
+      if (!plats.length) plats.push('');
       regionIds.forEach(rid => {
-        if (!CAL_REGION_MAP[rid]) return;
-        plats.forEach(pl => {
-          if (existing.has(rid + '|' + pl)) return;
-          list.push({ camp, region: CAL_REGION_MAP[rid], platform: pl, teasing: null, teasingNA: false, teasingNAId: null, dday: null, deadline: null, placeholder: true });
-        });
+        if (have.has(rid) || !CAL_REGION_MAP[rid]) return;
+        plats.forEach(pl => list.push({ camp, region: CAL_REGION_MAP[rid], platform: pl, teasing: null, teasingNA: false, teasingNAId: null, dday: null, deadline: null, placeholder: true }));
       });
     }
     list.sort((a, b) => a.region.id.localeCompare(b.region.id) || a.platform.localeCompare(b.platform));
@@ -4607,12 +4602,12 @@ function _calUpsertScheduleRows(rows, phase, year, month) {
       if (e.type === 'teasing_na' && (_calRegionOf(e) || {}).id === r.region
         && ((_calPlatformOf(e) || {}).id || '') === r.platform
         && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase)
-        && (e.scheduleMonth || String(e.date || '').slice(0, 7)) === monthStr) naMatches.push(i);
+        && String(e.date || '').slice(0, 7) === monthStr) naMatches.push(i);
     });
     const hadNA = naMatches.length > 0;
     if (r.teasingNA && !hadNA) {
       calendarEntries.push({ id: `ce_${Date.now()}_na_${n++}`, title: _calBuildTitle(phase, r.region, r.platform, 'teasing') + ' · N/A',
-        date: `${monthStr}-01`, endDate: `${monthStr}-01`, scheduleMonth: monthStr, type: 'teasing_na', region: r.region, platform: r.platform,
+        date: `${monthStr}-01`, endDate: `${monthStr}-01`, type: 'teasing_na', region: r.region, platform: r.platform,
         campaignType: phase, startTime: null, endTime: null, color, description: 'Teasing not applicable', recurrence: null,
         assignedUids: [], campaignId: null, createdBy: currentUser?.uid || '', updatedAt: new Date().toISOString() });
       changed++;
@@ -4628,7 +4623,7 @@ function _calUpsertScheduleRows(rows, phase, year, month) {
         if (e.type === 'teasing' && (_calRegionOf(e) || {}).id === r.region
           && ((_calPlatformOf(e) || {}).id || '') === r.platform
           && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase)
-          && (e.scheduleMonth || String(e.date || '').slice(0, 7)) === monthStr) { calendarEntries.splice(i,1); changed++; }
+          && String(e.date || '').slice(0, 7) === monthStr) { calendarEntries.splice(i,1); changed++; }
       }
     }
     ['teasing', 'dday', 'deadline'].forEach(ms => {
@@ -4647,13 +4642,13 @@ function _calUpsertScheduleRows(rows, phase, year, month) {
         calendarEntries.forEach((e, i) => {
           if (e.type === ms && !(e.recurrence && e.recurrence.freq)
             && (_calRegionOf(e) || {}).id === r.region && ((_calPlatformOf(e) || {}).id || '') === r.platform
-            && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase) && (e.scheduleMonth || String(e.date).slice(0, 7)) === monthStr) cands.push(i);
+            && _canonicalPhase(_calCampaignType(e).id) === _canonicalPhase(phase) && String(e.date).slice(0, 7) === monthStr) cands.push(i);
         });
         cands.sort((a, b) => `${calendarEntries[a].date}T${calendarEntries[a].startTime || ''}`.localeCompare(`${calendarEntries[b].date}T${calendarEntries[b].startTime || ''}`));
         if (cands.length) idx = cands[0];
       }
       const data = { title: _calBuildTitle(phase, r.region, r.platform, ms), date, type: ms, region: r.region, platform: r.platform,
-        campaignType: phase, scheduleMonth: monthStr, startTime: time || null, color, updatedAt: new Date().toISOString() };
+        campaignType: phase, startTime: time || null, color, updatedAt: new Date().toISOString() };
       if (idx >= 0) {
         const old = calendarEntries[idx];
         // Keep the event's span and end time: the grid only edits the start, and
