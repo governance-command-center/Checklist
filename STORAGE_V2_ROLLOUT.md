@@ -8,7 +8,7 @@ Status: **Development-only** on `feature/checklist-storage-v2`. Draft PR #2; no 
 - V2 checklist metadata lives at `checklists/{uid}/campaigns/{campaignId}`; statuses live at `.../items/{encodedTab}__{encodedKey}`.
 - A removed UI entry leaves historical status documents in place with `active: false`. Compatibility readers ignore inactive items.
 - Admin, Manager, member, and Team Lead progress/dashboard reads use compatible legacy/V2 data, and archived summaries can read V2. Existing campaign record deletion is blocked for V2 campaigns.
-- The copy migration helper `migrateChecklistCopyToV2(uid, campaignId, { confirmCopy: true })` is deliberately NOT invoked automatically. It never deletes the legacy parent. It requires an explicitly V2-opted campaign and refuses to overwrite existing V2 status records.
+- The copy migration helper `migrateChecklistCopyToV2(uid, campaignId, { confirmCopy: true })` is deliberately NOT invoked automatically. It never deletes the legacy parent. It requires an explicitly V2-opted campaign and refuses to overwrite existing V2 status records, except for resuming its own marked `migrationState: copying` attempt from the unchanged legacy source.
 
 ## Tests completed
 Run `node --check app.js` and `node --test tests/storage-v2.test.js`.
@@ -22,7 +22,7 @@ Use a **new test campaign** and a dedicated high-volume test account. Do not reu
 3. Hard refresh, log out/in, and switch campaigns while saves are pending. Reopen the same rows and confirm statuses, notes, and progress are unchanged.
 4. Compare member Checklist, member Overview, Team Lead own checklist, Team Lead dashboard, Admin/Manager dashboard, review modal, Reports, Data tab, RSP/Kit progress and archived CSV for the same campaign. Validate all percentages and entry allocations.
 5. Simulate a failed multi-batch save in an isolated test project. Verify a `writeState: pending` warning appears and failed saves never show as Saved. **Important:** the current recovery mechanism retries the full diff from the last successful in-session snapshot. After a refresh, review the partially saved data and reconcile it before retrying; the client does not yet provide a durable operation journal to reconstruct every missing batch.
-6. Verify copy-only migration on a disposable legacy test campaign explicitly opted into V2. Compare all records before/after. Check that the original parent remains identical and that a second migration attempt is rejected.
+6. Verify copy-only migration on a disposable legacy test campaign explicitly opted into V2. Compare all records before/after. Check that the original parent remains identical and that a second completed migration attempt is rejected. Interrupt the copy on a disposable test account and verify an explicit retry resumes `migrationState: copying` without touching the source.
 7. Verify archive/restore is safe; all destructive legacy admin operations must remain blocked for V2 records until a separate, reviewed cleanup design exists.
 8. Confirm GitHub Pages deployment settings point to the intended production branch. Do not merge or publish the PR during 11.11.
 
