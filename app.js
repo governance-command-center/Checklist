@@ -2674,6 +2674,8 @@ async function loadUserChecklist() {
   ensureEntries();
   renderUserChecklist();
   updateUserProgress();
+  const saveState = document.getElementById('checklist-save-state');
+  if (saveState) saveState.textContent = '';
   const warning = _v2LoadWarnings.get(checklistV2Key(currentUser.uid, selectedCampaignId));
   if (warning) {
     const state = document.getElementById('checklist-save-state');
@@ -3543,6 +3545,7 @@ async function loadChecklistCompatibilityMap(campList, uidList) {
   legacySnap.forEach(doc => { map[doc.id] = doc.data() || {}; });
   const allowed = uidList ? new Set(uidList) : null;
   const jobs = [];
+  const campById = Object.fromEntries((campList || []).map(c => [c.id, c]));
   for (const camp of campList || []) {
     if (Number(camp?.storageVersion) !== 2) continue;
     for (const uid of camp.assignedUids || []) {
@@ -3554,8 +3557,7 @@ async function loadChecklistCompatibilityMap(campList, uidList) {
   for (let i = 0; i < jobs.length; i += 12) {
     await Promise.all(jobs.slice(i, i + 12).map(async ([uid, campId]) => {
       if (!map[uid]) map[uid] = {};
-      map[uid][campId] = await loadChecklistCompatible(uid, campId, map[uid], 
-        Object.fromEntries((campList || []).map(c => [c.id, c])));
+      map[uid][campId] = await loadChecklistCompatible(uid, campId, map[uid], campById);
     }));
   }
   return map;
@@ -3668,6 +3670,13 @@ function saveChecklist() {
         const saved = await saveChecklistV2(uid, campId, campData, previous);
         _v2SavedSnapshots.set(key, saved);
         _v2Dirty.delete(key);
+        if (currentUser?.uid === uid && userChecklist[campId]) {
+          // Persist start/completion dates locally without replacing changes
+          // made to checklist statuses while the network write was pending.
+          if (!userChecklist[campId].startedAt) userChecklist[campId].startedAt = saved.startedAt;
+          if (!userChecklist[campId].completedAt && saved.completedAt)
+            userChecklist[campId].completedAt = saved.completedAt;
+        }
       } else {
         const ref = db.collection('checklists').doc(uid);
         const snap = await ref.get();
@@ -11168,6 +11177,8 @@ async function loadTlChecklist() {
   ensureEntries();
   renderUserChecklist();
   updateUserProgress();
+  const saveState = document.getElementById('checklist-save-state');
+  if (saveState) saveState.textContent = '';
   const warning = _v2LoadWarnings.get(checklistV2Key(currentUser.uid, selectedCampaignId));
   if (warning) {
     const state = document.getElementById('checklist-save-state');
