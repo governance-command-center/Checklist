@@ -6880,7 +6880,9 @@ async function renderUserDashboard() {
 
   try {
     // Fetch all checklists so we can compute team-wide stats
-    const allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
+    const dashboardCampaigns = isTl ? Object.values(tlCampaigns || {}) : Object.values(campaigns);
+    const dashboardUids = isTl ? (currentUser.managedUids || []) : [currentUser.uid];
+    const allChecklists = await loadChecklistCompatibilityMap(dashboardCampaigns, dashboardUids);
 
     // Only include campaigns this user can see
     // Team leads use tlCampaigns (scoped to their team); members use global campaigns
