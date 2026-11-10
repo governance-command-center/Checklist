@@ -3339,7 +3339,7 @@ function openAfterPartyModal(itemId, tab, entryIndex, selectEl) {
   const entries = getEntries();
   const entry   = entries[entryIndex] || {};
   document.getElementById('ap-start').value = entry.afterPartyStart || '';
-  document.getElementById('ap-end').value   = entry.afterPartyEnd   || '';
+  document.getElementById('ap-end').value   = entry.afterPartyEnd && entry.afterPartyEnd.includes('T') ? entry.afterPartyEnd : (entry.afterPartyEnd ? entry.afterPartyEnd + 'T23:59' : '');
   const errEl = document.getElementById('ap-modal-error');
   if (errEl) errEl.style.display = 'none';
 
@@ -3372,7 +3372,7 @@ function confirmAfterPartyDates() {
     if (errEl) { errEl.textContent = 'Please enter both a start and end date.'; errEl.style.display = 'block'; }
     return;
   }
-  if (new Date(endVal) < new Date(startVal)) {
+  if (endVal.slice(0, 10) < startVal) {
     if (errEl) { errEl.textContent = 'End date can\'t be before the start date.'; errEl.style.display = 'block'; }
     return;
   }
@@ -3400,7 +3400,7 @@ function confirmAfterPartyDates() {
   // Surface the dates in the Notes column, right beside the Yes/No answer,
   // same row, same entry.
   const fmtApDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-GB') : '';
-  const noteText = `After Party: ${fmtApDate(startVal)} – ${fmtApDate(endVal)}`;
+  const noteText = `After Party: ${fmtApDate(startVal)} – ${endVal.replace('T', ' ')} (market local)`;
   handleNoteChange(itemId, 'd1', entryIndex, noteText);
   const noteInput = document.getElementById(`note-${itemId}-${entryIndex}`);
   if (noteInput) noteInput.value = noteText;
@@ -3907,6 +3907,15 @@ function _deadlineKey(region, platformId) {
 // region+platform > region-wide > admin override > campaign-wide fallback.
 // D-Day has no after-party equivalent, so it falls back straight from the
 // per-region milestone to the campaign-wide D-Day.
+function _addLocalHours(iso, hours) {
+  // Arithmetic on a UTC placeholder preserves the market's wall-clock value,
+  // rather than applying the viewer's browser timezone.
+  const dt = new Date(iso.slice(0, 16) + ':00Z');
+  if (Number.isNaN(dt.getTime())) return null;
+  dt.setUTCHours(dt.getUTCHours() + hours);
+  return dt.toISOString().slice(0, 16);
+}
+
 function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
   if (!camp) return { dday: null, deadline: null, isAfterPartyDeadline: false };
   const region   = String(entryRegion || '').toUpperCase();
@@ -3915,7 +3924,9 @@ function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
   const rd = camp.regionDeadlines   || {};
   const ov = camp.deadlineOverrides || {};
   const comboKey = _deadlineKey(region, platform);
-  const afterPartyDeadline = (entry && entry.afterPartyEnd) || null;
+  const afterPartyEnd = (entry && entry.afterPartyEnd) || null;
+  // Legacy date-only values are interpreted as the end of that market day.
+  const afterPartyDeadline = afterPartyEnd ? _addLocalHours(afterPartyEnd.includes('T') ? afterPartyEnd : afterPartyEnd + 'T23:59', 2) : null;
 
   const deadline =
     afterPartyDeadline
@@ -3932,7 +3943,7 @@ function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
     || camp.dday
     || null;
 
-  return { dday, deadline, isAfterPartyDeadline: !!afterPartyDeadline };
+  return { dday, deadline, campaignEnd: afterPartyEnd || null, isAfterPartyDeadline: !!afterPartyDeadline };
 }
 
 // Resolve an entry's platform: explicit field wins, else infer from the
