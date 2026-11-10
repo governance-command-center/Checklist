@@ -277,15 +277,10 @@ let _dashCache = { checklists: null, taskChecks: null, taskCheckResponses: null 
 async function loadAdminDashboardCache(force) {
   if (!force && _dashCache.checklists && _dashCache.taskChecks && _dashCache.taskCheckResponses) return;
 
-  const [checkSnap, tcSnap] = await Promise.all([
-    db.collection('checklists').get(),
+  const [allChecklists, tcSnap] = await Promise.all([
+    loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members)),
     db.collection('taskChecks').get(),
   ]);
-
-  const allChecklists = {};
-  checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
-  const compat = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
-  Object.entries(compat).forEach(([uid, data]) => { allChecklists[uid] = data; });
 
   const taskChecks = [];
   tcSnap.forEach(doc => taskChecks.push({ id: doc.id, ...doc.data() }));
@@ -2057,6 +2052,7 @@ async function createCampaignWithChecklists({
     regionDeadlines:     regionDeadlines || null,
     regionMilestones:    regionMilestones || null,
     platformMilestones:  platformMilestones || null,
+    storageVersion: 2, // New campaigns only. Legacy 11.11 stays unchanged.
   });
   const campaignId = ref.id;
 
@@ -2064,20 +2060,17 @@ async function createCampaignWithChecklists({
   const withEntries = Object.entries(entries).filter(([uid, en]) => uids.includes(uid) && en && en.length);
   if (withEntries.length > 0) {
     await Promise.all(withEntries.map(async ([uid, newEntries]) => {
-      const docRef = db.collection('checklists').doc(uid);
-      const snap   = await docRef.get();
-      const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
-      const existingEntries  = existingCampData.entries || [];
-      const newOnes = newEntries.filter(en =>
-        !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
-      );
-      await docRef.set({
-        [campaignId]: {
-          ...existingCampData,
-          entries: [...existingEntries, ...newOnes],
-          lastActive: new Date().toISOString(),
-        }
-      }, { merge: true });
+      // New campaigns use V2 metadata; status documents remain independent.
+      const docRef = checklistV2CampaignRef(uid, campaignId);
+      await db.runTransaction(async tx => {
+        const snap = await tx.get(docRef);
+        const existingEntries = snap.exists ? (snap.data().entries || []) : [];
+        const newOnes = newEntries.filter(en =>
+          !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+        );
+        tx.set(docRef, { entries: [...existingEntries, ...newOnes],
+          storageVersion: 2, writeState: 'complete', lastActive: new Date().toISOString() }, { merge: true });
+      });
     }));
   }
 
@@ -2401,9 +2394,7 @@ async function deleteCampaign(campId, campName) {
 // success so callers can decide whether to proceed with archiving.
 async function exportCampaignSummaryCSV(camp) {
   try {
-    const checkSnap     = await db.collection('checklists').get();
-    const allChecklists = {};
-    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const allChecklists = await loadChecklistCompatibilityMap([camp], camp.assignedUids || []);
     const totalItemsMap = await resolveCampaignTotalItems([camp]);
     const campInfo       = totalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null, hasD5: true };
     const hasD5           = campInfo.hasD5 !== false;
@@ -5904,8 +5895,7 @@ async function renderMembersTab() {
     // Fetch checklist data for TL compliance dashboard
     let allChecklists = {};
     try {
-      const checkSnap = await db.collection('checklists').get();
-      checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+      allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
     } catch(e) {}
 
     // Campaigns can use a non-default checklist template — resolve each
@@ -6145,9 +6135,7 @@ async function renderDataTab() {
   // ── Checklists list ──
   const clEl = document.getElementById('data-checklists-list');
   try {
-    const checkSnap = await db.collection('checklists').get();
-    const allChecklists = {};
-    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
 
     // Campaigns can use a non-default checklist template — resolve each
     // campaign's real total item count (see resolveCampaignTotalItems).
@@ -6729,9 +6717,7 @@ async function renderUserDashboard() {
 
   try {
     // Fetch all checklists so we can compute team-wide stats
-    const checkSnap = await db.collection('checklists').get();
-    const allChecklists = {};
-    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
 
     // Only include campaigns this user can see
     // Team leads use tlCampaigns (scoped to their team); members use global campaigns
@@ -8847,9 +8833,7 @@ async function renderReportTab() {
   const filterCamp = filterSel ? filterSel.value : '';
 
   try {
-    const checkSnap = await db.collection('checklists').get();
-    const allChecklists = {};
-    checkSnap.forEach(doc => { allChecklists[doc.id] = doc.data(); });
+    const allChecklists = await loadChecklistCompatibilityMap(Object.values(campaigns), Object.keys(members));
 
     const campList = filterCamp
       ? [campaigns[filterCamp]].filter(Boolean)
@@ -9107,10 +9091,8 @@ async function renderReportTab() {
         // Overall completion is based on D-Day inputs alone for every user.
         const overallPct = Math.round((d1Done / (campInfo.total * entryCount)) * 100);
         if (overallPct === 100 && !cl.completedAt) {
-          const updateData = {};
-          updateData[`${camp.id}.completedAt`] = cl.lastActive || new Date().toISOString();
-          if (!cl.startedAt) updateData[`${camp.id}.startedAt`] = cl.lastActive || new Date().toISOString();
-          db.collection('checklists').doc(uid).update(updateData).catch(() => {});
+          // Read-only report: completion timestamps are persisted by the
+          // member's own save, not by opening an admin report.
         }
       });
     });
@@ -9740,6 +9722,7 @@ async function confirmBulkAssign() {
         deadline: _campWideDeadline,
         regionDeadlines: _hasDeadlines ? regionDeadlines : null,
         platformMilestones: _hasPlatMs ? _platMs : null,
+        storageVersion: 2,
       });
       campaignId = ref.id;
     } else {
@@ -9756,17 +9739,30 @@ async function confirmBulkAssign() {
     // append new ones, skip exact duplicates of brand+platform+region,
     // and never touch their existing progress/status on current entries.
     await Promise.all(uids.map(async uid => {
-      const docRef = db.collection('checklists').doc(uid);
-      const snap = await docRef.get();
-      const existingCampData = (snap.exists && snap.data()[campaignId]) || {};
-      const existingEntries = existingCampData.entries || [];
-      const newOnes = bulkAssignMatched[uid].filter(en =>
-        !existingEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
-      );
-      const mergedEntries = [...existingEntries, ...newOnes];
-      await docRef.set({
-        [campaignId]: { ...existingCampData, entries: mergedEntries, lastActive: new Date().toISOString() }
-      }, { merge: true });
+      if (checklistV2Enabled(campaignId, {
+        [campaignId]: { storageVersion: isNew ? 2 : campaigns[campaignId]?.storageVersion }
+      })) {
+        const ref = checklistV2CampaignRef(uid, campaignId);
+        await db.runTransaction(async tx => {
+          const snap = await tx.get(ref);
+          const oldEntries = snap.exists ? (snap.data().entries || []) : [];
+          const added = bulkAssignMatched[uid].filter(en =>
+            !oldEntries.some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+          );
+          tx.set(ref, { entries: [...oldEntries, ...added],
+            storageVersion: 2, lastActive: new Date().toISOString() }, { merge: true });
+        });
+      } else {
+        // Existing legacy campaigns intentionally stay in their original format.
+        const ref = db.collection('checklists').doc(uid);
+        const snap = await ref.get();
+        const old = (snap.exists && snap.data()[campaignId]) || {};
+        const added = bulkAssignMatched[uid].filter(en =>
+          !(old.entries || []).some(ex => ex.brand === en.brand && ex.platform === en.platform && ex.region === en.region)
+        );
+        await ref.set({ [campaignId]: { ...old,
+          entries: [...(old.entries || []), ...added], lastActive: new Date().toISOString() } }, { merge: true });
+      }
     }));
 
     await db.collection('broadcasts').add({
