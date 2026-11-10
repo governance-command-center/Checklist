@@ -1548,7 +1548,12 @@ function closeDeleteClModal(e) {
 async function confirmDeleteChecklist(uid, campId) {
   const errEl = document.getElementById('delete-cl-error');
   errEl.style.display = 'none';
+  if (checklistV2Enabled(campId)) {
+    showError(errEl, 'V2 records are protected. Archive the campaign instead; deletion requires a separate reviewed cleanup procedure.');
+    return;
+  }
   try {
+    // Legacy-only removal; do not touch any V2 subcollections.
     // Load the member's full checklist doc, remove only the campaign key, then save
     const snap = await db.collection('checklists').doc(uid).get();
     if (snap.exists) {
@@ -1577,6 +1582,12 @@ function closeDeleteAllChecklistsModal(e) {
 }
 
 async function confirmDeleteAllChecklists() {
+  if ([...Object.values(campaigns), ...Object.values(archivedCampaigns)]
+      .some(c => Number(c.storageVersion) === 2)) {
+    showError(document.getElementById('delete-all-cl-error'),
+      'Bulk deletion is disabled while V2 campaigns exist. No records have been changed.');
+    return;
+  }
   const errEl = document.getElementById('delete-all-cl-error');
   errEl.style.display = 'none';
   const pwd = document.getElementById('delete-all-cl-password').value;
@@ -2353,6 +2364,10 @@ async function saveEditCampaign() {
 
 // ─── Admin: Delete single Campaign ───────────────────────────
 async function deleteCampaign(campId, campName) {
+  if (checklistV2Enabled(campId)) {
+    showToast('This campaign uses V2 storage. Archive it instead; permanent deletion is disabled.', 'warn');
+    return;
+  }
   if (!confirm(`Delete campaign "${campName}"?\n\nThis will remove the campaign and all assigned members' checklist progress for it. This cannot be undone.`)) return;
   try {
     // Delete the campaign document
@@ -2481,6 +2496,10 @@ async function restoreCampaign(campId, campName) {
 }
 
 async function permanentlyDeleteArchivedCampaign(campId, campName) {
+  if (checklistV2Enabled(campId)) {
+    showToast('V2 campaign data is protected; permanent deletion is disabled.', 'warn');
+    return;
+  }
   if (!confirm(`Permanently delete archived campaign "${campName}"?\n\nThis removes the campaign and all assigned members' checklist progress for it for good. This cannot be undone — make sure you've kept the downloaded summary if you need it.`)) return;
   try {
     await db.collection('campaigns').doc(campId).delete();
@@ -2658,7 +2677,15 @@ async function loadUserChecklist() {
   const warning = _v2LoadWarnings.get(checklistV2Key(currentUser.uid, selectedCampaignId));
   if (warning) {
     const state = document.getElementById('checklist-save-state');
-    if (state) { state.textContent = warning; state.style.color = '#dc2626'; }
+    if (state) {
+      state.style.color = '#dc2626';
+      state.textContent = warning + ' ';
+      const retry = document.createElement('button');
+      retry.textContent = 'Retry save';
+      retry.className = 'btn-ghost-light btn-sm';
+      retry.onclick = () => saveChecklist();
+      state.appendChild(retry);
+    }
   }
 }
 
@@ -2712,7 +2739,7 @@ function removeEntry(index) {
     const before = campData[tab] || {};
     const after = {};
     for (const [key, value] of Object.entries(before)) {
-      const match = key.match(/^(.*)_e(\\d+)$/);
+      const match = key.match(/^(.*)_e(\d+)$/);
       const originalIndex = match ? Number(match[2]) : 0;
       if (originalIndex === index) continue;
       const newIndex = originalIndex > index ? originalIndex - 1 : originalIndex;
@@ -3482,7 +3509,8 @@ async function loadChecklistV2(uid, campaignId) {
   const data = { ...meta.data(), d1: {}, d5: {} };
   items.forEach(doc => {
     const row = doc.data();
-    if ((row.tab === 'd1' || row.tab === 'd5') && row.key) data[row.tab][row.key] = row.value || {};
+    if ((row.tab === 'd1' || row.tab === 'd5') && row.key && row.active !== false)
+      data[row.tab][row.key] = row.value || {};
   });
   // A failed multi-batch save is NOT silently presented as fully saved.
   // Preserve all readable status documents and surface a recovery warning.
@@ -3542,8 +3570,12 @@ async function saveChecklistV2(uid, campaignId, campaignData, expectedPrevious =
   const next = checklistV2Clone(campaignData);
   const previous = new Map(checklistV2Flatten(expectedPrevious)
     .map(row => [row.tab + ':' + row.key, JSON.stringify(row.value)]));
-  const changed = checklistV2Flatten(next)
-    .filter(row => previous.get(row.tab + ':' + row.key) !== JSON.stringify(row.value));
+  const current = checklistV2Flatten(next);
+  const changed = current.filter(row =>
+    previous.get(row.tab + ':' + row.key) !== JSON.stringify(row.value));
+  const currentKeys = new Set(current.map(row => row.tab + ':' + row.key));
+  const removed = checklistV2Flatten(expectedPrevious)
+    .filter(row => !currentKeys.has(row.tab + ':' + row.key));
   const stamp = new Date().toISOString();
   const metadata = {
     entries: next.entries || [], lastActive: next.lastActive || stamp,
@@ -3553,11 +3585,15 @@ async function saveChecklistV2(uid, campaignId, campaignData, expectedPrevious =
   // Mark pending first. On refresh the view warns instead of falsely
   // claiming a partly committed multi-batch write is complete.
   await ref.set({ ...metadata, writeState: 'pending', pendingAt: stamp }, { merge: true });
-  for (let i = 0; i < changed.length; i += CHECKLIST_V2_MAX_BATCH_WRITES) {
+  const operations = [
+    ...changed.map(row => ({ ...row, active: true })),
+    ...removed.map(row => ({ ...row, active: false }))
+  ];
+  for (let i = 0; i < operations.length; i += CHECKLIST_V2_MAX_BATCH_WRITES) {
     const batch = db.batch();
-    changed.slice(i, i + CHECKLIST_V2_MAX_BATCH_WRITES).forEach(row => {
+    operations.slice(i, i + CHECKLIST_V2_MAX_BATCH_WRITES).forEach(row => {
       batch.set(ref.collection('items').doc(checklistV2ItemDocId(row.tab, row.key)),
-        { tab: row.tab, key: row.key, value: row.value });
+        { tab: row.tab, key: row.key, value: row.value, active: row.active });
     });
     await batch.commit();
   }
@@ -3626,9 +3662,9 @@ function saveChecklist() {
     _checklistSaveQueue = _checklistSaveQueue.catch(() => {}).then(async () => {
       if (checklistV2Enabled(campId)) {
         const key = checklistV2Key(uid, campId);
-        // When a save failed, re-read the partial state and re-upsert every
-        // row. Never use a stale diff after a failed batch.
-        const previous = _v2Dirty.has(key) ? {} : (_v2SavedSnapshots.get(key) || {});
+        // Retain the last fully committed snapshot on failure. Retrying
+        // replays BOTH changed items and tombstones after a partial batch.
+        const previous = _v2SavedSnapshots.get(key) || {};
         const saved = await saveChecklistV2(uid, campId, campData, previous);
         _v2SavedSnapshots.set(key, saved);
         _v2Dirty.delete(key);
@@ -9263,6 +9299,12 @@ function closeDeleteAllCampaignsModal(e) {
 }
 
 async function confirmDeleteAllCampaigns() {
+  if ([...Object.values(campaigns), ...Object.values(archivedCampaigns)]
+      .some(c => Number(c.storageVersion) === 2)) {
+    showError(document.getElementById('delete-all-camps-error'),
+      'Bulk deletion is disabled while V2 campaigns exist. No records have been changed.');
+    return;
+  }
   const errEl = document.getElementById('delete-all-camps-error');
   errEl.style.display = 'none';
   const pwd = document.getElementById('delete-all-camps-password').value;
@@ -11129,7 +11171,15 @@ async function loadTlChecklist() {
   const warning = _v2LoadWarnings.get(checklistV2Key(currentUser.uid, selectedCampaignId));
   if (warning) {
     const state = document.getElementById('checklist-save-state');
-    if (state) { state.textContent = warning; state.style.color = '#dc2626'; }
+    if (state) {
+      state.style.color = '#dc2626';
+      state.textContent = warning + ' ';
+      const retry = document.createElement('button');
+      retry.textContent = 'Retry save';
+      retry.className = 'btn-ghost-light btn-sm';
+      retry.onclick = () => saveChecklist();
+      state.appendChild(retry);
+    }
   }
 }
 
