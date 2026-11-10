@@ -3616,11 +3616,19 @@ async function migrateChecklistCopyToV2(uid, campId, options = {}) {
   if (!legacy) throw new Error('No legacy campaign records to copy.');
   const ref = checklistV2CampaignRef(uid, campId);
   const [existing, existingItems] = await Promise.all([ref.get(), ref.collection('items').get()]);
-  if (!existingItems.empty) throw new Error('V2 status items already exist. Refusing to overwrite existing records.');
-  if (existing.exists && (existing.data().entries || []).length &&
-      JSON.stringify(existing.data().entries) !== JSON.stringify(legacy.entries || [])) {
+  const meta = existing.exists ? existing.data() : {};
+  const resuming = meta.migrationState === 'copying' && meta.migrationSource === 'legacy';
+  if (!existingItems.empty && !resuming)
+    throw new Error('V2 status items already exist. Refusing to overwrite existing records.');
+  if (meta.migrationState === 'complete')
+    throw new Error('Migration already completed. Original records remain preserved.');
+  if ((meta.entries || []).length &&
+      JSON.stringify(meta.entries) !== JSON.stringify(legacy.entries || [])) {
     throw new Error('V2 assignments differ from legacy. Manual reconciliation required before migration.');
   }
+  // Copy marker persists across multi-batch failures. Retrying the same
+  // explicit migration replays source records without deleting the original.
+  if (!resuming) await ref.set({ migrationSource: 'legacy', migrationState: 'copying' }, { merge: true });
   await saveChecklistV2(uid, campId, legacy, {});
   const verified = await loadChecklistV2(uid, campId);
   for (const tab of ['d1', 'd5']) {
@@ -3632,7 +3640,9 @@ async function migrateChecklistCopyToV2(uid, campId, options = {}) {
       }
     }
   }
-  return { copied: true, legacyPreserved: true, records: checklistV2Flatten(legacy).length };
+  await ref.set({ migrationState: 'complete', migratedAt: new Date().toISOString() }, { merge: true });
+  return { copied: true, legacyPreserved: true, resumed: resuming,
+    records: checklistV2Flatten(legacy).length };
 }
 
 // Serialize saves per signed-in account so older network writes cannot land
