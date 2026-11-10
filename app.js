@@ -3413,6 +3413,77 @@ function updateUserProgress() {
   updateUserSidebarProgress();
 }
 
+// ─────────────────────────────────────────────────────────────
+// CHECKLIST STORAGE V2 (staged; not enabled for live campaigns)
+// Path: checklists/{uid}/campaigns/{campaignId}/items/{tab_itemKey}
+// Metadata lives at checklists/{uid}/campaigns/{campaignId}.
+// The legacy checklists/{uid} map remains untouched until migration.
+// Individual item documents avoid a single enormous indexed map.
+// ─────────────────────────────────────────────────────────────
+const CHECKLIST_V2_MAX_BATCH_WRITES = 400;
+
+function checklistV2CampaignRef(uid, campaignId) {
+  return db.collection('checklists').doc(uid).collection('campaigns').doc(campaignId);
+}
+
+function checklistV2ItemDocId(tab, key) {
+  // Firestore document IDs cannot contain '/'; encode arbitrary checklist keys.
+  return encodeURIComponent(tab) + '__' + encodeURIComponent(key);
+}
+
+function checklistV2Flatten(campaignData) {
+  const result = [];
+  for (const tab of ['d1', 'd5']) {
+    for (const [key, value] of Object.entries(campaignData[tab] || {})) {
+      result.push({ tab, key, value: value || {} });
+    }
+  }
+  return result;
+}
+
+// Writes only changed status documents. No legacy document writes.
+// expectedPrevious is the last successfully saved snapshot, not the UI state.
+async function saveChecklistV2(uid, campaignId, campaignData, expectedPrevious = {}) {
+  if (!uid || !campaignId) throw new Error('Missing checklist owner or campaign');
+  const ref = checklistV2CampaignRef(uid, campaignId);
+  const current = checklistV2Flatten(campaignData);
+  const previous = new Map(checklistV2Flatten(expectedPrevious).map(x => [x.tab + ':' + x.key, JSON.stringify(x.value)]));
+  const changed = current.filter(x => previous.get(x.tab + ':' + x.key) !== JSON.stringify(x.value));
+  const currentKeys = new Set(current.map(x => x.tab + ':' + x.key));
+  const removed = checklistV2Flatten(expectedPrevious).filter(x => !currentKeys.has(x.tab + ':' + x.key));
+  const metadata = { entries: campaignData.entries || [], lastActive: campaignData.lastActive || new Date().toISOString(),
+    startedAt: campaignData.startedAt || null, completedAt: campaignData.completedAt || null,
+    storageVersion: 2 };
+  // Save metadata first; subsequent batches contain only item-level changes.
+  await ref.set(metadata, { merge: true });
+  const operations = [
+    ...changed.map(x => ({ type: 'set', ...x })),
+    ...removed.map(x => ({ type: 'delete', ...x })),
+  ];
+  for (let i = 0; i < operations.length; i += CHECKLIST_V2_MAX_BATCH_WRITES) {
+    const batch = db.batch();
+    for (const op of operations.slice(i, i + CHECKLIST_V2_MAX_BATCH_WRITES)) {
+      const itemRef = ref.collection('items').doc(checklistV2ItemDocId(op.tab, op.key));
+      if (op.type === 'delete') batch.delete(itemRef);
+      else batch.set(itemRef, { tab: op.tab, key: op.key, value: op.value });
+    }
+    await batch.commit();
+  }
+  return JSON.parse(JSON.stringify(campaignData));
+}
+
+async function loadChecklistV2(uid, campaignId) {
+  const ref = checklistV2CampaignRef(uid, campaignId);
+  const [meta, items] = await Promise.all([ref.get(), ref.collection('items').get()]);
+  if (!meta.exists) return null;
+  const data = { ...meta.data(), d1: {}, d5: {} };
+  items.forEach(doc => {
+    const item = doc.data();
+    if ((item.tab === 'd1' || item.tab === 'd5') && item.key) data[item.tab][item.key] = item.value || {};
+  });
+  return data;
+}
+
 // Serialize saves per signed-in account so older network writes cannot land
 // after newer ones. Only write the selected campaign field, never a stale
 // copy of every campaign in the member document.
