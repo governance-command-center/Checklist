@@ -231,9 +231,15 @@ async function loadMemberData(uid) {
       Number(campaigns['a8pC3AcBJyNsrQgkZ075'].storageVersion) !== 2) {
     try {
       const id = 'a8pC3AcBJyNsrQgkZ075';
-      const source = userChecklist[id];
-      if (!source || !Array.isArray(source.entries) || !source.entries.length)
-        throw new Error('Legacy campaign entries missing; migration aborted');
+      const legacy = userChecklist[id];
+      // A fresh test campaign may have no legacy campaign field at all.
+      // Do not mistake this for lost records: initialize an empty V2 campaign.
+      // Refuse ambiguous partially populated legacy data rather than guessing.
+      if (legacy && (!Array.isArray(legacy.entries) || !legacy.entries.length) &&
+          (Object.keys(legacy.d1 || {}).length || Object.keys(legacy.d5 || {}).length))
+        throw new Error('Legacy statuses exist without assignments; manual reconciliation required');
+      const source = legacy || { entries: [], d1: {}, d5: {} };
+      if (!Array.isArray(source.entries)) source.entries = [];
       const target = checklistV2CampaignRef(uid, id);
       const existing = await target.get();
       if (existing.exists && existing.data().migrationState === 'complete')
