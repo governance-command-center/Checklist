@@ -229,7 +229,7 @@ async function loadMemberData(uid) {
     if (Number(camp.storageVersion) !== 2) continue;
     const data = await loadChecklistCompatible(uid, camp.id, userChecklist, campaigns);
     userChecklist[camp.id] = data;
-    _v2SavedSnapshots.set(checklistV2Key(uid, camp.id), checklistV2Clone(data));
+    if (!_v2Dirty.has(checklistV2Key(uid, camp.id))) _v2SavedSnapshots.set(checklistV2Key(uid, camp.id), checklistV2Clone(data));
   }
 
   populateUserCampaignSelect();
@@ -1925,7 +1925,7 @@ function _rmRender(prefix) {
   const regs = CAL_REGIONS.filter(r => r.id !== 'LAZ');
   const opt = (list, v, ph) => `<option value="">${ph}</option>` + list.map(o => `<option value="${o.id}" ${o.id === v ? 'selected' : ''}>${o.label}</option>`).join('');
   tbody.innerHTML = (_rmHint[prefix] ? `<tr><td colspan="7" class="cs-hint-warn">${_rmHint[prefix]}</td></tr>` : '') + _rmState[prefix].map((r, i) => {
-    const auto = !r._deadlineManual && r.deadline && _deadlineFromDday(r.dday) === r.deadline;
+    const auto = (!r._deadlineManual && r.deadline && _deadlineFromDday(r.dday) === r.deadline) ? r.deadline : '';
     const inp = f => `<td><input type="datetime-local" value="${r[f]}" style="font-size:12px;width:100%;" onchange="rmSet('${prefix}',${i},'${f}',this.value)" /></td>`;
     return `<tr><td><select style="font-size:12px;" onchange="rmSet('${prefix}',${i},'region',this.value)">${opt(regs, r.region, 'Region')}</select></td>
       <td><select style="font-size:12px;" onchange="rmSet('${prefix}',${i},'platform',this.value)">${opt(CAL_PLATFORMS, r.platform, 'All platforms')}</select></td>
@@ -1978,6 +1978,13 @@ function _phaseLabel(typeVal) {
 // Pretty-print a resolved deadline ("2026-07-14T16:00" → "Jul 14, 4:00 PM").
 function _fmtDeadline(iso) {
   if (!iso) return '—';
+  if (typeof iso !== 'string') {
+    if (typeof iso.toDate === 'function') iso = iso.toDate();
+    if (iso instanceof Date && !isNaN(iso)) {
+      const pad = n => String(n).padStart(2, '0');
+      iso = `${iso.getFullYear()}-${pad(iso.getMonth() + 1)}-${pad(iso.getDate())}T${pad(iso.getHours())}:${pad(iso.getMinutes())}`;
+    } else return '—';
+  }
   const [datePart, timePart] = iso.split('T');
   const [y, mo, d] = datePart.split('-').map(Number);
   const base = `${_MONTH_LABELS[mo - 1].slice(0, 3)} ${d}`;
@@ -3663,6 +3670,16 @@ async function migrateChecklistCopyToV2(uid, campId, options = {}) {
 // Serialize saves per signed-in account so older network writes cannot land
 // after newer ones. Only write the selected campaign field, never a stale
 // copy of every campaign in the member document.
+async function _withFirestoreRetry(fn, attempts = 3) {
+  const transient = new Set(['unavailable', 'deadline-exceeded', 'aborted', 'internal', 'resource-exhausted']);
+  for (let i = 0; ; i++) {
+    try { return await fn(); }
+    catch (e) {
+      if (i >= attempts - 1 || !transient.has(e && e.code)) throw e;
+      await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+    }
+  }
+}
 const _checklistSaveTimers = new Map();
 let _checklistSaveQueue = Promise.resolve();
 let _checklistSaveGeneration = 0;
@@ -3686,7 +3703,7 @@ function saveChecklist() {
     if (total > 0 && done >= total && !campData.completedAt) campData.completedAt = campData.lastActive;
     const el = document.getElementById('checklist-save-state');
     if (el) { el.textContent = 'Saving…'; el.style.color = '#64748b'; }
-    _checklistSaveQueue = _checklistSaveQueue.catch(() => {}).then(async () => {
+    _checklistSaveQueue = _checklistSaveQueue.catch(() => {}).then(() => _withFirestoreRetry(async () => {
       if (checklistV2Enabled(campId)) {
         const key = checklistV2Key(uid, campId);
         // Retain the last fully committed snapshot on failure. Retrying
@@ -3704,21 +3721,32 @@ function saveChecklist() {
         }
       } else {
         const ref = db.collection('checklists').doc(uid);
-        const snap = await ref.get();
-        if (snap.exists) await ref.update(new firebase.firestore.FieldPath(campId), campData);
-        else await ref.set({ [campId]: campData }, { merge: true });
+        try {
+          await ref.update(new firebase.firestore.FieldPath(campId), campData);
+        } catch (e) {
+          if (e && e.code === 'not-found') await ref.set({ [campId]: campData }, { merge: true });
+          else throw e;
+        }
       }
       if (currentUser?.uid === uid && selectedCampaignId === campId && generation === _checklistSaveGeneration) {
         const state = document.getElementById('checklist-save-state');
         if (state) { state.textContent = 'Saved ✓'; state.style.color = '#059669'; }
       }
-    }).catch(err => {
+    })).catch(err => {
       if (checklistV2Enabled(campId)) _v2Dirty.set(checklistV2Key(uid, campId), true);
-      console.error('Checklist save failed', { uid, campId, error: err });
+      const code = err?.code || 'unknown';
+      console.error(`Checklist save failed [${code}] uid=${uid} campaign=${campId}: ${err?.message || err}`, err);
       if (currentUser?.uid === uid && selectedCampaignId === campId) {
         const state = document.getElementById('checklist-save-state');
-        if (state) { state.textContent = 'Save failed — changes may not persist. Please do not refresh.'; state.style.color = '#dc2626'; }
-        showToast('Checklist save failed. Please report this to your administrator.', 'warn');
+        if (state) {
+          state.textContent = `Save failed (${code}) — changes may not persist. Do not refresh. `;
+          state.style.color = '#dc2626';
+          const retry = document.createElement('button');
+          retry.textContent = 'Retry save';
+          retry.onclick = () => saveChecklist();
+          state.appendChild(retry);
+        }
+        showToast(`Checklist save failed (${code}). Please retry.`, 'warn');
       }
     });
   }, 800);
