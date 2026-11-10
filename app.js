@@ -2236,9 +2236,12 @@ async function duplicateCampaign(campId) {
       createdAt:   firebase.firestore.FieldValue.serverTimestamp(),
       createdBy:   ADMIN_UID,
       fromPollId:  null,
+      // Duplicated campaigns are new campaigns: never inherit legacy storage.
+      storageVersion: 2,
+      checklistTemplateId: camp.checklistTemplateId || null,
     });
     await loadAdminData();
-    showToast(`✅ Campaign "${newName.trim()}" created!`, 'success');
+    showToast(`✅ Campaign "${newName.trim()}" created with Storage V2. Member entries must be assigned before use.`, 'success');
   } catch(e) { showToast('Failed to duplicate campaign. Try again.', 'warn'); console.error(e); }
 }
 
