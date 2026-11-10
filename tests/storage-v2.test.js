@@ -74,7 +74,7 @@ function fixture() {
     'loadChecklistCompatibilityMap, loadAdminDashboardCache, getEntryBreakdown, ' +
     'migrateChecklistCopyToV2})', context);
   return {
-    documents, state, api, clone,
+    documents, state, api, clone, context,
     setContext(camps, memberMap) {
       context.testCampaigns = camps;
       context.testMembers = memberMap;
@@ -166,4 +166,44 @@ test('copy-only migration verifies status data, refuses repeat migration, preser
   assert.equal((await f.api.loadChecklistV2('uid', 'oldCamp')).d1.item0.status, 'done');
   assert.deepEqual(f.documents.get('checklists/uid'), legacy);
   await assert.rejects(f.api.migrateChecklistCopyToV2('uid', 'oldCamp', { confirmCopy: true }), /already exist/);
+});
+
+test('member saves use per-campaign V2 and survive an immediate campaign switch', async () => {
+  const f = fixture();
+  const camps = {
+    a: { id: 'a', storageVersion: 2, assignedUids: ['uid'] },
+    b: { id: 'b', storageVersion: 2, assignedUids: ['uid'] }
+  };
+  f.setContext(camps, { uid: { uid: 'uid', role: 'member' } });
+  f.context.mockUser = { uid: 'uid', role: 'member' };
+  f.context.mockChecklists = {
+    a: { entries: [{ brand: 'One' }], d1: { item0: { status: 'done' } } },
+    b: { entries: [{ brand: 'Two' }], d1: { item1: { status: 'na' } } }
+  };
+  vm.runInContext('currentUser = mockUser; userChecklist = mockChecklists;', f.context);
+  vm.runInContext("selectedCampaignId = 'a'; saveChecklist();", f.context);
+  vm.runInContext("selectedCampaignId = 'b'; saveChecklist();", f.context);
+  await new Promise(resolve => setTimeout(resolve, 950));
+  await vm.runInContext('_checklistSaveQueue', f.context);
+  assert.equal((await f.api.loadChecklistV2('uid', 'a')).d1.item0.status, 'done');
+  assert.equal((await f.api.loadChecklistV2('uid', 'b')).d1.item1.status, 'na');
+  assert.equal(f.documents.has('checklists/uid'), false, 'V2 saves must not write the legacy parent');
+});
+
+test('team lead own checklist routes through V2 despite an empty member campaign map', async () => {
+  const f = fixture();
+  f.setContext({}, { lead: { uid: 'lead', role: 'team_lead' } });
+  f.context.mockOwnCampaigns = { leadCamp: {
+    id: 'leadCamp', storageVersion: 2, assignedUids: ['lead']
+  } };
+  f.context.mockUser = { uid: 'lead', role: 'team_lead' };
+  f.context.mockChecklists = {
+    leadCamp: { entries: [{ brand: 'Lead brand' }], d1: { item0: { status: 'done' } } }
+  };
+  vm.runInContext("tlOwnCampaigns = mockOwnCampaigns; currentUser = mockUser; " +
+    "userChecklist = mockChecklists; selectedCampaignId = 'leadCamp'; saveChecklist();", f.context);
+  await new Promise(resolve => setTimeout(resolve, 950));
+  await vm.runInContext('_checklistSaveQueue', f.context);
+  assert.equal((await f.api.loadChecklistV2('lead', 'leadCamp')).d1.item0.status, 'done');
+  assert.equal(f.documents.has('checklists/lead'), false);
 });
