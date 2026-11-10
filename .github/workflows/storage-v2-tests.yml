@@ -1,0 +1,25 @@
+name: Trackory Storage V2 tests
+
+on:
+  pull_request:
+    paths:
+      - 'app.js'
+      - 'tests/storage-v2.test.js'
+      - '.github/workflows/storage-v2-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  storage-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check
+        run: node --check app.js
+      - name: Storage V2 integration regression tests (mock Firestore)
+        run: node --test tests/storage-v2.test.js
