@@ -3618,10 +3618,10 @@ async function migrateChecklistCopyToV2(uid, campId, options = {}) {
   const [existing, existingItems] = await Promise.all([ref.get(), ref.collection('items').get()]);
   const meta = existing.exists ? existing.data() : {};
   const resuming = meta.migrationState === 'copying' && meta.migrationSource === 'legacy';
-  if (!existingItems.empty && !resuming)
-    throw new Error('V2 status items already exist. Refusing to overwrite existing records.');
   if (meta.migrationState === 'complete')
     throw new Error('Migration already completed. Original records remain preserved.');
+  if (!existingItems.empty && !resuming)
+    throw new Error('V2 status items already exist. Refusing to overwrite existing records.');
   if ((meta.entries || []).length &&
       JSON.stringify(meta.entries) !== JSON.stringify(legacy.entries || [])) {
     throw new Error('V2 assignments differ from legacy. Manual reconciliation required before migration.');
