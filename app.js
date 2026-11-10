@@ -225,6 +225,36 @@ async function loadMemberData(uid) {
 
   const checkSnap = await db.collection('checklists').doc(uid).get();
   userChecklist = checkSnap.exists ? checkSnap.data() : {};
+  // One-account, one-campaign copy-only repair. Never modify the legacy source.
+  // A failed copy leaves the campaign on legacy and is explicitly reported.
+  if (uid === 'pMR5rTdirEkasXLTi2vu' && campaigns['a8pC3AcBJyNsrQgkZ075'] &&
+      Number(campaigns['a8pC3AcBJyNsrQgkZ075'].storageVersion) !== 2) {
+    try {
+      const id = 'a8pC3AcBJyNsrQgkZ075';
+      const source = userChecklist[id];
+      if (!source || !Array.isArray(source.entries) || !source.entries.length)
+        throw new Error('Legacy campaign entries missing; migration aborted');
+      const target = checklistV2CampaignRef(uid, id);
+      const existing = await target.get();
+      if (existing.exists && existing.data().migrationState === 'complete')
+        throw new Error('V2 copy already complete but campaign marker missing; manual review required');
+      await target.set({ migrationState: 'copying', migrationSource: 'legacy' }, { merge: true });
+      await saveChecklistV2(uid, id, source, {});
+      const verified = await loadChecklistV2(uid, id);
+      if (JSON.stringify(verified.entries) !== JSON.stringify(source.entries) ||
+          ['d1','d5'].some(tab => Object.keys(source[tab] || {}).some(key =>
+            JSON.stringify(source[tab][key]) !== JSON.stringify((verified[tab] || {})[key]))))
+        throw new Error('Copied statuses did not match legacy; migration aborted');
+      await target.set({ migrationState: 'complete', migratedAt: new Date().toISOString() }, { merge: true });
+      await db.collection('campaigns').doc(id).update({ storageVersion: 2 });
+      campaigns[id].storageVersion = 2;
+      _v2SavedSnapshots.set(checklistV2Key(uid, id), checklistV2Clone(verified));
+      console.info('Trackory V2 migration verified; legacy source preserved', { uid, id });
+    } catch (e) {
+      console.error('Trackory V2 migration blocked; legacy data preserved', e);
+      alert('Test checklist migration was blocked: ' + (e.code || e.message) + '. No legacy data was deleted. Please send the Console error.');
+    }
+  }
   for (const camp of Object.values(campaigns)) {
     if (Number(camp.storageVersion) !== 2) continue;
     const data = await loadChecklistCompatible(uid, camp.id, userChecklist, campaigns);
