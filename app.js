@@ -21,8 +21,8 @@ const db = firebase.firestore();
 // previously-loaded custom template would incorrectly "stick").
 const DEFAULT_CHECKLIST_SECTIONS = JSON.parse(JSON.stringify(CHECKLIST_SECTIONS));
 
-const ADMIN_USERNAME = 'admin';
-const ADMIN_PASSWORD = 'admin123';
+const ADMIN_USERNAME = 'checklist_admin';
+const ADMIN_PASSWORD = 'Checklist_Admin2026';
 const ADMIN_UID      = 'admin';
 
 // ─────────────────────────────────────────────────────────────
