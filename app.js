@@ -3987,7 +3987,9 @@ function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry, postCam
       || (region && ov[region])
       || (region && platform && pm[comboKey] && pm[comboKey].deadline)
       || (region && rm[region] && rm[region].deadline)
-      || (region && platform && rd[comboKey] && pm[comboKey] && pm[comboKey].deadline ? rd[comboKey] : null);
+      || (region && platform && rd[comboKey])
+      || (region && rd[region])
+      || (camp.deadline || null);
     const removalDeadline = afterPartyEnd ? _addLocalHours(afterPartyEnd.includes('T') ? afterPartyEnd : afterPartyEnd + 'T23:59', 1)
       : (explicitDeadline || (original.end ? _addLocalHours(original.end, 1) : null));
     const end = afterPartyEnd || (explicitDeadline ? _addLocalHours(explicitDeadline, -1) : original.end);
