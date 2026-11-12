@@ -3037,6 +3037,7 @@ function renderUserChecklist() {
   if (!container) return;
 
   const hasD5 = getHasD5();
+  const isPostCampaignChecklist = /post[\s-]*campaign/i.test(campaigns[selectedCampaignId]?.name || '');
 
   // Bulk action bar (floating)
   let html = `
@@ -3131,7 +3132,7 @@ function renderUserChecklist() {
     </th>` : ''}
     <th class="sub-head sub-head-cb-col d1-zone" ${!hasD5 ? `style="${borderL};"` : ''}>
       <span class="th-inner" style="display:flex;align-items:center;justify-content:center;padding:6px 2px;">
-        <span class="sub-day-pill d1-pill">D-Day</span>
+        <span class="sub-day-pill d1-pill">${isPostCampaignChecklist ? 'Removal' : 'D-Day'}</span>
       </span>
     </th>
     <th class="sub-head d1-zone sub-head-status-col">
@@ -3503,7 +3504,7 @@ function updateUserProgress() {
         <div class="user-prog-bar-track"><div class="user-prog-bar-fill" style="width:${pct}%;background:${color};"></div></div>
         <div class="user-prog-detail">
           ${hasD5 ? `<span>Teasing: ${d5Done}/${ti * entries.length} (${d5Pct}%)</span>` : ''}
-          <span>D-Day: ${d1Done}/${ti * entries.length} (${d1Pct}%)</span>
+          <span>${/post[\\s-]*campaign/i.test(campSrc[selectedCampaignId]?.name || '') ? 'Post-Campaign' : 'D-Day'}: ${d1Done}/${ti * entries.length} (${d1Pct}%)</span>
           <span>${done} / ${total} items complete</span>
         </div>
         <div id="${uiPrefix}-kitrsp-mini" class="user-prog-detail" style="display:none;margin-top:4px;"></div>
