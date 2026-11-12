@@ -3081,15 +3081,19 @@ function renderUserChecklist() {
     // so everyone works against the same reference dates and knows exactly
     // what determines their on-time / overdue (compliance) status.
     const entryPlatform = _normalizePlatformCode(e.platform);
+    // The post-campaign header uses the campaign's actual end, never its
+    // pre-campaign checklist deadline, even before the CDM answers Yes/No.
+    const apAnswer = (d1Data[i === 0 ? 'ap_01' : 'ap_01_e' + i] || {}).status;
+    const postEntry = { ...e, afterPartyParticipation: apAnswer === 'no' ? 'no' : apAnswer === 'yes' ? 'yes' : null };
     const { dday: entryDday, deadline: entryDeadline, campaignEnd: entryEnd, isAfterPartyDeadline: entryIsAP, isPostCampaign: entryPost } =
-      resolveEntryMilestones(_camp, e.region, entryPlatform, e);
+      resolveEntryMilestones(_camp, e.region, entryPlatform, postEntry, true);
     const nowTs2 = Date.now();
     const entryOverdue = entryDeadline && new Date(entryDeadline).getTime() < nowTs2;
     const datesHtml = (entryDday || entryDeadline) ? `
       <div style="font-size:10px;font-weight:500;margin-top:3px;line-height:1.5;">
         ${entryDday ? `<div style="color:rgba(255,255,255,0.85);">📅 ${entryIsAP ? 'After Party' : 'D-Day'} Start: ${fmtDeadlineShort(entryDday)}</div>` : ''}
-        ${entryPost && entryEnd ? `<div style="color:rgba(255,255,255,0.85);">📅 ${entryIsAP ? 'After Party' : 'D-Day'} End: ${fmtDeadlineShort(entryEnd)}</div>` : ''}
-        ${entryDeadline ? `<div style="color:${entryOverdue ? '#FCA5A5' : '#FDE68A'};font-weight:700;">⏰ Deadline: ${fmtDeadlineShort(entryDeadline)}${entryPost ? ' (asset removal)' : ''}</div>` : ''}
+        ${entryPost ? `<div style="color:rgba(255,255,255,0.85);">📅 ${entryIsAP ? 'After Party' : 'D-Day'} End: ${entryEnd ? fmtDeadlineShort(entryEnd) : 'Not configured'}</div>` : ''}
+        ${entryDeadline ? `<div style="color:${entryOverdue ? '#FCA5A5' : '#FDE68A'};font-weight:700;">⏰ ${entryPost ? 'Asset Removal Deadline' : 'Deadline'}: ${fmtDeadlineShort(entryDeadline)}</div>` : (entryPost ? '<div style="color:#FDE68A;">⏰ Asset Removal Deadline: Awaiting campaign end</div>' : '')}
       </div>` : '';
     html += `<th colspan="${hasD5 ? 5 : 3}" class="entry-group-header" style="border-left:3px solid rgba(255,255,255,0.3);">
       <span class="th-inner" style="display:flex;flex-direction:column;align-items:center;gap:4px;justify-content:center;">
@@ -3946,7 +3950,7 @@ function _postCampaignOriginalWindow(camp, region, platform, dday) {
   };
 }
 
-function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
+function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry, postCampaignHeader = false) {
   if (!camp) return { dday: null, deadline: null, isAfterPartyDeadline: false };
   const region   = String(entryRegion || '').toUpperCase();
   const platform = entryPlatform || '';
@@ -3973,7 +3977,7 @@ function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
     || camp.dday
     || null;
 
-  const isPostCampaign = entry && (entry.afterPartyParticipation === 'no' || entry.afterPartyParticipation === 'yes' || !!afterPartyEnd);
+  const isPostCampaign = postCampaignHeader || (entry && (entry.afterPartyParticipation === 'no' || entry.afterPartyParticipation === 'yes' || !!afterPartyEnd));
   if (isPostCampaign) {
     const original = _postCampaignOriginalWindow(camp, region, platform, dday);
     const end = afterPartyEnd || original.end;
