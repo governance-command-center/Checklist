@@ -3504,7 +3504,7 @@ function updateUserProgress() {
         <div class="user-prog-bar-track"><div class="user-prog-bar-fill" style="width:${pct}%;background:${color};"></div></div>
         <div class="user-prog-detail">
           ${hasD5 ? `<span>Teasing: ${d5Done}/${ti * entries.length} (${d5Pct}%)</span>` : ''}
-          <span>${/post[\\s-]*campaign/i.test(campSrc[selectedCampaignId]?.name || '') ? 'Post-Campaign' : 'D-Day'}: ${d1Done}/${ti * entries.length} (${d1Pct}%)</span>
+          <span>${/post[\s-]*campaign/i.test(campSrc[selectedCampaignId]?.name || '') ? 'Post-Campaign' : 'D-Day'}: ${d1Done}/${ti * entries.length} (${d1Pct}%)</span>
           <span>${done} / ${total} items complete</span>
         </div>
         <div id="${uiPrefix}-kitrsp-mini" class="user-prog-detail" style="display:none;margin-top:4px;"></div>
