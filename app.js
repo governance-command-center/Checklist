@@ -3980,9 +3980,19 @@ function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry, postCam
   const isPostCampaign = postCampaignHeader || (entry && (entry.afterPartyParticipation === 'no' || entry.afterPartyParticipation === 'yes' || !!afterPartyEnd));
   if (isPostCampaign) {
     const original = _postCampaignOriginalWindow(camp, region, platform, dday);
-    const end = afterPartyEnd || original.end;
+    // An explicitly configured post-campaign checklist deadline is authoritative.
+    // Region/platform overrides take precedence over the calendar event's old end.
+    const explicitDeadline =
+      (region && platform && ov[comboKey])
+      || (region && ov[region])
+      || (region && platform && pm[comboKey] && pm[comboKey].deadline)
+      || (region && rm[region] && rm[region].deadline)
+      || (region && platform && rd[comboKey] && pm[comboKey] && pm[comboKey].deadline ? rd[comboKey] : null);
+    const removalDeadline = afterPartyEnd ? _addLocalHours(afterPartyEnd.includes('T') ? afterPartyEnd : afterPartyEnd + 'T23:59', 1)
+      : (explicitDeadline || (original.end ? _addLocalHours(original.end, 1) : null));
+    const end = afterPartyEnd || (explicitDeadline ? _addLocalHours(explicitDeadline, -1) : original.end);
     return { dday: afterPartyEnd ? (entry.afterPartyStart || null) : original.start,
-      campaignEnd: end, deadline: end ? _addLocalHours(end, 1) : null,
+      campaignEnd: end, deadline: removalDeadline,
       isAfterPartyDeadline: !!afterPartyEnd, isPostCampaign: true };
   }
   return { dday, deadline, campaignEnd: null, isAfterPartyDeadline: false };
