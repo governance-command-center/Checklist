@@ -3081,14 +3081,15 @@ function renderUserChecklist() {
     // so everyone works against the same reference dates and knows exactly
     // what determines their on-time / overdue (compliance) status.
     const entryPlatform = _normalizePlatformCode(e.platform);
-    const { dday: entryDday, deadline: entryDeadline, isAfterPartyDeadline: entryIsAP } =
+    const { dday: entryDday, deadline: entryDeadline, campaignEnd: entryEnd, isAfterPartyDeadline: entryIsAP, isPostCampaign: entryPost } =
       resolveEntryMilestones(_camp, e.region, entryPlatform, e);
     const nowTs2 = Date.now();
     const entryOverdue = entryDeadline && new Date(entryDeadline).getTime() < nowTs2;
     const datesHtml = (entryDday || entryDeadline) ? `
       <div style="font-size:10px;font-weight:500;margin-top:3px;line-height:1.5;">
-        ${entryDday ? `<div style="color:rgba(255,255,255,0.85);">📅 D-Day: ${fmtDeadlineShort(entryDday)}</div>` : ''}
-        ${entryDeadline ? `<div style="color:${entryOverdue ? '#FCA5A5' : '#FDE68A'};font-weight:700;">⏰ Deadline: ${fmtDeadlineShort(entryDeadline)}${entryIsAP ? ' (after party)' : ''}</div>` : ''}
+        ${entryDday ? `<div style="color:rgba(255,255,255,0.85);">📅 ${entryIsAP ? 'After Party' : 'D-Day'} Start: ${fmtDeadlineShort(entryDday)}</div>` : ''}
+        ${entryPost && entryEnd ? `<div style="color:rgba(255,255,255,0.85);">📅 ${entryIsAP ? 'After Party' : 'D-Day'} End: ${fmtDeadlineShort(entryEnd)}</div>` : ''}
+        ${entryDeadline ? `<div style="color:${entryOverdue ? '#FCA5A5' : '#FDE68A'};font-weight:700;">⏰ Deadline: ${fmtDeadlineShort(entryDeadline)}${entryPost ? ' (asset removal)' : ''}</div>` : ''}
       </div>` : '';
     html += `<th colspan="${hasD5 ? 5 : 3}" class="entry-group-header" style="border-left:3px solid rgba(255,255,255,0.3);">
       <span class="th-inner" style="display:flex;flex-direction:column;align-items:center;gap:4px;justify-content:center;">
@@ -3318,8 +3319,11 @@ function handleStatusChange(itemId, tab, entryIndex, selectEl) {
   // range doesn't keep overriding the compliance deadline.
   if (item && item.type === 'yesno') {
     clearAfterPartyOverride(entryIndex);
+    ensureEntries();
+    userChecklist[selectedCampaignId].entries[entryIndex].afterPartyParticipation = status === 'no' ? 'no' : null;
   }
 
+  if (item && item.type === 'yesno') renderUserChecklist();
   updateUserProgress();
   saveChecklist();
 }
@@ -3372,7 +3376,7 @@ function confirmAfterPartyDates() {
     if (errEl) { errEl.textContent = 'Please enter both a start and end date.'; errEl.style.display = 'block'; }
     return;
   }
-  if (endVal.slice(0, 10) < startVal) {
+  if (endVal < `${startVal}T00:00`) {
     if (errEl) { errEl.textContent = 'End date can\'t be before the start date.'; errEl.style.display = 'block'; }
     return;
   }
@@ -3396,6 +3400,7 @@ function confirmAfterPartyDates() {
   const entry = userChecklist[selectedCampaignId].entries[entryIndex];
   entry.afterPartyStart = startVal;
   entry.afterPartyEnd   = endVal;
+  entry.afterPartyParticipation = 'yes';
 
   // Surface the dates in the Notes column, right beside the Yes/No answer,
   // same row, same entry.
@@ -3406,6 +3411,7 @@ function confirmAfterPartyDates() {
   if (noteInput) noteInput.value = noteText;
 
   closeAfterPartyModal(false);
+  renderUserChecklist();
   updateUserProgress();
   saveChecklist();
 }
@@ -3916,6 +3922,30 @@ function _addLocalHours(iso, hours) {
   return dt.toISOString().slice(0, 16);
 }
 
+// Only the post-campaign Yes/No decision activates asset-removal timing.
+// Match the original D-Day calendar event, retaining its actual end date/time.
+function _postCampaignOriginalWindow(camp, region, platform, dday) {
+  const phase = inferGenScopeFromName(camp.name || '').campaignType;
+  const matches = (calendarEntries || []).filter(e => {
+    if (e.type !== 'dday' && e.type !== 'other') return false;
+    if ((_calRegionOf(e) || {}).id !== region) return false;
+    const p = (_calPlatformOf(e) || {}).id || '';
+    if (platform && p && p !== platform) return false;
+    if (phase && _canonicalPhase(_calCampaignType(e).id) !== _canonicalPhase(phase)) return false;
+    return e.date && (!dday || String(e.date).slice(0, 7) === String(dday).slice(0, 7));
+  }).sort((a,b) => {
+    const pa = ((_calPlatformOf(a) || {}).id === platform) ? 0 : 1;
+    const pb = ((_calPlatformOf(b) || {}).id === platform) ? 0 : 1;
+    return pa - pb || Math.abs(new Date(a.date) - new Date(dday)) - Math.abs(new Date(b.date) - new Date(dday));
+  });
+  const ev = matches[0];
+  if (!ev) return { start: dday || null, end: null };
+  return {
+    start: ev.startTime ? ev.date + 'T' + ev.startTime : ev.date,
+    end: (ev.endDate || ev.date) + 'T' + (ev.endTime || '23:59')
+  };
+}
+
 function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
   if (!camp) return { dday: null, deadline: null, isAfterPartyDeadline: false };
   const region   = String(entryRegion || '').toUpperCase();
@@ -3926,7 +3956,7 @@ function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
   const comboKey = _deadlineKey(region, platform);
   const afterPartyEnd = (entry && entry.afterPartyEnd) || null;
   // Legacy date-only values are interpreted as the end of that market day.
-  const afterPartyDeadline = afterPartyEnd ? _addLocalHours(afterPartyEnd.includes('T') ? afterPartyEnd : afterPartyEnd + 'T23:59', 2) : null;
+  const afterPartyDeadline = afterPartyEnd ? _addLocalHours(afterPartyEnd.includes('T') ? afterPartyEnd : afterPartyEnd + 'T23:59', 1) : null;
 
   const deadline =
     afterPartyDeadline
@@ -3943,7 +3973,15 @@ function resolveEntryMilestones(camp, entryRegion, entryPlatform, entry) {
     || camp.dday
     || null;
 
-  return { dday, deadline, campaignEnd: afterPartyEnd || null, isAfterPartyDeadline: !!afterPartyDeadline };
+  const isPostCampaign = entry && (entry.afterPartyParticipation === 'no' || entry.afterPartyParticipation === 'yes' || !!afterPartyEnd);
+  if (isPostCampaign) {
+    const original = _postCampaignOriginalWindow(camp, region, platform, dday);
+    const end = afterPartyEnd || original.end;
+    return { dday: afterPartyEnd ? (entry.afterPartyStart || null) : original.start,
+      campaignEnd: end, deadline: end ? _addLocalHours(end, 1) : null,
+      isAfterPartyDeadline: !!afterPartyEnd, isPostCampaign: true };
+  }
+  return { dday, deadline, campaignEnd: null, isAfterPartyDeadline: false };
 }
 
 // Resolve an entry's platform: explicit field wins, else infer from the
