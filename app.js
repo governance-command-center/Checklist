@@ -3086,7 +3086,7 @@ function renderUserChecklist() {
     const apAnswer = (d1Data[i === 0 ? 'ap_01' : 'ap_01_e' + i] || {}).status;
     const postEntry = { ...e, afterPartyParticipation: apAnswer === 'no' ? 'no' : apAnswer === 'yes' ? 'yes' : null };
     const { dday: entryDday, deadline: entryDeadline, campaignEnd: entryEnd, isAfterPartyDeadline: entryIsAP, isPostCampaign: entryPost } =
-      resolveEntryMilestones(_camp, e.region, entryPlatform, postEntry, true);
+      resolveEntryMilestones(_camp, e.region, entryPlatform, postEntry, CHECKLIST_SECTIONS.some(sec => /post.campaign/i.test(sec.title || sec.name || '')));
     const nowTs2 = Date.now();
     const entryOverdue = entryDeadline && new Date(entryDeadline).getTime() < nowTs2;
     const datesHtml = (entryDday || entryDeadline) ? `
