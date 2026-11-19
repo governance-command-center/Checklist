@@ -2409,34 +2409,36 @@ async function saveEditCampaign() {
 }
 
 // ─── Admin: Delete single Campaign ───────────────────────────
-async function deleteCampaign(campId, campName) {
-  if (checklistV2Enabled(campId)) {
-    showToast('This campaign uses V2 storage. Archive it instead; permanent deletion is disabled.', 'warn');
-    return;
+// V2 item subcollections do not cascade when their parent is deleted.
+async function removeCampaignRecords(campId) {
+  const members = await db.collection('checklists').get();
+  for (const member of members.docs) {
+    const ref = member.ref.collection('campaigns').doc(campId);
+    while (true) {
+      const page = await ref.collection('items').limit(400).get();
+      if (page.empty) break;
+      const batch = db.batch();
+      page.docs.forEach(item => batch.delete(item.ref));
+      await batch.commit();
+    }
+    await ref.delete();
+    if (member.data()[campId] !== undefined) {
+      await member.ref.update({ [campId]: firebase.firestore.FieldValue.delete() });
+    }
   }
-  if (!confirm(`Delete campaign "${campName}"?\n\nThis will remove the campaign and all assigned members' checklist progress for it. This cannot be undone.`)) return;
+  await db.collection('campaigns').doc(campId).delete();
+}
+
+async function deleteCampaign(campId, campName) {
+  if (!confirm(`Permanently delete campaign "${campName}" and all its checklist records?\n\nThis cannot be undone. Save any evidence first.`)) return;
+  if (prompt('Type DELETE to confirm:') !== 'DELETE') return;
   try {
-    // Delete the campaign document
-    await db.collection('campaigns').doc(campId).delete();
-
-    // Remove campaign key from all member checklists
-    const clSnap = await db.collection('checklists').get();
-    const batch  = db.batch();
-    clSnap.forEach(doc => {
-      const data = doc.data();
-      if (data[campId] !== undefined) {
-        const updated = { ...data };
-        delete updated[campId];
-        batch.set(doc.ref, updated);
-      }
-    });
-    await batch.commit();
-
+    await removeCampaignRecords(campId);
     delete campaigns[campId];
     await loadAdminData();
-    showToast(`✅ Campaign "${campName}" deleted.`, 'success');
+    showToast('Campaign permanently deleted.', 'success');
   } catch(e) {
-    showToast('Failed to delete campaign. Try again.', 'warn');
+    showToast('Deletion incomplete; retry to finish cleanup.', 'warn');
     console.error(e);
   }
 }
@@ -2542,30 +2544,15 @@ async function restoreCampaign(campId, campName) {
 }
 
 async function permanentlyDeleteArchivedCampaign(campId, campName) {
-  if (checklistV2Enabled(campId)) {
-    showToast('V2 campaign data is protected; permanent deletion is disabled.', 'warn');
-    return;
-  }
-  if (!confirm(`Permanently delete archived campaign "${campName}"?\n\nThis removes the campaign and all assigned members' checklist progress for it for good. This cannot be undone — make sure you've kept the downloaded summary if you need it.`)) return;
+  if (!confirm(`Permanently delete archived campaign "${campName}" and all its checklist records?\n\nThis cannot be undone. Keep the exported summary if needed.`)) return;
+  if (prompt('Type DELETE to confirm:') !== 'DELETE') return;
   try {
-    await db.collection('campaigns').doc(campId).delete();
-    const clSnap = await db.collection('checklists').get();
-    const batch  = db.batch();
-    clSnap.forEach(doc => {
-      const data = doc.data();
-      if (data[campId] !== undefined) {
-        const updated = { ...data };
-        delete updated[campId];
-        batch.set(doc.ref, updated);
-      }
-    });
-    await batch.commit();
-
+    await removeCampaignRecords(campId);
     delete archivedCampaigns[campId];
-    renderArchivedCampaignsList();
-    showToast(`🗑 Archived campaign "${campName}" permanently deleted.`, 'success');
-  } catch (e) {
-    showToast('Failed to delete archived campaign. Try again.', 'warn');
+    await loadAdminData();
+    showToast('Archived campaign permanently deleted.', 'success');
+  } catch(e) {
+    showToast('Deletion incomplete; retry to finish cleanup.', 'warn');
     console.error(e);
   }
 }
