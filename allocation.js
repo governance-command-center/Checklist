@@ -17,6 +17,8 @@ const ALLOC_MAX_RENDER     = 400;
 
 let _allocMeta    = { updatedAt: null, updatedBy: null };
 let _allocDrafts  = [];   // unsaved new rows shown at the top of the table
+let _allocPendingLeadSaves = 0;
+let _allocLeadSaveFailed = false;
 let _allocView    = [];   // rows currently rendered (index → row) for edit handlers
 let _allocFilter  = { q: '', uid: '', region: '', platform: '' };
 let _allocExtraPlatforms = new Set();
@@ -128,6 +130,7 @@ async function renderAllocationTab() {
     return;
   }
   _allocDrafts = [];
+  _allocLeadSaveFailed = false;
   _allocFilter = { q: '', uid: '', region: '', platform: '' };
 
   host.innerHTML = `
@@ -136,7 +139,7 @@ async function renderAllocationTab() {
         <span class="data-card-icon">📇</span>
         <div style="flex:1;min-width:160px;">
           <div class="data-card-title">Brand Allocation</div>
-          <div class="data-card-sub" id="alloc-meta">—</div>
+          <div class="data-card-sub" id="alloc-meta" role="status" aria-live="polite">—</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           <button class="btn-primary" style="width:auto;font-size:12px;padding:6px 14px;" onclick="allocAddRow()">+ Add Row</button>
@@ -239,12 +242,7 @@ function _allocRenderTable() {
   const brands = new Set(scoped.map(r => r.brand.toLowerCase())).size;
   const stats = document.getElementById('alloc-stats');
   if (stats) stats.innerHTML = `<strong>${rows.length}</strong> of ${scoped.length} entries shown · ${cdms} CDM(s) · ${brands} brand(s)`;
-  const meta = document.getElementById('alloc-meta');
-  if (meta) {
-    const when = _allocMeta.updatedAt ? new Date(_allocMeta.updatedAt).toLocaleString() : null;
-    meta.textContent = when ? `Last updated ${when}${_allocMeta.updatedBy ? ' by ' + _allocMeta.updatedBy : ''}` :
-      'Nothing saved yet — add rows or import your masterlist.';
-  }
+  _allocRenderSaveStatus();
 
   if (scoped.length === 0 && _allocDrafts.length === 0) {
     wrap.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-muted);font-size:13px;">No allocation yet. Click <strong>Import Excel</strong> to load your masterlist (columns: username, brand, platform, region, and optional team_lead) or <strong>+ Add Row</strong>.</div>';
@@ -257,6 +255,55 @@ function _allocRenderTable() {
       ${_allocView.map((r, i) => _allocRowHtml(r, 'row', i)).join('')}
     </tbody></table>
     ${rows.length > ALLOC_MAX_RENDER ? `<div style="padding:8px 14px;font-size:12px;color:var(--text-muted);">Showing the first ${ALLOC_MAX_RENDER} — use the filters to narrow down.</div>` : ''}`;
+}
+
+function _allocRenderSaveStatus() {
+  const meta = document.getElementById('alloc-meta');
+  if (!meta) return;
+  if (_allocPendingLeadSaves) {
+    meta.textContent = 'Saving team lead assignment…';
+    return;
+  }
+  if (_allocLeadSaveFailed) {
+    meta.textContent = 'Team lead assignment could not be confirmed. Check the selection and try again.';
+    return;
+  }
+  const when = _allocMeta.updatedAt ? new Date(_allocMeta.updatedAt).toLocaleString() : null;
+  meta.textContent = when ? `Last updated ${when}${_allocMeta.updatedBy ? ' by ' + _allocMeta.updatedBy : ''}` :
+    'Nothing saved yet — add rows or import your masterlist.';
+}
+
+function _allocWarnBeforeRefresh(event) {
+  event.preventDefault();
+  event.returnValue = true;
+}
+
+async function _allocSaveStoreLead(old, teamLeadUid) {
+  const key = _allocKey(old);
+  if (!_allocPendingLeadSaves) window.addEventListener('beforeunload', _allocWarnBeforeRefresh);
+  _allocPendingLeadSaves++;
+  _allocLeadSaveFailed = false;
+  _allocRenderSaveStatus();
+  try {
+    await _allocMutate(rows => {
+      const latest = rows.find(row => _allocKey(row) === key && _allocInScope(row));
+      if (!latest) throw new Error('The allocation was removed or reassigned');
+      return rows.map(row => _allocKey(row) === key ? { ...row, teamLeadUid } : row);
+    });
+    const snapshot = await db.collection('settings').doc('roster').get({ source: 'server' });
+    const saved = (snapshot.data()?.rows || []).find(row => _allocKey(row) === key);
+    if (!saved || (saved.teamLeadUid || '') !== teamLeadUid) {
+      throw new Error('The server returned a different team lead assignment');
+    }
+    showToast('Team lead saved.', 'success');
+  } catch (error) {
+    _allocLeadSaveFailed = true;
+    throw error;
+  } finally {
+    _allocPendingLeadSaves--;
+    if (!_allocPendingLeadSaves) window.removeEventListener('beforeunload', _allocWarnBeforeRefresh);
+    _allocRenderSaveStatus();
+  }
 }
 
 // ── Editing ───────────────────────────────────────────────────────────────
@@ -298,9 +345,7 @@ async function allocEdit(kind, i, field, val) {
     const next = { ...old, [field]: val };
     if (!next.brand) { showToast('Brand cannot be empty.', 'warn'); _allocRenderTable(); return; }
     if (field === 'teamLeadUid') {
-      await _allocMutate(rows => rows.map(r =>
-        _allocKey(r) === _allocKey(old) && _allocInScope(r) ? { ...r, teamLeadUid: val } : r));
-      showToast('✅ Saved.', 'success');
+      await _allocSaveStoreLead(old, val);
       _allocRenderTable();
       return;
     }

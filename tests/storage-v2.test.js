@@ -327,3 +327,39 @@ test('split-store compliance counts original entry statuses and weights unequal 
   ]`), [16, 100, 37, 37, 37]);
   assert.equal(result('dashboardDdayCompletion([{ d1Done: 824, totalItems: 825 }])'), 99);
 });
+
+test('store lead dropdown confirms a committed save and renders the selection after reload', async () => {
+  const { evalInApp, result, documents, context } = allocationFixture();
+  documents.set('settings/roster', { rows: result('campaignRoster') });
+  context.window.removeEventListener = () => {};
+  evalInApp(`
+    const saveMessages = [];
+    showToast = (message, type) => saveMessages.push({ message, type });
+    _allocView = campaignRoster;
+  `);
+  await evalInApp("allocEdit('row', 1, 'teamLeadUid', 'b')");
+  assert.equal(documents.get('settings/roster').rows[1].teamLeadUid, 'b');
+  await evalInApp('_allocReload()');
+  assert.match(result("_allocRowHtml(campaignRoster[1], 'row', 1)"), /value="b" selected>Lead B/);
+  assert.equal(result("saveMessages.at(-1).message"), 'Team lead saved.');
+  await evalInApp("allocEdit('row', 1, 'teamLeadUid', '')");
+  await evalInApp('_allocReload()');
+  assert.match(result("_allocRowHtml(campaignRoster[1], 'row', 1)"), /value="" selected>Use member assignment/);
+});
+
+test('a stale dropdown does not claim a save after its allocation was removed', async () => {
+  const { evalInApp, result, documents, context } = allocationFixture();
+  documents.set('settings/roster', { rows: result('campaignRoster.slice(1)') });
+  context.window.removeEventListener = () => {};
+  evalInApp(`
+    const saveTypes = [];
+    showToast = (_, type) => saveTypes.push(type);
+    console = { error() {} };
+    _allocView = campaignRoster;
+  `);
+  await evalInApp("allocEdit('row', 0, 'teamLeadUid', 'a')");
+  assert.deepEqual(result('saveTypes'), ['error']);
+  assert.equal(result('_allocLeadSaveFailed'), true);
+  assert.equal(result('_allocPendingLeadSaves'), 0);
+  assert.equal(documents.get('settings/roster').rows.length, 2);
+});
