@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'app.js'
+      - 'allocation.js'
       - 'tests/storage-v2.test.js'
       - '.github/workflows/storage-v2-tests.yml'
   workflow_dispatch:

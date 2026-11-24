@@ -117,6 +117,9 @@ async function loadAdminData() {
   members = {};
   usersSnap.forEach(doc => { members[doc.id] = { ...doc.data(), uid: doc.id }; });
 
+  setTeamLeadAccounts(members);
+  await loadCampaignRoster();
+
   const campsSnap = await db.collection('campaigns').orderBy('createdAt', 'desc').get();
   campaigns = {};
   archivedCampaigns = {};
@@ -131,7 +134,6 @@ async function loadAdminData() {
   renderAdminView(true);
   await loadChecklistOverrides();
   await loadCalendarEntries();
-  await loadCampaignRoster();
   await loadMasterlist();
   await checkBroadcastBadge();
   // Refresh data tab if it's currently showing
@@ -153,14 +155,80 @@ async function loadAdminData() {
 //  panels) reads from that shared `members` object, so filtering it here
 //  scopes the whole screen without touching each render function.
 // ─────────────────────────────────────────────────────────────
+let teamLeadAccounts = {};
+let memberLeadIndex = new Map();
+let indexedRoster;
+let storeLeadIndex = new Map();
+
+function setTeamLeadAccounts(sourceMembers) {
+  teamLeadAccounts = Object.fromEntries(Object.values(sourceMembers)
+    .filter(m => m.role === 'team_lead')
+    .map(({ uid, name, username, managedUids }) => [uid, { uid, name, username, managedUids }]));
+  memberLeadIndex = new Map();
+  Object.values(teamLeadAccounts).forEach(lead => {
+    (lead.managedUids || []).forEach(uid => {
+      if (!memberLeadIndex.has(uid)) memberLeadIndex.set(uid, []);
+      memberLeadIndex.get(uid).push(lead.uid);
+    });
+  });
+}
+
+function storeCoverageKey(uid, entry) {
+  const platform = _allocNorm(entry.platform);
+  const known = CAL_PLATFORMS.find(p => [p.id, p.short.toLowerCase(), p.label.toLowerCase()].includes(platform));
+  const region = _normalizeRegionCode(entry.region) || entry.region;
+  return JSON.stringify([uid, _allocNorm(entry.brand), known?.id || platform, _allocNorm(region)]);
+}
+
+function checklistLeadUids(uid, entry = {}) {
+  if (indexedRoster !== campaignRoster) {
+    storeLeadIndex = new Map();
+    campaignRoster.forEach(row => {
+      if (row.teamLeadUid)
+        storeLeadIndex.set(storeCoverageKey(row.uid, row), row.teamLeadUid);
+    });
+    indexedRoster = campaignRoster;
+  }
+  if (entry.brand && entry.platform && entry.region) {
+    const explicit = storeLeadIndex.get(storeCoverageKey(uid, entry));
+    if (explicit && teamLeadAccounts[explicit]) return [explicit];
+  }
+  return teamLeadAccounts[uid] ? [uid] : (memberLeadIndex.get(uid) || []);
+}
+
+function dashboardCoversLeads(leadUids) {
+  if (currentUser?.role === 'team_lead') return leadUids.includes(currentUser.uid);
+  if (currentUser?.role === 'manager') {
+    const managed = currentUser.managedUids || [];
+    return leadUids.some(uid => managed.includes(uid));
+  }
+  return true;
+}
+
+function dashboardCoversEntry(uid, entry) {
+  return dashboardCoversLeads(checklistLeadUids(uid, entry));
+}
+
 function computeManagerScopedUids(managerUser, sourceMembers) {
-  const uids = new Set();
-  (managerUser.managedUids || []).forEach(tlUid => {
-    uids.add(tlUid);
-    const tl = sourceMembers[tlUid];
-    if (tl) (tl.managedUids || []).forEach(mUid => uids.add(mUid));
+  const leadUids = new Set(managerUser.managedUids || []);
+  const uids = new Set(leadUids);
+  leadUids.forEach(uid => (sourceMembers[uid]?.managedUids || []).forEach(memberUid => uids.add(memberUid)));
+  campaignRoster.forEach(row => {
+    if (leadUids.has(row.teamLeadUid) && teamLeadAccounts[row.teamLeadUid]) uids.add(row.uid);
   });
   return uids;
+}
+
+function checklistProgressPercent(done, total) {
+  if (done <= 0 || total <= 0) return 0;
+  if (done >= total) return 100;
+  return Math.max(1, Math.floor(done / total * 100));
+}
+
+function dashboardDdayCompletion(rows) {
+  const done = rows.reduce((sum, row) => sum + row.d1Done, 0);
+  const total = rows.reduce((sum, row) => sum + row.totalItems, 0);
+  return checklistProgressPercent(done, total);
 }
 
 async function loadManagerData() {
@@ -168,6 +236,9 @@ async function loadManagerData() {
   const allMembers = {};
   usersSnap.forEach(doc => { allMembers[doc.id] = { ...doc.data(), uid: doc.id }; });
 
+  setTeamLeadAccounts(allMembers);
+  if (allMembers[currentUser.uid]) currentUser.managedUids = allMembers[currentUser.uid].managedUids || [];
+  await loadCampaignRoster();
   const scopedUids = computeManagerScopedUids(currentUser, allMembers);
   members = {};
   scopedUids.forEach(uid => { if (allMembers[uid]) members[uid] = allMembers[uid]; });
@@ -187,7 +258,6 @@ async function loadManagerData() {
   renderAdminView(true);
   await loadChecklistOverrides();
   await loadCalendarEntries();
-  await loadCampaignRoster();
   await loadMasterlist();
   await checkBroadcastBadge();
   const dataTab = document.getElementById('admin-tab-data');
@@ -372,6 +442,7 @@ async function renderAdminView(force) {
       // this campaign's total item count rather than lumped together with
       // other entries (or computed against the wrong template's size).
       getEntryBreakdown(cl, totalItemsMap[camp.id]?.total, totalItemsMap[camp.id]?.validIds, totalItemsMap[camp.id]?.hasD5).forEach(eb => {
+        if (!dashboardCoversEntry(uid, eb.entry)) return;
         // Per-row deadline, resolved against the calendar as precisely as the
         // entry allows: try this exact region+platform first (so MY-Shopee and
         // MY-Lazada get their OWN dates), then the region-wide fallback, then
@@ -404,8 +475,8 @@ async function renderAdminView(force) {
         else                           dueState = 'not_due';  // within grace / no deadline
 
         allRows.push({
-          member, camp,
-          entryLabel: eb.label,
+          member, camp, entry: eb.entry,
+          entryLabel: eb.label || (eb.entry.brand ? buildEntryLabel(eb.entry, eb.idx) : null),
           entryRegion,
           entryPlatform,
           comboKey,
@@ -459,7 +530,7 @@ async function renderAdminView(force) {
   const inProgPct    = total > 0 ? Math.round((inProgress / total) * 100) : 0;
   const notStartPct  = total > 0 ? Math.round((notStarted / total) * 100) : 0;
 
-  const overallCompletionRate = total > 0 ? Math.round((complete / total) * 100) : 0;
+  const overallCompletionRate = dashboardDdayCompletion(rows);
 
   // Load RSP & Kit completion rate for dashboard stat card.
   // Campaign-scoped checks are counted per (member × applicable entry);
@@ -481,11 +552,11 @@ async function renderAdminView(force) {
           const cl = (allChecklists[m.uid] || {})[tc.campaignId] || {};
           const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
           entries.forEach(entry => {
-            if (!rspCheckAppliesToEntry(tc, entry)) return;
+            if (!dashboardCoversEntry(m.uid, entry) || !rspCheckAppliesToEntry(tc, entry)) return;
             rspTotal++;
             if (rspEntryOverallStatus(tc, r, rspEntryKey(entry)) === 'done') rspComplete++;
           });
-        } else {
+        } else if (dashboardCoversEntry(m.uid)) {
           rspTotal++;
           const allDone = tc.items.every(item => rspIsDoneLike(((r && r.items) || {})[item.id]));
           if (allDone) rspComplete++;
@@ -691,83 +762,47 @@ function renderCompletionChart(rows) {
     subEl.textContent = filterCampId ? `📁 ${campaigns[filterCampId]?.name || ''}` : '';
   }
 
-  // Member-level aggregate: Teasing and D-Day are accumulated separately across
-  // ALL of a member's entries/campaigns — never blended into one number.
-  const memberMap = {};
-  rows.forEach(r => {
-    const uid  = r.member.uid;
-    const name = r.member.name || r.member.username;
-    if (!memberMap[uid]) memberMap[uid] = { name, uid, d5Done: 0, d5Total: 0, d1Done: 0, d1Total: 0 };
-    memberMap[uid].d5Done  += r.d5Done;
-    memberMap[uid].d5Total += (r.totalItems || TOTAL_ITEMS);
-    memberMap[uid].d1Done  += r.d1Done;
-    memberMap[uid].d1Total += (r.totalItems || TOTAL_ITEMS);
-  });
-  // Real-time, no-rounding-up completion: 100% ONLY when every item is
-  // actually filled out, 0% only when none are. Anything partial floors so
-  // a nearly-done group never falsely reads as complete (e.g. 199/200 → 99%,
-  // not 100%), and a single filled item never rounds down to 0%.
-  const exactPct = (done, total) => {
-    if (total <= 0) return 0;
-    if (done >= total) return 100;
-    if (done <= 0) return 0;
-    return Math.max(1, Math.min(99, Math.floor((done / total) * 100)));
-  };
-  Object.values(memberMap).forEach(m => {
-    m.d5Pct  = exactPct(m.d5Done, m.d5Total);
-    m.d1Pct  = exactPct(m.d1Done, m.d1Total);
-    // Overall rate is based on D-Day inputs alone for every user.
-    m.avgPct = m.d1Pct;
-  });
-
-  // Group members under their team lead (managedUids) — combined progress
-  // is computed from the raw done/total sums of every managed member PLUS
-  // the team lead's own checklist (a lead's rate reflects their whole team,
-  // including themselves), not an average of percentages, so it stays
-  // accurate regardless of how many items each member's campaign(s) have.
-  const teamLeads = Object.values(members).filter(m => m.role === 'team_lead');
-  const claimedUids = new Set();
-  const leadGroups = teamLeads.map(tl => {
-    const managedUids = tl.managedUids || [];
-    const memberList = managedUids.map(uid => memberMap[uid]).filter(Boolean);
-    memberList.forEach(m => claimedUids.add(m.uid));
-    // Fold in the lead's own checklist progress, if they have any.
-    const ownStats = memberMap[tl.uid];
-    if (ownStats) claimedUids.add(tl.uid);
-    const combinedList = ownStats ? [...memberList, ownStats] : memberList;
-    const d5Done = combinedList.reduce((s, m) => s + m.d5Done, 0);
-    const d5Total = combinedList.reduce((s, m) => s + m.d5Total, 0);
-    const d1Done = combinedList.reduce((s, m) => s + m.d1Done, 0);
-    const d1Total = combinedList.reduce((s, m) => s + m.d1Total, 0);
-    const d5Pct = exactPct(d5Done, d5Total);
-    const d1Pct = exactPct(d1Done, d1Total);
-    return {
-      name: tl.name || tl.username, uid: tl.uid,
-      d5Pct, d1Pct, avgPct: d1Pct, // overall rate is D-Day-based
-      memberCount: memberList.length, hasOwnChecklist: !!ownStats,
-      memberList: (ownStats ? [...memberList, { ...ownStats, isLead: true }] : memberList)
-        .slice().sort((a, b) => b.avgPct - a.avgPct),
-    };
-  });
-
-  // Members not under any team lead (and not a team lead with their own
-  // checklist already counted above) are grouped as "Unassigned" so their
-  // progress is still visible on the dashboard.
-  const unassignedMembers = Object.values(memberMap).filter(m => !claimedUids.has(m.uid));
-  if (unassignedMembers.length > 0) {
-    const d5Done = unassignedMembers.reduce((s, m) => s + m.d5Done, 0);
-    const d5Total = unassignedMembers.reduce((s, m) => s + m.d5Total, 0);
-    const d1Done = unassignedMembers.reduce((s, m) => s + m.d1Done, 0);
-    const d1Total = unassignedMembers.reduce((s, m) => s + m.d1Total, 0);
-    const d5Pct = exactPct(d5Done, d5Total);
-    const d1Pct = exactPct(d1Done, d1Total);
-    leadGroups.push({
-      name: 'Unassigned (no team lead)', uid: '_unassigned',
-      d5Pct, d1Pct, avgPct: d1Pct,
-      memberCount: unassignedMembers.length,
-      memberList: unassignedMembers.slice().sort((a, b) => b.avgPct - a.avgPct),
+  const groups = new Map();
+  rows.forEach(row => {
+    const { member, entry } = row;
+    const owners = checklistLeadUids(member.uid, entry);
+    (owners.length ? owners : ['_unassigned']).forEach(leadUid => {
+      if (!members[leadUid] && leadUid !== '_unassigned') return;
+      if (!groups.has(leadUid)) groups.set(leadUid, new Map());
+      const stats = groups.get(leadUid);
+      if (!stats.has(member.uid)) stats.set(member.uid, {
+        uid: member.uid, name: member.name || member.username, isLead: member.uid === leadUid,
+        d5Done: 0, d5Total: 0, d1Done: 0, d1Total: 0,
+      });
+      const stat = stats.get(member.uid);
+      if (row.hasD5) {
+        stat.d5Done += row.d5Done;
+        stat.d5Total += row.totalItems;
+      }
+      stat.d1Done += row.d1Done;
+      stat.d1Total += row.totalItems;
     });
-  }
+  });
+
+  const buildGroup = (uid, name) => {
+    const memberList = [...(groups.get(uid)?.values() || [])].map(stat => ({
+      ...stat,
+      d5Pct: checklistProgressPercent(stat.d5Done, stat.d5Total),
+      d1Pct: checklistProgressPercent(stat.d1Done, stat.d1Total),
+      avgPct: checklistProgressPercent(stat.d1Done, stat.d1Total),
+    })).sort((a, b) => b.avgPct - a.avgPct);
+    const sum = key => memberList.reduce((total, stat) => total + stat[key], 0);
+    const d5Pct = checklistProgressPercent(sum('d5Done'), sum('d5Total'));
+    const d1Pct = checklistProgressPercent(sum('d1Done'), sum('d1Total'));
+    return {
+      uid, name, memberList, d5Pct, d1Pct, avgPct: d1Pct,
+      memberCount: memberList.filter(stat => !stat.isLead).length,
+      hasOwnChecklist: memberList.some(stat => stat.isLead),
+    };
+  };
+  const leadGroups = Object.values(members).filter(m => m.role === 'team_lead')
+    .map(lead => buildGroup(lead.uid, lead.name || lead.username));
+  if (groups.has('_unassigned')) leadGroups.push(buildGroup('_unassigned', 'Unassigned (no team lead)'));
 
   // Keep the main list clean: leads with no members assigned (for the
   // selected campaign scope) and no checklist of their own are pulled out
@@ -1309,8 +1344,8 @@ function getEntryBreakdown(cl, totalItems, validIds, hasD5) {
   return entries.map((entry, idx) => {
     const d5Done = d5Enabled ? countDoneForEntryIdx(cl.d5 || {}, idx, ids) : 0;
     const d1Done = countDoneForEntryIdx(cl.d1 || {}, idx, ids);
-    const d5Pct  = d5Enabled && ti > 0 ? Math.round((d5Done / ti) * 100) : 0;
-    const d1Pct  = ti > 0 ? Math.round((d1Done / ti) * 100) : 0;
+    const d5Pct  = d5Enabled ? checklistProgressPercent(d5Done, ti) : 0;
+    const d1Pct  = checklistProgressPercent(d1Done, ti);
     const overallPct = d1Pct;
     return {
       idx,
@@ -1431,20 +1466,24 @@ async function openReviewModal(uid, campId) {
   const cl = await loadChecklistCompatible(uid, campId, checkSnap.exists ? checkSnap.data() : {}, { [campId]: camp });
   const d5Data = cl.d5 || {};
   const d1Data = cl.d1 || {};
-  const entries = cl.entries || [{ brand: '', platform: '', region: '' }];
+  const entryRows = checklistEntries(cl).map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => dashboardCoversEntry(uid, entry));
+  if (!entryRows.length) return;
+  const deleteBtn = document.getElementById('review-delete-btn');
+  if (deleteBtn) deleteBtn.style.display = currentUser.role === 'admin' ? '' : 'none';
 
   let html = `<div class="review-table-wrap"><table class="review-table">`;
-  const entryCount = entries.length;
+  const entryCount = entryRows.length;
 
   html += `<thead><tr>
     <th class="freeze" rowspan="2" style="min-width:220px">Item</th>
     <th class="freeze2" rowspan="2" style="min-width:220px">Guide question</th>`;
-  entries.forEach((e, i) => {
+  entryRows.forEach(({ entry: e, index: i }) => {
     const label = buildEntryLabel(e, i);
     html += `<th colspan="${hasD5 ? 4 : 2}" style="text-align:center">${escHtml(label)}</th>`;
   });
   html += `</tr><tr>`;
-  entries.forEach(() => {
+  entryRows.forEach(() => {
     html += `${hasD5 ? `<th class="sub" colspan="2" style="text-align:center;">Teasing<br><span style="font-size:10px;font-weight:400;opacity:0.7;">status &amp; notes</span></th>` : ''}<th class="sub" colspan="2" style="text-align:center;">D-Day<br><span style="font-size:10px;font-weight:400;opacity:0.7;">status &amp; notes</span></th>`;
   });
   html += `</tr></thead><tbody>`;
@@ -1462,7 +1501,7 @@ async function openReviewModal(uid, campId) {
         <td class="freeze" style="white-space:normal;line-height:1.4">${item.name}</td>
         <td class="freeze2" style="white-space:normal;line-height:1.4;color:var(--text-muted);font-size:12px">${item.guide}</td>`;
 
-      entries.forEach((_, i) => {
+      entryRows.forEach(({ index: i }) => {
         const key = i === 0 ? item.id : `${item.id}_e${i}`;
         const d5 = d5Data[key] || {};
         const d1 = d1Data[key] || {};
@@ -1488,7 +1527,7 @@ async function openReviewModal(uid, campId) {
     const relevantChecks = [];
     tcSnap.forEach(doc => {
       const tc = { id: doc.id, ...doc.data() };
-      if (rspCheckAppliesToUser(tc, uid) && entries.some(e => rspCheckAppliesToEntry(tc, e))) relevantChecks.push(tc);
+      if (rspCheckAppliesToUser(tc, uid) && entryRows.some(({ entry }) => rspCheckAppliesToEntry(tc, entry))) relevantChecks.push(tc);
     });
 
     if (relevantChecks.length > 0) {
@@ -1498,9 +1537,9 @@ async function openReviewModal(uid, campId) {
       let rspHtml = `<div style="margin-top:20px;"><div class="section-label" style="margin-bottom:8px;">📦 RSP &amp; Kit Check</div>`;
       relevantChecks.forEach((tc, idx) => {
         const resp = respDocs[idx].exists ? respDocs[idx].data() : {};
-        const applicableEntries = entries.map((e, i) => ({ e, i })).filter(({ e }) => rspCheckAppliesToEntry(tc, e));
+        const applicableEntries = entryRows.filter(({ entry }) => rspCheckAppliesToEntry(tc, entry));
 
-        const entriesHtml = applicableEntries.map(({ e, i }) => {
+        const entriesHtml = applicableEntries.map(({ entry: e, index: i }) => {
           const key = rspEntryKey(e);
           const overall = rspEntryOverallStatus(tc, resp, key);
           const label = buildEntryLabel(e, i);
@@ -1700,6 +1739,7 @@ async function deleteMember(uid, displayName) {
   try {
     await db.collection('users').doc(uid).delete();
     delete members[uid];
+    setTeamLeadAccounts(members);
     refreshMembersTabIfOpen();
     // Sync data tab if open
     const dataTab = document.getElementById('admin-tab-data');
@@ -6118,6 +6158,24 @@ async function renderMembersTab() {
     // campaign's real total item count (see resolveCampaignTotalItems).
     const dataTabTotalItemsMap = await resolveCampaignTotalItems(Object.values(campaigns));
 
+    const coverageByMember = new Map();
+    Object.values(campaigns).forEach(camp => {
+      const info = dataTabTotalItemsMap[camp.id];
+      (camp.assignedUids || []).forEach(uid => {
+        if (!members[uid]) return;
+        const cl = allChecklists[uid]?.[camp.id] || {};
+        const entries = getEntryBreakdown(cl, info?.total, info?.validIds, info?.hasD5);
+        if (!coverageByMember.has(uid)) coverageByMember.set(uid, []);
+        coverageByMember.get(uid).push(...entries.map(row => ({
+          ...row, owners: checklistLeadUids(uid, row.entry),
+        })));
+      });
+    });
+    const complianceFor = leadUids => [...coverageByMember].flatMap(([uid, entries]) => {
+      const rows = entries.filter(row => row.owners.some(owner => leadUids.includes(owner)));
+      return rows.length ? [{ uid, rows, rate: dashboardDdayCompletion(rows) }] : [];
+    });
+
     let tlHtml = '';
     let mgrHtml = '';
 
@@ -6138,38 +6196,17 @@ async function renderMembersTab() {
       const managedTlUids = mgr.managedUids || [];
       const managedTls = managedTlUids.map(uid => members[uid]).filter(Boolean);
 
-      // Aggregate scope: the manager's team leads + every member each of
-      // those team leads manages (mirrors computeManagerScopedUids).
-      let scopedUids = [];
-      managedTls.forEach(tl => {
-        scopedUids.push(tl.uid);
-        (tl.managedUids || []).forEach(u => scopedUids.push(u));
-      });
-      scopedUids = [...new Set(scopedUids)];
-
-      let mgrComplete = 0, mgrInProgress = 0, mgrNotStarted = 0;
-      scopedUids.forEach(uid => {
-        const m = members[uid];
-        if (!m) return;
-        let bestPct = 0;
-        Object.values(campaigns).forEach(camp => {
-          if (!(camp.assignedUids || []).includes(uid)) return;
-          const cl = (allChecklists[uid] || {})[camp.id] || {};
-          getEntryBreakdown(cl, dataTabTotalItemsMap[camp.id]?.total, dataTabTotalItemsMap[camp.id]?.validIds, dataTabTotalItemsMap[camp.id]?.hasD5).forEach(eb => {
-            if (eb.overallPct > bestPct) bestPct = eb.overallPct;
-          });
-        });
-        if (bestPct === 100) mgrComplete++;
-        else if (bestPct > 0) mgrInProgress++;
-        else mgrNotStarted++;
-      });
-      const mgrTeamCount = scopedUids.length;
-      const mgrRate = mgrTeamCount > 0 ? Math.round((mgrComplete / mgrTeamCount) * 100) : 0;
+      const compliance = complianceFor(managedTlUids);
+      const mgrComplete = compliance.filter(stat => stat.rate === 100).length;
+      const mgrInProgress = compliance.filter(stat => stat.rate > 0 && stat.rate < 100).length;
+      const mgrNotStarted = compliance.length - mgrComplete - mgrInProgress;
+      const mgrTeamCount = new Set([...managedTlUids, ...compliance.map(stat => stat.uid)]).size;
+      const mgrRate = dashboardDdayCompletion(compliance.flatMap(stat => stat.rows));
       const mgrRateColor = mgrRate === 100 ? '#059669' : mgrRate >= 50 ? '#D97706' : '#2563EB';
       const dashId = `mgr-dash-${mgr.uid}`;
 
       const tlListRows = managedTls.map(tl => {
-        const cnt = (tl.managedUids || []).length;
+        const cnt = complianceFor([tl.uid]).filter(stat => stat.uid !== tl.uid).length;
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">
           <span>${escHtml(tl.name || tl.username)} <span style="color:var(--text-muted);">(${cnt} member${cnt !== 1 ? 's' : ''})</span></span>
         </div>`;
@@ -6209,30 +6246,15 @@ async function renderMembersTab() {
   } else {
     tlHtml += `<div class="data-member-section-label" style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;padding:4px 0 6px;">Team Leads</div>`;
     tlHtml += teamLeads.map(tl => {
-      const managedUids = tl.managedUids || [];
-      const managedCount = managedUids.length;
-
-      // Build per-member compliance mini-rows — includes the lead's OWN
-      // checklist too (if they're assigned to any campaign themselves), so
-      // a lead's compliance rate reflects their whole team, not just the
-      // members they manage.
-      const hasOwnAssignment = Object.values(campaigns).some(camp => (camp.assignedUids || []).includes(tl.uid));
-      const complianceUids = hasOwnAssignment ? [...managedUids, tl.uid] : managedUids;
-      const teamCount = complianceUids.length;
+      const compliance = complianceFor([tl.uid]);
+      const teamCount = compliance.length;
+      const hasOwnAssignment = compliance.some(stat => stat.uid === tl.uid);
+      const managedCount = teamCount - Number(hasOwnAssignment);
 
       let complianceRows = '';
       let tlComplete = 0, tlInProgress = 0, tlNotStarted = 0;
-      complianceUids.forEach(uid => {
+      compliance.forEach(({ uid, rate: bestPct }) => {
         const m = members[uid];
-        if (!m) return;
-        let bestPct = 0;
-        Object.values(campaigns).forEach(camp => {
-          if (!(camp.assignedUids || []).includes(uid)) return;
-          const cl = (allChecklists[uid] || {})[camp.id] || {};
-          getEntryBreakdown(cl, dataTabTotalItemsMap[camp.id]?.total, dataTabTotalItemsMap[camp.id]?.validIds, dataTabTotalItemsMap[camp.id]?.hasD5).forEach(eb => {
-            if (eb.overallPct > bestPct) bestPct = eb.overallPct;
-          });
-        });
         if (bestPct === 100) tlComplete++;
         else if (bestPct > 0) tlInProgress++;
         else tlNotStarted++;
@@ -6249,7 +6271,7 @@ async function renderMembersTab() {
       });
 
       const dashId = `tl-dash-${tl.uid}`;
-      const tlRate = teamCount > 0 ? Math.round((tlComplete / teamCount) * 100) : 0;
+      const tlRate = dashboardDdayCompletion(compliance.flatMap(stat => stat.rows));
       const tlRateColor = tlRate === 100 ? '#059669' : tlRate >= 50 ? '#D97706' : '#2563EB';
 
       return `
@@ -6365,7 +6387,8 @@ async function renderDataTab() {
         const cl = (allChecklists[uid] || {})[camp.id] || {};
         // One row per entry — see getEntryBreakdown for why.
         getEntryBreakdown(cl, clTotalItemsMap[camp.id]?.total, clTotalItemsMap[camp.id]?.validIds, clTotalItemsMap[camp.id]?.hasD5).forEach(eb => {
-          rows.push({ member, camp, entryLabel: eb.label, d5Done: eb.d5Done, d1Done: eb.d1Done, d5Pct: eb.d5Pct, d1Pct: eb.d1Pct, totalItems: eb.totalItems, hasD5: eb.hasD5, cl });
+          if (!dashboardCoversEntry(uid, eb.entry)) return;
+          rows.push({ member, camp, entryLabel: eb.label || (eb.entry.brand ? buildEntryLabel(eb.entry, eb.idx) : null), d5Done: eb.d5Done, d1Done: eb.d1Done, d5Pct: eb.d5Pct, d1Pct: eb.d1Pct, totalItems: eb.totalItems, hasD5: eb.hasD5, cl });
         });
       });
     });
@@ -11068,24 +11091,24 @@ async function renderTaskChecksInDashboard(force) {
     const allChecklists = _dashCache.checklists;
     const respByCheck = _dashCache.taskCheckResponses;
 
-    // Map a member uid -> their team lead's uid/name (or the member
-    // themself, if they ARE a team lead). Falls back to "Unassigned".
-    const leadOf = (uid) => {
-      const m = members[uid];
-      if (!m) return null;
-      if (m.role === 'team_lead') return { uid: m.uid, name: m.name || m.username };
-      const lead = Object.values(members).find(t => t.role === 'team_lead' && (t.managedUids || []).includes(uid));
-      return lead ? { uid: lead.uid, name: lead.name || lead.username } : { uid: '_unassigned', name: 'Unassigned (no team lead)' };
-    };
-
     const isKitItem = (item) => /kit/i.test(item.id) || /kit/i.test(item.label || '');
     const isRspItem = (item) => /rsp/i.test(item.id) || /rsp/i.test(item.label || '');
 
-    // memberStats: uid -> { uid, name, isLead, kitDone, kitTotal, rspDone, rspTotal }
-    const memberStats = {};
-    const ensureStat = (m) => {
-      if (!memberStats[m.uid]) memberStats[m.uid] = { uid: m.uid, name: m.name || m.username, isLead: m.role === 'team_lead', kitDone: 0, kitTotal: 0, rspDone: 0, rspTotal: 0 };
-      return memberStats[m.uid];
+    const groupsMap = new Map();
+    const ensureStat = (member, entry) => {
+      const owners = checklistLeadUids(member.uid, entry);
+      // Legacy RSP groups used the first member-level lead.
+      const leadUid = owners.find(uid => members[uid]) || '_unassigned';
+      const lead = members[leadUid];
+      if (!groupsMap.has(leadUid)) groupsMap.set(leadUid, {
+        uid: leadUid, name: lead ? (lead.name || lead.username) : 'Unassigned (no team lead)', stats: new Map(),
+      });
+      const stats = groupsMap.get(leadUid).stats;
+      if (!stats.has(member.uid)) stats.set(member.uid, {
+        uid: member.uid, name: member.name || member.username, isLead: member.uid === leadUid,
+        kitDone: 0, kitTotal: 0, rspDone: 0, rspTotal: 0,
+      });
+      return stats.get(member.uid);
     };
 
     checks.forEach(tc => {
@@ -11096,8 +11119,7 @@ async function renderTaskChecksInDashboard(force) {
 
       targetMembers.forEach(m => {
         const r = responses[m.uid];
-        const stat = ensureStat(m);
-        const tally = (item, status) => {
+        const tally = (stat, item, status) => {
           if (isKitItem(item)) { stat.kitTotal++; if (rspIsDoneLike(status)) stat.kitDone++; }
           else if (isRspItem(item)) { stat.rspTotal++; if (rspIsDoneLike(status)) stat.rspDone++; }
         };
@@ -11106,34 +11128,25 @@ async function renderTaskChecksInDashboard(force) {
           const cl = (allChecklists[m.uid] || {})[tc.campaignId] || {};
           const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
           entries.forEach(entry => {
-            if (!rspCheckAppliesToEntry(tc, entry)) return;
+            if (!dashboardCoversEntry(m.uid, entry) || !rspCheckAppliesToEntry(tc, entry)) return;
+            const stat = ensureStat(m, entry);
             const key = rspEntryKey(entry);
-            tc.items.forEach(item => tally(item, rspItemStatus(r, key, item.id)));
+            tc.items.forEach(item => tally(stat, item, rspItemStatus(r, key, item.id)));
           });
-        } else {
-          tc.items.forEach(item => tally(item, ((r && r.items) || {})[item.id] || 'pending'));
+        } else if (dashboardCoversEntry(m.uid)) {
+          const stat = ensureStat(m);
+          tc.items.forEach(item => tally(stat, item, ((r && r.items) || {})[item.id] || 'pending'));
         }
       });
     });
 
-    const memberList = Object.values(memberStats);
-    if (memberList.length === 0) { el.style.display = 'none'; return; }
-    memberList.forEach(s => {
-      s.kitPct = s.kitTotal > 0 ? Math.round((s.kitDone / s.kitTotal) * 100) : 0;
-      s.rspPct = s.rspTotal > 0 ? Math.round((s.rspDone / s.rspTotal) * 100) : 0;
-    });
-
-    // Group members under their team lead — a lead's own row sits inside
-    // their own group (tagged "Team Lead"), same as "Completion by team lead".
-    const groupsMap = {};
-    memberList.forEach(s => {
-      const g = s.isLead ? { uid: s.uid, name: s.name } : leadOf(s.uid);
-      if (!g) return;
-      if (!groupsMap[g.uid]) groupsMap[g.uid] = { uid: g.uid, name: g.name, members: [] };
-      groupsMap[g.uid].members.push(s);
-    });
-
-    const groupList = Object.values(groupsMap).map(g => {
+    if (!groupsMap.size) { el.style.display = 'none'; return; }
+    const groupList = [...groupsMap.values()].map(({ uid, name, stats }) => {
+      const g = { uid, name, members: [...stats.values()] };
+      g.members.forEach(stat => {
+        stat.kitPct = stat.kitTotal > 0 ? Math.round(stat.kitDone / stat.kitTotal * 100) : 0;
+        stat.rspPct = stat.rspTotal > 0 ? Math.round(stat.rspDone / stat.rspTotal * 100) : 0;
+      });
       const kitDone = g.members.reduce((s, m) => s + m.kitDone, 0);
       const kitTotal = g.members.reduce((s, m) => s + m.kitTotal, 0);
       const rspDone = g.members.reduce((s, m) => s + m.rspDone, 0);
@@ -11208,34 +11221,28 @@ let tlMembers   = {};
 let tlOwnCampaigns = {};   // campaigns the team lead is PERSONALLY assigned to (their own checklist)
 
 async function loadTeamLeadData() {
-  const managedUids = currentUser.managedUids || [];
-  tlMembers   = {};
+  tlMembers = {};
   tlCampaigns = {};
+  tlOwnCampaigns = {};
 
-  // Load managed members
   const usersSnap = await db.collection('users').get();
-  usersSnap.forEach(doc => {
-    if (managedUids.includes(doc.id))
-      tlMembers[doc.id] = { ...doc.data(), uid: doc.id };
-  });
+  const allMembers = {};
+  usersSnap.forEach(doc => { allMembers[doc.id] = { ...doc.data(), uid: doc.id }; });
+  if (allMembers[currentUser.uid]) currentUser.managedUids = allMembers[currentUser.uid].managedUids || [];
+  setTeamLeadAccounts(allMembers);
+  await loadCampaignRoster();
+  const teamUids = computeManagerScopedUids({ managedUids: [currentUser.uid] }, allMembers);
+  teamUids.delete(currentUser.uid);
+  teamUids.forEach(uid => { if (allMembers[uid]) tlMembers[uid] = allMembers[uid]; });
 
-  // Load all campaigns; keep those with at least one managed member
-  // (archived campaigns are excluded from team-lead views entirely)
   const campsSnap = await db.collection('campaigns').orderBy('createdAt', 'desc').get();
   campsSnap.forEach(doc => {
     const camp = { ...doc.data(), id: doc.id };
     if (camp.archived) return;
-    if ((camp.assignedUids || []).some(uid => managedUids.includes(uid)))
+    const assignedUids = camp.assignedUids || [];
+    if (assignedUids.includes(currentUser.uid)) tlOwnCampaigns[doc.id] = camp;
+    if (assignedUids.some(uid => teamUids.has(uid) || uid === currentUser.uid))
       tlCampaigns[doc.id] = camp;
-  });
-
-  // Load campaigns the team lead is PERSONALLY assigned to (their own checklist)
-  tlOwnCampaigns = {};
-  campsSnap.forEach(doc => {
-    const camp = { ...doc.data(), id: doc.id };
-    if (camp.archived) return;
-    if ((camp.assignedUids || []).includes(currentUser.uid))
-      tlOwnCampaigns[doc.id] = camp;
   });
 
   // Load the team lead's own checklist progress
@@ -11264,10 +11271,6 @@ async function loadTeamLeadData() {
   await checkForPendingPoll();
 
   showTlTab('dashboard');
-  if (managedUids.length === 0) {
-    const tbody = document.getElementById('tl-tbody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:3rem;">No members assigned to you yet. Contact the admin.</td></tr>';
-  }
 }
 
 async function loadTeamLeadView() {
@@ -11372,7 +11375,7 @@ async function renderTeamLeadView() {
   const statsEl = document.getElementById('tl-stats');
   if (!tbody) return;
   const filterCampId = (document.getElementById('tl-campaign-filter') || {}).value || '';
-  const managedUids  = currentUser.managedUids || [];
+  const managedUids = Object.keys(tlMembers);
 
   const tlDashLabel = document.getElementById('tl-dashboard-campaign-label');
   if (tlDashLabel) {
@@ -11385,12 +11388,6 @@ async function renderTeamLeadView() {
   }
 
   tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:2rem;">Loading…</td></tr>';
-
-  if (managedUids.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:3rem;">No members assigned to you yet. Contact the admin.</td></tr>';
-    if (statsEl) statsEl.innerHTML = '';
-    return;
-  }
 
   const campsToShow = filterCampId
     ? (tlCampaigns[filterCampId] ? [tlCampaigns[filterCampId]] : [])
@@ -11435,6 +11432,7 @@ async function renderTeamLeadView() {
       const cl = (checklistData[uid] || {})[camp.id] || {};
       const info = tlTotalItemsMap[camp.id] || { total: TOTAL_ITEMS, validIds: null, hasD5: true };
       getEntryBreakdown(cl, info.total, info.validIds, info.hasD5).forEach(eb => {
+        if (!dashboardCoversEntry(uid, eb.entry)) return;
         const entryRegion   = (eb.region || '').toUpperCase();
         const entryPlatform = _normalizePlatformCode(eb.platform);
         // Same two reference dates (D-Day + Checklist Deadline) and the
@@ -11452,7 +11450,7 @@ async function renderTeamLeadView() {
         else                           dueState = 'not_due';
         allRows.push({
           member, camp,
-          entryLabel: eb.label,
+          entryLabel: eb.label || (eb.entry.brand ? buildEntryLabel(eb.entry, eb.idx) : null),
           entryRegion,
           rowDday, rowDeadline, isAfterPartyDeadline, needsDeadline, dueState,
           d5Done: eb.d5Done, d1Done: eb.d1Done, overallDone: eb.d1Pct,
@@ -11487,9 +11485,7 @@ async function renderTeamLeadView() {
   const completeRate   = totalMembers > 0 ? Math.round((totalComplete / totalMembers) * 100) : 0;
   const inProgRate     = totalMembers > 0 ? Math.round((totalInProg / totalMembers) * 100) : 0;
   const pendingRate    = totalMembers > 0 ? Math.round((totalPending / totalMembers) * 100) : 0;
-  let d1DoneSum = 0, d1TotalSum = 0;
-  allRows.forEach(r => { d1DoneSum += r.d1Done; d1TotalSum += r.totalItems; });
-  const checklistCompletionRate = d1TotalSum > 0 ? Math.round((d1DoneSum / d1TotalSum) * 100) : 0;
+  const checklistCompletionRate = dashboardDdayCompletion(allRows);
   const checklistRateColor = checklistCompletionRate === 100 ? '#16a34a' : checklistCompletionRate >= 50 ? '#d97706' : '#2563eb';
 
   // RSP & Kit completion rate for team lead's members (entry-aware for
@@ -11497,12 +11493,13 @@ async function renderTeamLeadView() {
   let tlRspTotal = 0, tlRspComplete = 0;
   try {
     const tcSnap = await db.collection('taskChecks').get();
+    const team = { ...tlMembers, [currentUser.uid]: currentUser };
     for (const tcDoc of tcSnap.docs) {
       const tc = { id: tcDoc.id, ...tcDoc.data() };
       if (filterCampId && tc.campaignId !== filterCampId) continue;
       const targetMembers = tc.targetUid
-        ? (managedUids.includes(tc.targetUid) ? [tlMembers[tc.targetUid]].filter(Boolean) : [])
-        : Object.values(tlMembers);
+        ? [team[tc.targetUid]].filter(Boolean)
+        : Object.values(team);
       if (targetMembers.length === 0) continue;
       const respSnap = await db.collection('taskCheckResponses').doc(tcDoc.id).collection('responses').get();
       const responses = {};
@@ -11513,11 +11510,11 @@ async function renderTeamLeadView() {
           const cl = (checklistData[m.uid] || {})[tc.campaignId] || {};
           const entries = (cl.entries && cl.entries.length) ? cl.entries : [{ brand: '', platform: '', region: '' }];
           entries.forEach(entry => {
-            if (!rspCheckAppliesToEntry(tc, entry)) return;
+            if (!dashboardCoversEntry(m.uid, entry) || !rspCheckAppliesToEntry(tc, entry)) return;
             tlRspTotal++;
             if (rspEntryOverallStatus(tc, r, rspEntryKey(entry)) === 'done') tlRspComplete++;
           });
-        } else {
+        } else if (dashboardCoversEntry(m.uid)) {
           tlRspTotal++;
           const allDone = tc.items.every(item => rspIsDoneLike(((r && r.items) || {})[item.id]));
           if (allDone) tlRspComplete++;
@@ -11653,9 +11650,6 @@ async function openTlReviewModal(uid, campId) {
   Object.assign(campaigns, tlCampaigns);
 
   // Hide delete button — team leads are read-only
-  const deleteBtn = document.getElementById('review-delete-btn');
-  if (deleteBtn) deleteBtn.style.display = 'none';
-
   await openReviewModal(uid, campId);
 }
 
@@ -11736,6 +11730,7 @@ async function addTeamLead() {
   try {
     const ref = await db.collection('users').add({ username, name, password, role: 'team_lead', managedUids });
     members[ref.id] = { uid: ref.id, username, name, password, role: 'team_lead', managedUids };
+    setTeamLeadAccounts(members);
     document.getElementById('teamlead-modal-overlay').style.display = 'none';
     showToast(`Team lead "${name}" added!`, 'success');
     refreshMembersTabIfOpen();
@@ -11826,6 +11821,7 @@ async function saveEditTlMembers() {
   try {
     await db.collection('users').doc(_editTlUid).update({ managedUids });
     members[_editTlUid].managedUids = managedUids;
+    setTeamLeadAccounts(members);
     document.getElementById('edit-tl-modal-overlay').style.display = 'none';
     const lead = members[_editTlUid];
     showToast(`✅ Members updated for "${lead.name || lead.username}"!`, 'success');

@@ -1,6 +1,6 @@
 /* ═════════════════════════════════════════════════════════════════════
    ALLOCATION  —  who (CDM) handles which brand / platform / region
-   Stored in Firestore: settings/roster → { rows: [{uid, brand, platform, region}], updatedAt, updatedBy }
+   Stored in Firestore: settings/roster → { rows: [{uid, brand, platform, region, teamLeadUid}], updatedAt, updatedBy }
 
    This is the single source of truth for:
      • the Allocation tab (admin / manager / team lead can see + edit)
@@ -42,8 +42,15 @@ function _allocPool() {
   return list.slice().sort((a, b) =>
     (a.name || a.username || '').localeCompare(b.name || b.username || ''));
 }
-function _allocPoolUids() { return new Set(_allocPool().map(m => m.uid)); }
-function _allocInScope(r) { return _allocIsAdmin() ? true : _allocPoolUids().has(r.uid); }
+function _allocInScope(r) {
+  const explicit = r.teamLeadUid;
+  return _allocIsAdmin() || dashboardCoversLeads(
+    explicit && teamLeadAccounts[explicit] ? [explicit] : checklistLeadUids(r.uid));
+}
+function _allocLeadOptions() {
+  return Object.values(teamLeadAccounts).sort((a, b) =>
+    (a.name || a.username).localeCompare(b.name || b.username));
+}
 function _allocName(uid) {
   const m = (members && members[uid]) || (tlMembers && tlMembers[uid]) ||
             (currentUser && currentUser.uid === uid ? currentUser : null);
@@ -55,10 +62,11 @@ function _allocClean(r) {
     brand:    String(r.brand || '').trim(),
     platform: String(r.platform || '').trim(),
     region:   String(r.region || '').trim().toUpperCase(),
+    ...(r.teamLeadUid ? { teamLeadUid: String(r.teamLeadUid).trim() } : {}),
   };
 }
 function _allocKey(r) {
-  return [r.uid, r.brand, r.platform, r.region].map(s => String(s || '').trim().toLowerCase()).join('|');
+  return storeCoverageKey(r.uid, r);
 }
 function _allocPlatforms() {
   const set = new Set(ALLOC_BASE_PLATFORMS);
@@ -178,7 +186,7 @@ function allocClearFilters() {
 function _allocSelect(options, current, onchangeJs, opts = {}) {
   const has = options.some(o => o.value === current);
   let html = `<select onchange="${onchangeJs}" class="alloc-cell${opts.invalid ? ' alloc-invalid' : ''}">`;
-  if (!current) html += '<option value="" selected disabled>— select —</option>';
+  if (!current && !options.some(o => o.value === '')) html += '<option value="" selected disabled>— select —</option>';
   else if (!has) html += `<option value="${escHtml(current)}" selected>${escHtml(opts.unknownLabel || current)}</option>`;
   html += options.map(o => `<option value="${escHtml(o.value)}" ${o.value === current ? 'selected' : ''}>${escHtml(o.label)}</option>`).join('');
   if (opts.allowNew) html += '<option value="__new__">➕ New…</option>';
@@ -191,12 +199,17 @@ function _allocRowHtml(r, kind, i) {
   const unknown = r.uid && !pool.some(m => m.uid === r.uid);
   const platOpts   = _allocPlatforms().map(p => ({ value: p, label: p }));
   const regOpts    = _allocRegionList().map(x => ({ value: x, label: x }));
+  const leadOpts = [
+    { value: '', label: 'Use member assignment' },
+    ..._allocLeadOptions().map(lead => ({ value: lead.uid, label: lead.name || lead.username })),
+  ];
   const fn = f => `allocEdit('${kind}',${i},'${f}',this.value)`;
   return `<tr class="${kind === 'draft' ? 'alloc-draft' : ''}">
     <td>${_allocSelect(memberOpts, r.uid, fn('uid'), { invalid: unknown, unknownLabel: '⚠ Unknown member — reassign' })}</td>
     <td><input class="alloc-cell" list="alloc-brand-list" value="${escHtml(r.brand)}" placeholder="Brand" onchange="${fn('brand')}" /></td>
     <td>${_allocSelect(platOpts, r.platform, fn('platform'), { allowNew: true })}</td>
     <td>${_allocSelect(regOpts, r.region, fn('region'))}</td>
+    <td>${_allocSelect(leadOpts, r.teamLeadUid || '', fn('teamLeadUid'), { unknownLabel: 'Unknown team lead' })}</td>
     <td style="text-align:right;white-space:nowrap;">
       ${kind === 'draft'
         ? `<span style="font-size:11px;color:var(--text-muted);margin-right:6px;">Fill all fields to save</span><button class="btn-ghost-light" style="padding:3px 9px;font-size:12px;" onclick="allocRemoveDraft(${i})">✕</button>`
@@ -234,11 +247,11 @@ function _allocRenderTable() {
   }
 
   if (scoped.length === 0 && _allocDrafts.length === 0) {
-    wrap.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-muted);font-size:13px;">No allocation yet. Click <strong>Import Excel</strong> to load your masterlist (columns: username, brand, platform, region) or <strong>+ Add Row</strong>.</div>';
+    wrap.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-muted);font-size:13px;">No allocation yet. Click <strong>Import Excel</strong> to load your masterlist (columns: username, brand, platform, region, and optional team_lead) or <strong>+ Add Row</strong>.</div>';
     return;
   }
   wrap.innerHTML = `<table class="alloc-table">
-    <thead><tr><th>CDM</th><th>Brand</th><th>Platform</th><th>Region</th><th></th></tr></thead>
+    <thead><tr><th>CDM</th><th>Brand</th><th>Platform</th><th>Region</th><th>Team Lead</th><th></th></tr></thead>
     <tbody>
       ${_allocDrafts.map((d, i) => _allocRowHtml(d, 'draft', i)).join('')}
       ${_allocView.map((r, i) => _allocRowHtml(r, 'row', i)).join('')}
@@ -262,6 +275,7 @@ async function allocEdit(kind, i, field, val) {
     val = name;
     _allocRenderFilters();
   }
+  if (field === 'teamLeadUid' && val && !teamLeadAccounts[val]) return;
   if (field === 'region') val = val.toUpperCase();
 
   try {
@@ -283,12 +297,22 @@ async function allocEdit(kind, i, field, val) {
     const old = _allocView[i]; if (!old) return;
     const next = { ...old, [field]: val };
     if (!next.brand) { showToast('Brand cannot be empty.', 'warn'); _allocRenderTable(); return; }
+    if (field === 'teamLeadUid') {
+      await _allocMutate(rows => rows.map(r =>
+        _allocKey(r) === _allocKey(old) && _allocInScope(r) ? { ...r, teamLeadUid: val } : r));
+      showToast('✅ Saved.', 'success');
+      _allocRenderTable();
+      return;
+    }
     if (_allocKey(old) === _allocKey(next)) return;
     let merged = false;
     await _allocMutate(rows => {
       const ok = _allocKey(old), nk = _allocKey(next);
+      const latest = rows.find(r => _allocKey(r) === ok && _allocInScope(r));
+      if (!latest) return rows;
       const out = rows.filter(r => _allocKey(r) !== ok);
-      if (out.some(r => _allocKey(r) === nk)) merged = true; else out.push(next);
+      if (out.some(r => _allocKey(r) === nk)) merged = true;
+      else out.push({ ...latest, [field]: val });
       return out;
     });
     showToast(merged ? 'Already allocated that way — duplicate removed.' : '✅ Saved.', merged ? 'warn' : 'success');
@@ -305,7 +329,7 @@ async function allocDelete(i) {
   const r = _allocView[i]; if (!r) return;
   if (!confirm(`Remove ${r.brand} · ${r.platform} · ${r.region} from ${_allocName(r.uid) || 'this member'}?`)) return;
   try {
-    await _allocMutate(rows => rows.filter(x => _allocKey(x) !== _allocKey(r)));
+    await _allocMutate(rows => rows.filter(x => _allocKey(x) !== _allocKey(r) || !_allocInScope(x)));
     showToast('🗑 Removed.', 'success');
     _allocRenderFilters(); _allocRenderTable();
   } catch (e) { console.error(e); showToast('Failed to delete.', 'error'); }
@@ -315,10 +339,11 @@ async function allocDelete(i) {
 function allocExport() {
   const rows = (campaignRoster || []).filter(_allocInScope)
     .slice().sort((a, b) => (_allocName(a.uid)).localeCompare(_allocName(b.uid)) || a.brand.localeCompare(b.brand));
-  const aoa = [['username', 'brand', 'platform', 'region'],
-    ...rows.map(r => [_allocName(r.uid) || '(unknown member)', r.brand, r.platform, r.region])];
+  const aoa = [['username', 'brand', 'platform', 'region', 'team_lead'],
+    ...rows.map(r => [(members[r.uid] || tlMembers[r.uid] || (currentUser.uid === r.uid ? currentUser : {})).username || _allocName(r.uid),
+      r.brand, r.platform, r.region, teamLeadAccounts[r.teamLeadUid]?.username || r.teamLeadUid || ''])];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{ wch: 30 }, { wch: 28 }, { wch: 12 }, { wch: 8 }];
+  ws['!cols'] = [{ wch: 30 }, { wch: 28 }, { wch: 12 }, { wch: 8 }, { wch: 25 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Allocation');
   XLSX.writeFile(wb, `Allocation_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -328,13 +353,15 @@ function allocExport() {
 function _allocNorm(s) { return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase(); }
 
 function _allocParse(rows) {
-  const res = { rows: [], unmatched: new Set(), badRegions: new Set(), newPlatforms: new Set(), incomplete: 0, dupes: 0, error: null };
+  const res = { rows: [], invalidLeads: new Set(), unmatched: new Set(), badRegions: new Set(), newPlatforms: new Set(), incomplete: 0, dupes: 0, error: null };
   if (!rows || rows.length < 2) { res.error = 'File appears empty.'; return res; }
   const hIdx = _findHeaderRowIndex(rows, [['username', 'name'], ['brand'], ['platform'], ['region']]);
   if (hIdx < 0) { res.error = 'File must have the columns: username, brand, platform, region.'; return res; }
   const h = rows[hIdx].map(x => String(x).toLowerCase().trim());
   const uI = h.indexOf('username') >= 0 ? h.indexOf('username') : h.indexOf('name');
   const bI = h.indexOf('brand'), pI = h.indexOf('platform'), rI = h.indexOf('region');
+  const leadIndex = h.indexOf('team_lead');
+  const leads = _allocLeadOptions();
 
   // Exact-name matching (case/spacing-insensitive) against the Members-tab names, then usernames.
   const byName = new Map(), byUser = new Map();
@@ -357,6 +384,14 @@ function _allocParse(rows) {
     let platform = platCanon.get(platRaw.toLowerCase());
     if (!platform) { platform = platRaw; res.newPlatforms.add(platRaw); }
     const row = { uid, brand, platform, region };
+    const leadValue = _allocNorm(r[leadIndex]);
+    if (leadValue) {
+      const login = leads.find(lead => _allocNorm(lead.username) === leadValue);
+      const names = leads.filter(lead => _allocNorm(lead.name) === leadValue);
+      const lead = login || (names.length === 1 ? names[0] : null);
+      if (!lead) { res.invalidLeads.add(String(r[leadIndex]).trim()); return; }
+      row.teamLeadUid = lead.uid;
+    }
     const k = _allocKey(row);
     if (seen.has(k)) { res.dupes++; return; }
     seen.add(k); res.rows.push(row);
@@ -410,12 +445,15 @@ function _allocOpenImportModal(fileName) {
 
 function _allocImportDiff(mode) {
   const cur = (campaignRoster || []).filter(_allocInScope);
-  const curKeys = new Set(cur.map(_allocKey));
+  const existing = new Map((campaignRoster || []).map(r => [_allocKey(r), r]));
   const impKeys = new Set(_allocImport.rows.map(_allocKey));
-  const added = _allocImport.rows.filter(r => !curKeys.has(_allocKey(r)));
+  const added = _allocImport.rows.filter(r => !existing.has(_allocKey(r)));
+  const updated = _allocImport.rows.filter(r => {
+    const old = existing.get(_allocKey(r));
+    return old && _allocInScope(old) && r.teamLeadUid && r.teamLeadUid !== old.teamLeadUid;
+  });
   const removed = mode === 'replace' ? cur.filter(r => !impKeys.has(_allocKey(r))) : [];
-  const unchanged = _allocImport.rows.length - added.length;
-  return { added, removed, unchanged };
+  return { added, updated, removed, unchanged: _allocImport.rows.length - added.length - updated.length };
 }
 
 function _allocRenderImportPreview(mode) {
@@ -427,7 +465,7 @@ function _allocRenderImportPreview(mode) {
   document.getElementById('alloc-import-body').innerHTML = `
     <div style="font-size:13px;margin-bottom:10px;"><strong>${escHtml(imp.fileName)}</strong> — ${imp.rows.length} valid row(s) found.</div>
     <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;font-size:13px;">
-      <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;"><input type="radio" name="alloc-imp-mode" value="merge" ${mode === 'merge' ? 'checked' : ''} onchange="_allocRenderImportPreview('merge')" /> <span><strong>Add new rows only</strong> — keep everything already in the allocation.</span></label>
+      <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;"><input type="radio" name="alloc-imp-mode" value="merge" ${mode === 'merge' ? 'checked' : ''} onchange="_allocRenderImportPreview('merge')" /> <span><strong>Add or update rows</strong> — keep rows missing from the file.</span></label>
       <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;"><input type="radio" name="alloc-imp-mode" value="replace" ${mode === 'replace' ? 'checked' : ''} onchange="_allocRenderImportPreview('replace')" /> <span><strong>Replace everything${_allocIsAdmin() ? '' : ' in my scope'}</strong> — rows not in the file are removed.</span></label>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px;">
@@ -435,13 +473,32 @@ function _allocRenderImportPreview(mode) {
       <span style="background:#FEF2F2;color:#B91C1C;padding:4px 10px;border-radius:6px;">− ${d.removed.length} to remove</span>
       <span style="background:var(--surface2);padding:4px 10px;border-radius:6px;">${d.unchanged} unchanged</span>
     </div>
-    ${list('Show rows to add', d.added)}${list('Show rows to remove', d.removed)}
+    ${list('Show rows to add', d.added)}${list('Show lead updates', d.updated)}${list('Show rows to remove', d.removed)}
+    ${warn('Unknown or ambiguous team lead. Correct these values before importing:', [...imp.invalidLeads])}
+    <div style="margin-top:8px;font-size:12px;">Optional team_lead accepts a registered username or unique display name. Blank cells keep existing store assignments.</div>
     ${warn('Names not found in the Members tab (skipped):', [...imp.unmatched])}
     ${warn('Unknown region (skipped):', [...imp.badRegions])}
     ${imp.incomplete ? `<div style="margin-top:8px;font-size:12px;color:var(--text-muted);">${imp.incomplete} row(s) skipped — missing a username, brand, platform, or region.</div>` : ''}
     ${imp.dupes ? `<div style="margin-top:4px;font-size:12px;color:var(--text-muted);">${imp.dupes} duplicate row(s) in the file were ignored.</div>` : ''}
     ${imp.newPlatforms.size ? `<div style="margin-top:4px;font-size:12px;color:var(--text-muted);">New platform(s) will be added to the dropdown: ${[...imp.newPlatforms].map(escHtml).join(', ')}</div>` : ''}`;
-  document.getElementById('alloc-import-apply').disabled = (d.added.length + d.removed.length) === 0;
+  document.getElementById('alloc-import-apply').disabled = imp.invalidLeads.size > 0 || (d.added.length + d.updated.length + d.removed.length) === 0;
+}
+
+function applyAllocationImport(rows, imported, mode) {
+  const existing = new Map(rows.map(r => [_allocKey(r), r]));
+  const incoming = new Set(imported.map(_allocKey));
+  if (mode === 'replace') {
+    rows.forEach(r => {
+      if (_allocInScope(r) && !incoming.has(_allocKey(r))) existing.delete(_allocKey(r));
+    });
+  }
+  imported.forEach(row => {
+    const key = _allocKey(row);
+    const old = existing.get(key);
+    if (!old || (_allocInScope(old) && row.teamLeadUid))
+      existing.set(key, { ...old, ...row });
+  });
+  return [...existing.values()];
 }
 
 async function allocApplyImport() {
@@ -450,12 +507,8 @@ async function allocApplyImport() {
   const btn = document.getElementById('alloc-import-apply');
   btn.disabled = true; btn.textContent = 'Saving…';
   try {
-    const poolUids = _allocPoolUids(), isAdmin = _allocIsAdmin();
-    const inScope = r => isAdmin || poolUids.has(r.uid);
-    await _allocMutate(rows => {
-      const base = mode === 'replace' ? rows.filter(r => !inScope(r)) : rows;
-      return [...base, ...imp.rows];
-    });
+    if (imp.invalidLeads.size) return;
+    await _allocMutate(rows => applyAllocationImport(rows, imp.rows, mode));
     imp.newPlatforms.forEach(p => _allocExtraPlatforms.add(p));
     allocCloseImport();
     showToast('✅ Allocation updated.', 'success');

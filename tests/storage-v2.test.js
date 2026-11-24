@@ -241,3 +241,89 @@ test('interrupted save after reload replays every visible status rather than a p
     'retry must replay all visible statuses even when previous snapshot matches');
   assert.equal((await f.api.loadChecklistV2('uid', 'future')).writeState, 'complete');
 });
+
+function allocationFixture() {
+  const f = fixture();
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'allocation.js'), 'utf8'), f.context);
+  const evalInApp = expression => vm.runInContext(expression, f.context);
+  const result = expression => JSON.parse(JSON.stringify(evalInApp(expression)));
+  evalInApp(`
+    members = {
+      cdm: { uid: 'cdm', username: 'cdm', name: 'Member', role: 'member' },
+      other: { uid: 'other', username: 'other', role: 'member' },
+      a: { uid: 'a', username: 'lead-a', name: 'Lead A', role: 'team_lead', managedUids: ['cdm', 'other'] },
+      b: { uid: 'b', username: 'lead-b', name: 'Lead B', role: 'team_lead', managedUids: [] },
+    };
+    currentUser = { uid: 'admin', role: 'admin' };
+    setTeamLeadAccounts(members);
+    const sg = { uid: 'cdm', brand: 'MAC', platform: 'Shopee', region: 'SG' };
+    const my = { ...sg, region: 'MY' };
+    const laz = { ...sg, platform: 'Lazada' };
+    campaignRoster = [{ ...sg, teamLeadUid: 'b' }, my, laz];
+  `);
+  return { ...f, evalInApp, result };
+}
+
+test('store ownership covers the exact member, brand, platform and region; legacy entries fall back', () => {
+  const { evalInApp, result } = allocationFixture();
+  assert.deepEqual(result(`[
+    checklistLeadUids('cdm', sg), checklistLeadUids('cdm', my),
+    checklistLeadUids('cdm', laz), checklistLeadUids('other', sg),
+    checklistLeadUids('cdm', { ...sg, brand: 'Clinique' }),
+    checklistLeadUids('cdm', { ...sg, platform: 'SHP', region: 'Singapore' }),
+    checklistLeadUids('cdm'), checklistLeadUids('a'),
+  ]`), [['b'], ['a'], ['a'], ['a'], ['a'], ['b'], ['a'], ['a']]);
+  evalInApp("currentUser = { uid: 'b', role: 'team_lead' }");
+  assert.deepEqual(result("[sg, my, laz].map(entry => dashboardCoversEntry('cdm', entry))"), [true, false, false]);
+  evalInApp("currentUser = { uid: 'mgr', role: 'manager', managedUids: ['a'] }");
+  assert.deepEqual(result("[sg, my, laz].map(entry => dashboardCoversEntry('cdm', entry))"), [false, true, true]);
+  assert.deepEqual(result("[...computeManagerScopedUids({ managedUids: ['b'] }, members)]"), ['b', 'cdm']);
+});
+
+test('optional Excel column resolves registered leads and preserves assignments on legacy imports', async () => {
+  const { evalInApp, result, documents } = allocationFixture();
+  evalInApp(`
+    const header = ['username', 'brand', 'platform', 'region'];
+    const legacy = _allocParse([header, ['cdm', 'MAC', 'Shopee', 'SG']]);
+    const updated = _allocParse([[...header, 'team_lead'], ['cdm', 'MAC', 'Shopee', 'SG', ' lead-a ']]);
+    const named = _allocParse([[...header, 'team_lead'], ['cdm', 'MAC', 'Shopee', 'SG', 'Lead B']]);
+    const blank = _allocParse([[...header, 'team_lead'], ['cdm', 'MAC', 'Shopee', 'SG', '']]);
+    const invalid = _allocParse([[...header, 'team_lead'], ['cdm', 'MAC', 'Shopee', 'SG', 'cdm']]);
+  `);
+  assert.equal(result('updated.rows[0].teamLeadUid'), 'a');
+  assert.equal(result('named.rows[0].teamLeadUid'), 'b');
+  assert.deepEqual(result('[...invalid.invalidLeads]'), ['cdm']);
+  assert.equal(result("applyAllocationImport(campaignRoster, legacy.rows, 'replace')[0].teamLeadUid"), 'b');
+  assert.equal(result("applyAllocationImport(campaignRoster, blank.rows, 'merge')[0].teamLeadUid"), 'b');
+  assert.equal(result("applyAllocationImport(campaignRoster, updated.rows, 'merge')[0].teamLeadUid"), 'a');
+  documents.set('settings/roster', { rows: result('campaignRoster') });
+  await evalInApp("_allocMutate(rows => applyAllocationImport(rows, updated.rows, 'merge'))");
+  assert.equal(documents.get('settings/roster').rows[0].teamLeadUid, 'a');
+  assert.equal(result('checklistLeadUids("cdm", sg)[0]'), 'a');
+  evalInApp("currentUser = { uid: 'b', role: 'team_lead' }");
+  assert.equal(result("applyAllocationImport(campaignRoster, named.rows, 'replace')[0].teamLeadUid"), 'a');
+});
+
+test('split-store compliance counts original entry statuses and weights unequal checklist sizes', () => {
+  const { evalInApp, result } = allocationFixture();
+  evalInApp(`
+    const breakdown = [
+      ...getEntryBreakdown({ entries: [sg, my], d1: { first: { status: 'done' }, second: { status: 'na' } } },
+        2, new Set(['first', 'second']), false),
+      ...getEntryBreakdown({ entries: [my], d1: { first: { status: 'done' } } },
+        4, new Set(['first', 'second', 'third', 'fourth']), false),
+    ];
+    const roleRate = user => {
+      currentUser = user;
+      return dashboardDdayCompletion(breakdown.filter(row => dashboardCoversEntry('cdm', row.entry)));
+    };
+  `);
+  assert.deepEqual(result(`[
+    roleRate({ uid: 'a', role: 'team_lead' }),
+    roleRate({ uid: 'b', role: 'team_lead' }),
+    roleRate({ uid: 'mgr', role: 'manager', managedUids: ['a', 'b'] }),
+    roleRate({ uid: 'admin', role: 'admin' }),
+    roleRate({ uid: 'cdm', role: 'member' }),
+  ]`), [16, 100, 37, 37, 37]);
+  assert.equal(result('dashboardDdayCompletion([{ d1Done: 824, totalItems: 825 }])'), 99);
+});
